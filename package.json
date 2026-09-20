@@ -1,0 +1,11 @@
+{
+  "name": "benched",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Benched: A Striker's Roguelite",
+  "type": "module",
+  "scripts": {
+    "start": "npx --yes serve -l 5173 .",
+    "dev": "npx --yes serve -l 5173 ."
+  }
+}
