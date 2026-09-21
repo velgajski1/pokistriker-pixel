@@ -31,6 +31,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
 let renderer, scene, camera, clock;
+export { renderer, scene, camera };
 let frameCb = null;
 let shakeAmp = 0;
 let started = false;

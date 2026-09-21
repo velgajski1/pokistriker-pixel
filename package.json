@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "npx --yes serve -l 5173 .",
-    "dev": "npx --yes serve -l 5173 ."
+    "dev": "npx --yes serve -l 5173 .",
+    "check": "node tools/validate.mjs check"
   },
   "devDependencies": {
     "playwright": "^1.63.0"

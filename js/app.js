@@ -997,6 +997,16 @@ function frame(dt) {
 function boot() {
   ui.init();
   engine.init(document.getElementById('pitch'));
+  window.__demo = {
+    renderer: engine.renderer, scene: engine.scene, camera: engine.camera,
+    state, shot, ball: engine.objects.ball, ready: false,
+  };
+  const afterRender = engine.scene.onAfterRender;
+  engine.scene.onAfterRender = function (...args) {
+    afterRender.apply(this, args);
+    window.__demo.ready = true;
+    engine.scene.onAfterRender = afterRender;
+  };
   engine.onFrame(frame);
 
   addEventListener('pointerdown', (e) => {
