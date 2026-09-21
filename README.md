@@ -69,6 +69,12 @@ js/
   recovery), then match simulation resumes. Clips keep
   their vertical motion and rotation; gameplay owns horizontal positioning.
   `node tools/celebrations.mjs` checks all four performances and goal triggering.
+- **Misses and conceded goals trigger reactions.** Angry Ground Stomp,
+  Shouting Angrily, Confused Scratch and Walk Sad are randomly selected for the shooter
+  after a missed chance, or the goalkeeper while the scorer celebrates.
+  Reactions blend from the current pose and play for at most 4.5 seconds,
+  followed by a 0.3-second return to idle. `node tools/reactions.mjs` checks
+  all four clips on both roles, missed-shot triggering and cleanup.
 - **Both elevens wear conventional shirt numbers.** Keepers use 1; fullbacks
   2/3, centre-backs 4/5, midfielders 6/8/10 and attackers 7/9/11. Back prints
   inherit the shirt's skin weights so they bend with running, kicking and diving.

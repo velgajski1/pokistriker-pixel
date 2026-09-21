@@ -67,10 +67,12 @@ try {
   await page.waitForFunction(() => __demo.shot.resolved === 'goal');
   assert(await page.evaluate(async () => {
     const e = await import('/js/gameEngine.js');
-    return e.CELEBRATIONS.includes(e.celebration.name) && __demo.shot.holdTimer > 2;
+    return e.CELEBRATIONS.includes(e.celebration.name) && e.REACTIONS.includes(e.reactions.keeper.name)
+      && !e.reactions.shooter.name && __demo.shot.holdTimer > 2;
   }), 'Goal did not trigger a complete celebration');
   await page.waitForFunction(() => __demo.state.phase !== 'FLIGHT', null, { timeout: 15000 });
   assert(await page.evaluate(async () => !(await import('/js/gameEngine.js')).celebration.name), 'Celebration did not clear after goal replay');
+  assert(await page.evaluate(async () => !(await import('/js/gameEngine.js')).reactions.keeper.name), 'Keeper reaction did not clear after goal replay');
   assert(!errors.length, errors.join('\n'));
   console.log(JSON.stringify(results, null, 2));
 } finally { await browser.close(); }

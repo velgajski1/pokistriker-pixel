@@ -62,6 +62,18 @@
     "celebrate_heart": {
       "duration": 6.208333333333333
     },
+    "react_stomp": {
+      "duration": 1.4166666666666667
+    },
+    "react_shout": {
+      "duration": 7.208333333333333
+    },
+    "react_confused": {
+      "duration": 11.541666666666666
+    },
+    "react_walk_sad": {
+      "duration": 4.0
+    },
     "idle": {
       "duration": 2.0
     }
@@ -168,6 +180,26 @@
       "file": "Big_Heart_Gesture",
       "sourceDuration": 6.208333333333333,
       "sourceFrames": 150
+    },
+    "react_stomp": {
+      "file": "Angry_Ground_Stomp",
+      "sourceDuration": 1.4166666666666667,
+      "sourceFrames": 35
+    },
+    "react_shout": {
+      "file": "Shouting_Angrily",
+      "sourceDuration": 7.208333333333333,
+      "sourceFrames": 174
+    },
+    "react_confused": {
+      "file": "Confused_Scratch",
+      "sourceDuration": 11.541666666666666,
+      "sourceFrames": 278
+    },
+    "react_walk_sad": {
+      "file": "01a0c45c-030d-7043-885d-08f599aadbcf",
+      "sourceDuration": 4.0,
+      "sourceFrames": 97
     }
   }
 }

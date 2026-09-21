@@ -26,6 +26,9 @@ GAITS = ('walk', 'quick_walk', 'run', 'run_alt')
 CELEBRATIONS = {'celebrate_backflip': 'Backflip', 'celebrate_backflip_hooks': 'Backflip_and_Hooks',
                 'celebrate_dance': 'All_Night_Dance', 'celebrate_heart': 'Big_Heart_Gesture'}
 SOURCES.update(CELEBRATIONS)
+REACTIONS = {'react_stomp': 'Angry_Ground_Stomp', 'react_shout': 'Shouting_Angrily',
+             'react_confused': 'Confused_Scratch', 'react_walk_sad': '01a0c45c-030d-7043-885d-08f599aadbcf'}
+SOURCES.update(REACTIONS)
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
 bpy.context.scene.render.fps = FPS
@@ -35,7 +38,10 @@ base_rig = base_mesh = None
 for name, source in SOURCES.items():
     before = set(bpy.data.objects)
     directory = ROOT / 'references/Meshy_AI_Captain_of_Tomorrow_biped' if name in CELEBRATIONS else SOURCE
-    bpy.ops.import_scene.gltf(filepath=str(next(directory.glob('*_Animation_' + source + '_withSkin.glb'))))
+    if name in REACTIONS:
+        directory = ROOT / 'references'
+    path = ROOT / 'references/walksad.glb' if name == 'react_walk_sad' else next(directory.glob('*_Animation_' + source + '_withSkin.glb'))
+    bpy.ops.import_scene.gltf(filepath=str(path))
     imported = set(bpy.data.objects) - before
     rig = next(o for o in imported if o.type == 'ARMATURE')
     mesh = next(o for o in imported if o.type == 'MESH' and o.find_armature() == rig)
@@ -111,6 +117,11 @@ bpy.ops.object.modifier_apply(modifier=decimate.name)
 # boundaries across large simplified triangles.
 bm = bmesh.new()
 bm.from_mesh(mesh.data)
+# Remove small scan-like spikes without flattening the nose, lips or ears.
+head_vertices = [v for v in bm.verts if v.co.z > 1.43 and abs(v.co.x) < .14]
+for _ in range(3):
+    bmesh.ops.smooth_vert(bm, verts=head_vertices, factor=.22,
+                          use_axis_x=True, use_axis_y=True, use_axis_z=True)
 for height in (.12, .44, .63, .88):
     bmesh.ops.bisect_plane(bm, geom=list(bm.verts) + list(bm.edges) + list(bm.faces),
                           plane_co=(0, 0, height), plane_no=(0, 0, 1), dist=.00001)

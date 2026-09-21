@@ -963,7 +963,7 @@ function updateFlight(dt) {
   // Follow only nearby loose rebounds; distant teammates retain their lanes.
   engine.watchBall(dt, shot.resolved === null, shot.resolved === null && (shot.bounced || shot.touched !== null),
     BALL_PURSUIT, shot.flightTime >= .9);
-  if (shot.resolved !== 'goal' && (shot.bounced || shot.touched !== null)) engine.followReboundCamera(dt);
+  if (shot.resolved === null && (shot.bounced || shot.touched !== null)) engine.followReboundCamera(dt);
   engine.faceKeeper(dt, 0);            // square up to dive along the goal line
   if (shot.flightTime > 0.12 && shot.resolved === null && shot.follow < 2.4) {
     const stride = 3.4 * dt;
@@ -1002,13 +1002,16 @@ function resolve(outcome) {
   shot.resolved = outcome;
   engine.cheerCrowd(outcome === 'goal');
   shot.holdTimer = outcome === 'goal' ? 1.7 : .8;
+  const reactionIndex = Math.floor(Math.random() * engine.REACTIONS.length);
+  const reactionDuration = engine.startReaction(outcome === 'goal' ? 'keeper' : 'shooter', engine.REACTIONS[reactionIndex]);
+  shot.holdTimer = Math.max(shot.holdTimer, reactionDuration);
   run.chancesLeft = Math.max(0, run.chancesLeft - 1);
 
   if (outcome === 'goal') {
     let celebrationIndex = Math.floor(Math.random() * (engine.CELEBRATIONS.length - (run.lastCelebration === undefined ? 0 : 1)));
     if (run.lastCelebration !== undefined && celebrationIndex >= run.lastCelebration) celebrationIndex++;
     run.lastCelebration = celebrationIndex;
-    shot.holdTimer = engine.startCelebration(engine.CELEBRATIONS[celebrationIndex]);
+    shot.holdTimer = Math.max(shot.holdTimer, engine.startCelebration(engine.CELEBRATIONS[celebrationIndex]));
     run.goals += 1;
     run.matchGoals += 1;
     run.cash += goalPayout();
@@ -1047,6 +1050,7 @@ function resolve(outcome) {
 function finishChance() {
   const run = state.run;
   engine.stopCelebration();
+  engine.stopReactions();
 
   if (run.confidence <= 0) { benched(); return; }
 

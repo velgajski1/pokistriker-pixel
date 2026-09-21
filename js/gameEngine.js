@@ -102,6 +102,9 @@ const LOOKS = [
   { skin: SKIN.dark,  hair: HAIR.black,      style: 'curls',    height: 1.045, build: 1.02, beard: 0.2, brow: 1 },
   // pale, platinum-bleached crop
   { skin: SKIN.fair,  hair: HAIR.platinum,   style: 'crop',     height: 1.0,   build: 1.0,  beard: 0.3, brow: 1 },
+  { skin: SKIN.light, hair: HAIR.brown,      style: 'sidepart', height: 1.02,  build: 1.0,  beard: 0,   brow: 1 },
+  { skin: SKIN.dark,  hair: HAIR.black,      style: 'crew',     height: 1.01,  build: 1.03, beard: 0.45, brow: 1 },
+  { skin: SKIN.fair,  hair: HAIR.darkBlond,  style: 'swept',    height: 1.04,  build: 0.98, beard: 0,   brow: 1 },
 ];
 
 /** Deals distinct looks so no two players on screen are the same person. */
@@ -446,9 +449,11 @@ let captain = null;
 export const players = [];
 const GAITS = ['walk', 'quick_walk', 'run', 'run_alt'];
 export const CELEBRATIONS = ['celebrate_backflip', 'celebrate_backflip_hooks', 'celebrate_dance', 'celebrate_heart'];
+export const REACTIONS = ['react_stomp', 'react_shout', 'react_confused', 'react_walk_sad'];
+export const reactions = { keeper: null, shooter: null };
 export const celebration = { name: null, time: 0, duration: 0, phase: null,
   runTime: 0, runDuration: 1.5, startX: 0, targetX: 0 };
-const ANIMATIONS = ['idle', ...GAITS, 'kick', ...CELEBRATIONS, 'turn_idle_left', 'turn_idle_right',
+const ANIMATIONS = ['idle', ...GAITS, 'kick', ...CELEBRATIONS, ...REACTIONS, 'turn_idle_left', 'turn_idle_right',
   'turn_walk_left', 'turn_walk_right', 'dive_left', 'dive_right',
   'keeper_idle', 'alert', 'slide_left', 'slide_right'];
 const CAPTAIN_BIND_SCALE = 1.85 / 1.7; // Blender bakes this into mesh bind coordinates.
@@ -551,6 +556,14 @@ async function loadCaptain() {
     keeperSet = makeCapsuleSet(squad.keeper);
     for (let i = 0; i < blockerSets.length; i++) blockerSets[i] = makeCapsuleSet(squad.foes[i], false);
     cachePausePoses();
+    for (const role of ['keeper', 'shooter']) {
+      const rig = role === 'keeper' ? squad.keeper : squad.striker;
+      const avatar = role === 'keeper' ? rig.avatar : captain;
+      const bones = [], poses = [];
+      avatar.model.traverse(node => { if (node.isBone) { bones.push(node); poses.push(node.quaternion.clone()); } });
+      reactions[role] = { rig, avatar, bones, poses, name: null, time: 0, duration: 0,
+        position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+    }
   } catch (error) {
     console.warn('Captain unavailable; using procedural striker.', error);
   } finally {
@@ -598,6 +611,54 @@ function addShirtNumber(model, number) {
   shirt.add(print);
 }
 
+// Bind-space shading follows the animated skin without floating face overlays.
+// Both imported head primitives use the same continuous hairline and colours.
+function shadeCaptainFace(material, look) {
+  material.roughness = .86;
+  material.customProgramCacheKey = () => 'captain-face-v1';
+  material.onBeforeCompile = shader => {
+    shader.uniforms.faceSkin = { value: new THREE.Color(look.skin) };
+    shader.uniforms.faceHair = { value: new THREE.Color(look.hair) };
+    shader.uniforms.faceStyle = { value: ['bald', 'buzz', 'crew', 'sidepart', 'swept', 'floppy', 'headband'].indexOf(look.style) };
+    shader.uniforms.faceBeard = { value: look.beard >= .4 ? Math.min(.48, look.beard * .55) : 0 };
+    shader.vertexShader = 'varying vec3 faceBind;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
+      '#include <begin_vertex>\nfaceBind = position / ' + CAPTAIN_BIND_SCALE.toFixed(8) + ';');
+    shader.fragmentShader = `varying vec3 faceBind;
+      uniform vec3 faceSkin, faceHair;
+      uniform float faceStyle, faceBeard;
+      ` + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      if (faceBind.y > 1.405 && abs(faceBind.x) < .14) {
+        vec3 p = faceBind;
+        float front = smoothstep(-.035, .065, p.z);
+        float hairline = mix(1.505, 1.631, front);
+        hairline -= .024 * smoothstep(.045, .085, abs(p.x)) * front;
+        if (faceStyle == 3.0) hairline += .012 * sin(p.x * 28.0) * front;
+        if (faceStyle == 4.0 || faceStyle == 5.0) hairline -= .016 * front;
+        float edge = max(.002, fwidth(p.y) * 1.2);
+        float hair = smoothstep(hairline - edge, hairline + edge, p.y);
+        if (faceStyle == 0.0) hair = 0.0;
+        if (faceStyle == 1.0) hair *= .68;
+        float grain = sin(p.x * 1700.0) * sin(p.y * 1600.0 + p.z * 900.0);
+        grain *= 1.0 - smoothstep(.0005, .003, fwidth(p.y));
+        vec3 hairColour = faceHair * (1.0 + grain * .055);
+        if (faceStyle == 3.0) {
+          float part = 1.0 - smoothstep(.001, .0035, abs(p.x - .025 - p.z * .15));
+          hairColour = mix(hairColour, faceSkin * .65, part * .65);
+        }
+        float jaw = smoothstep(1.443, 1.46, p.y) * (1.0 - smoothstep(1.505, 1.535, p.y));
+        float beard = jaw * smoothstep(.005, .05, p.z) * faceBeard;
+        vec3 skinColour = mix(faceSkin, faceHair, beard * (.88 + grain * .12));
+        diffuseColor.rgb = mix(skinColour, hairColour, hair);
+        if (faceStyle == 6.0) {
+          float band = 1.0 - smoothstep(.004, .006, abs(p.y - 1.632 + p.z * .06));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(.045), band);
+        }
+      }`);
+  };
+}
+
 function colourCaptain(model, rig) {
   let scalp = null;
   model.traverse(node => {
@@ -606,6 +667,7 @@ function colourCaptain(model, rig) {
     node.frustumCulled = false;
     node.material = node.material.clone();
     const region = node.material.name;
+    if (region === 'skin' || region === 'hair') shadeCaptainFace(node.material, rig.look);
     node.material.color.setHex(region === 'skin' ? rig.look.skin
       : region === 'hair' ? (rig.look.style === 'bald' ? rig.look.skin : rig.look.hair)
         : region === 'gloves' ? rig.kit.gloves || rig.look.skin : rig.kit[region] ?? 0xffffff);
@@ -615,13 +677,15 @@ function colourCaptain(model, rig) {
       node.geometry = node.geometry.clone();
       const position = node.geometry.attributes.position;
       const style = rig.look.style;
-      const volume = style === 'afro' ? 1.65 : style === 'curls' ? 1.25
-        : style === 'floppy' ? 1.2 : style === 'buzz' || style === 'bald' ? 0.5 : 1;
+      const volume = style === 'afro' ? 1.45 : style === 'curls' ? 1.15
+        : style === 'floppy' ? 1.15 : style === 'buzz' || style === 'bald' ? 0.55
+          : style === 'crew' ? .72 : style === 'swept' ? 1.12 : 1;
       for (let i = 0; i < position.count; i++) {
         const y = position.getY(i);
         const blend = THREE.MathUtils.smoothstep(y, 1.64 * CAPTAIN_BIND_SCALE, 1.70 * CAPTAIN_BIND_SCALE);
         const width = 1 + (volume - 1) * blend * 0.45;
-        position.setXYZ(i, position.getX(i) * width,
+        const sweep = style === 'sidepart' || style === 'swept' ? blend * .014 * CAPTAIN_BIND_SCALE : 0;
+        position.setXYZ(i, position.getX(i) * width + sweep,
           y + Math.max(0, y - 1.64 * CAPTAIN_BIND_SCALE) * (volume - 1) * blend,
           position.getZ(i) * width);
       }
@@ -641,13 +705,6 @@ function colourCaptain(model, rig) {
     tail.position.set(0.01, bun ? 1.60 : 1.53, -0.13);
     tail.rotation.x = -0.35;
     hair.add(tail);
-    if (rig.look.style === 'headband') {
-      const band = new THREE.Mesh(new THREE.TorusGeometry(0.112, 0.011, 6, 24),
-        new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.9 }));
-      band.position.set(0.01, 1.625, 0);
-      band.rotation.x = Math.PI / 2;
-      hair.add(band);
-    }
     // Accessory vertices are authored in the same bind space as the scalp.
     hair.scale.setScalar(CAPTAIN_BIND_SCALE);
     hair.applyMatrix4(scalp.skeleton.boneInverses[index]);
@@ -751,6 +808,7 @@ function sampleKick(a, time) {
 function animateSquad(dt) {
   for (const player of players) {
     const rig = player.rig;
+    if (rig === squad.keeper && reactions.keeper?.name) { sampleReaction(reactions.keeper, dt); continue; }
     if (!rig?.avatar || rig.avatar.procedural) continue;
     const a = rig.avatar;
     if (a.passTime >= 0) sampleKick(a, passClipTime(a, dt));
@@ -775,7 +833,8 @@ function syncPlayerLocomotion(dt) {
     const kickEnd = a.data.clips.kick.duration;
     const passing = a.passTime >= 0 && a.passTime < .28 + kickEnd - a.data.clips.kick.contact;
     const shooting = r === squad.striker && kickTime >= 0 && kickTime < kickEnd;
-    const action = passing || shooting || (r === squad.striker && celebration.name) || a.saveActive
+    const action = passing || shooting || (r === squad.striker && (celebration.name || reactions.shooter?.name))
+      || (r === squad.keeper && reactions.keeper?.name) || a.saveActive
       || a.actions.slide_left.getEffectiveWeight() > .1 || a.actions.slide_right.getEffectiveWeight() > .1
       || a.actions.dive_left.getEffectiveWeight() > .35 || a.actions.dive_right.getEffectiveWeight() > .35;
     if (action) continue;
@@ -846,7 +905,7 @@ function poseCaptain(rig, dive = 0, side = 1) {
 }
 
 export function setStrikerKick(windup, flight = -1) {
-  if (!captain || celebration.name) return;
+  if (!captain || celebration.name || reactions.shooter?.name) return;
   kickTime = flight < 0 ? clamp(windup, 0, 1) * captain.data.clips.kick.contact
     : captain.data.clips.kick.contact + flight;
 }
@@ -881,6 +940,46 @@ export function startCelebration(name) {
 
 export function stopCelebration() { celebration.name = null; celebration.phase = null; }
 
+export function startReaction(role, name) {
+  const track = reactions[role];
+  if (!track || !REACTIONS.includes(name)) return .8;
+  track.name = name; track.time = 0;
+  track.duration = Math.min(4.5, track.avatar.data.clips[name].duration);
+  track.avatar.passTime = -1;
+  track.avatar.moveBlend = 0;
+  track.position.copy(track.avatar.model.position);
+  track.quaternion.copy(track.avatar.model.quaternion);
+  for (let i = 0; i < track.bones.length; i++) track.poses[i].copy(track.bones[i].quaternion);
+  if (role === 'shooter') {
+    kickTime = -1; captainSpeed = 0;
+    const root = track.rig.root;
+    _camHome.set(root.position.x + Math.sin(root.rotation.y) * 5, 2.6, root.position.z + Math.cos(root.rotation.y) * 5);
+    _camTargetWant.set(root.position.x, 1.15, root.position.z);
+  }
+  return track.duration + .3;
+}
+
+export function stopReactions() {
+  for (const role of ['keeper', 'shooter']) if (reactions[role]) reactions[role].name = null;
+}
+
+function sampleReaction(track, dt) {
+  track.time += dt;
+  const a = track.avatar;
+  const fade = THREE.MathUtils.smoothstep(track.time, track.duration, track.duration + .3);
+  for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(0);
+  a.actions[track.name].setEffectiveWeight(1 - fade);
+  a.actions[track.name].time = Math.min(track.time, track.duration);
+  const idle = track === reactions.keeper ? 'keeper_idle' : 'idle';
+  a.actions[idle].setEffectiveWeight(fade);
+  a.actions[idle].time = 0;
+  a.mixer.update(0);
+  const blend = Math.max(0, 1 - track.time / .3);
+  a.model.position.copy(track.position).multiplyScalar(blend);
+  a.model.quaternion.identity().slerp(track.quaternion, blend);
+  if (blend > 0) for (let i = 0; i < track.bones.length; i++) track.bones[i].quaternion.slerp(track.poses[i], blend);
+}
+
 function frameCelebration() {
   const root = squad.striker.root;
   const side = celebration.targetX >= celebration.startX ? 1 : -1;
@@ -894,6 +993,7 @@ function frameCelebration() {
 
 function animateCaptain(dt) {
   if (!captain) return;
+  if (reactions.shooter?.name) { sampleReaction(reactions.shooter, dt); return; }
   if (celebration.name) {
     if (celebration.phase === 'run') {
       const root = squad.striker.root;
@@ -1862,6 +1962,7 @@ function reachKeeperChain(chain) {
 
 export function setKeeper(x, dive, side, high, airY, ground, target = null) {
   const r = squad.keeper;
+  if (reactions.keeper?.name) return;
   if (r.avatar) r.avatar.saveActive = !!target || dive > .05 || airY > .01;
   const h = high || 0;
   const lean = dive * (1.35 - h * 0.55);
@@ -2437,7 +2538,7 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
   }
 
   for (const p of ambient.actors) {
-    if (p.rig === squad.striker && (celebration.name || !strikerReady || p !== formation.attacker)) { p.chasing = false; continue; }
+    if (p.rig === squad.striker && (celebration.name || reactions.shooter?.name || !strikerReady || p !== formation.attacker)) { p.chasing = false; continue; }
     if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
@@ -2491,7 +2592,7 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
   separate(dt);
 
   for (const p of ambient.actors) {
-    if (p.rig === squad.striker && (celebration.name || !strikerReady || p !== formation.attacker)) continue;
+    if (p.rig === squad.striker && (celebration.name || reactions.shooter?.name || !strikerReady || p !== formation.attacker)) continue;
     if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
