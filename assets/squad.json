@@ -38,6 +38,18 @@
     "dive_right": {
       "duration": 3.0
     },
+    "keeper_idle": {
+      "duration": 2.0
+    },
+    "alert": {
+      "duration": 4.041666666666667
+    },
+    "slide_left": {
+      "duration": 1.5416666666666667
+    },
+    "slide_right": {
+      "duration": 1.7916666666666667
+    },
     "idle": {
       "duration": 2.0
     }
@@ -104,6 +116,26 @@
       "file": "01a0c35e-c157-7267-a5a0-278b419c0134",
       "sourceDuration": 3.0,
       "sourceFrames": 73
+    },
+    "keeper_idle": {
+      "file": "01a0c3d7-6ce5-725a-a34e-52a339057158",
+      "sourceDuration": 2.0,
+      "sourceFrames": 49
+    },
+    "alert": {
+      "file": "Alert",
+      "sourceDuration": 4.041666666666667,
+      "sourceFrames": 98
+    },
+    "slide_left": {
+      "file": "slide_light",
+      "sourceDuration": 1.5416666666666667,
+      "sourceFrames": 38
+    },
+    "slide_right": {
+      "file": "slide_right",
+      "sourceDuration": 1.7916666666666667,
+      "sourceFrames": 44
     }
   }
 }

@@ -49,6 +49,31 @@ try {
     assert(pose.footSpread > .35, 'Leading boot must extend sideways');
   }
   await page.screenshot({ path: `${CAPTURES}/defenders.png` });
+  report.slides = await page.evaluate(async () => {
+    const e = await import('../js/gameEngine.js');
+    const d = window.__demo;
+    const results = [];
+    for (const [i, side] of [[0, -1], [1, 1]]) {
+      const name = side < 0 ? 'slide_left' : 'slide_right';
+      e.setBlocker(i, side * 1.2, .8, side, 0, .3);
+      const player = d.players.find(p => p.rig.avatar?.actions[name].getEffectiveWeight() > .99);
+      const caps = e.getBlockerCapsules().slice(i * 7, i * 7 + 7);
+      results.push({ side, weight: player.rig.avatar.actions[name].getEffectiveWeight(),
+        hipHeight: caps[0].a.y, capsules: caps.length });
+    }
+    d.renderer.render(d.scene, d.camera);
+    return results;
+  });
+  assert(report.slides.every(s => s.weight > .99 && s.hipHeight < .55 && s.capsules === 7),
+    'Both slides must lower the body and retain body/leg-only collision');
+  await page.screenshot({ path: `${CAPTURES}/defender-slides.png` });
+  report.recovery = await page.evaluate(async () => {
+    const e = await import('../js/gameEngine.js');
+    e.setBlocker(0, -1.2, 0, -1, 0, 2);
+    e.setBlocker(1, 1.2, 0, 1, 0, 2);
+    return __demo.players.filter(p => p.rig.avatar?.procedural && p.rig.avatar.actions.alert.getEffectiveWeight() === 1).length;
+  });
+  assert(report.recovery >= 2, 'Defenders must recover to Alert after sliding');
 } catch (error) {
   report.failures.push(String(error));
 } finally {

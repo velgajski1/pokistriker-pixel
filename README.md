@@ -60,12 +60,13 @@ js/
   shooting straight at him is not a strategy.
 - **The whole squad uses the Meshy Captain biped.** `assets/squad.glb` shares
   body geometry across all 22 footballers and the referee, with independent skeletons and
-  materials. All eleven supplied performances are included: Walking, Quick
-  Walk, Running, Run 03, four turns, the soccer kick and two dive/fall clips.
+  materials. Fifteen performances from the updated biped pack are included:
+  Walking, Quick Walk, Running, Run 03, four turns, the soccer kick, two dives,
+  goalkeeper preparation, Alert and both slide tackles.
   A breathing idle is derived from the kick's starting pose. Keeper dives blend
   imported torso/leg motion with procedural reach and ballistic positioning;
-  defenders use procedural upright lateral blocks with tucked arms and a
-  leading boot. Defender collision includes torso, thighs, shins and boots,
+  defenders use Alert while set, procedural upright blocks for higher balls,
+  and the supplied left/right slides against selected low shots. Defender collision includes torso, thighs, shins and boots,
   while only keepers can block with hands. Collision capsules
   read those same visible bones. The previous procedural rigs remain as a
   fallback if asset loading fails.
@@ -116,6 +117,8 @@ js/
   always close down during live play, regardless of distance or whether the
   ball has bounced. The selection updates with the ball; active shot blockers
   can join the approach and use their leg block when close enough.
+  Even small translations play the walking cycle at the corresponding speed;
+  formation spacing nudges and the far goalkeeper's adjustments are included.
   `window.__demo.formation` exposes actors and their targets for diagnostics;
   `node tools/formation.mjs` checks rebound pursuit, lane retention and motion
   at 30, 60 and 144Hz.
@@ -130,8 +133,8 @@ js/
   ball by his kicking-foot offset and squared up to the shot angle, so he
   strikes it rather than swiping past the side of it.
 - **The keeper leaps.** A dive has a vertical dimension as well as a lateral
-  one. Before takeoff he holds a wide, bent-knee crouch and uses short lateral
-  shuffle steps; their phase follows distance travelled, not frame count.
+  one. Before takeoff he plays the supplied crouched goalkeeper preparation
+  clip, including its lateral footwork, with a smoothed loop ending.
   He adjusts along the line at 1.8m/s before committing to the jump. The ready
   legs blend into the supplied dive articulation, while collisions continue
   to follow his visible joints. `node tools/keeper-ready.mjs` checks the stance,
@@ -150,7 +153,7 @@ js/
 
 Rebuild the squad asset with Blender:
 `blender --background --factory-startup --python tools/blender/build_squad.py`.
-The script reads the supplied `references/Meshy_AI_Captain_of_Tomorrow_biped`
+The script reads the supplied `references/Meshy_AI_Captain_of_Tomorrow_biped (1)/Meshy_AI_Captain_of_Tomorrow_biped`
 folder and writes `assets/squad.glb` plus clip/contact metadata in
 `assets/squad.json`. Run `node tools/squad.mjs` for appearance and live capsule
 checks, `node tools/striker.mjs` for striker animation checks, and
@@ -171,12 +174,19 @@ crowd and a player/goal comparison at the same depth.
 | Walk Turn Left / Right | Direction changes while walking |
 | Kick a Soccer Ball | Striker shots and timed ambient/build-up passes |
 | `01a0c35d…` / `01a0c35e…` | Left/right keeper dive articulation |
+| `01a0c3d7…` | Goalkeeper ready preparation and lateral footwork |
+| Alert | Stationary defenders and slide recovery |
+| slide_light / slide_right | Left/right low-shot slide tackles |
 
 Turn clips have their baked yaw removed because navigation owns facing. Dive
 clips retain torso/leg articulation, while the game supplies translation,
-leap, recovery and arm reach; their ending ground rolls are not played. No
-supplied clip depicts the defender's lateral leg block, so that action remains
-procedural. The short `.001` actions in each file are setup helpers, not
+leap, recovery and arm reach; their ending ground rolls are not played.
+Slide translation is removed so gameplay owns the approach; the clip retains
+its body drop, leading leg and recovery. Low shots predicted below 0.65m can
+trigger a slide once a blocker is within 8m, with a 65% attempt chance.
+Slides play at twice source speed to fit shot timing. Idle 3, 8 and 12 were
+reviewed as alternate poses; the existing general idle is retained.
+The short `.001` actions in each file are setup helpers, not
 performances. The soccer kick contacts on its forward swing at 0.5 seconds;
 the preparation script adjusts only the kicking leg near contact for a ground
 ball. Passers arrive and plant before their scheduled release. The aim pose

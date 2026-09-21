@@ -3,3 +3,4 @@ node_modules/
 .captures/
 debug.log
 .claude/settings.local.json
+references/*.zip

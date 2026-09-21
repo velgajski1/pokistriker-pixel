@@ -15,6 +15,8 @@ try {
     const point = name => bone(name).getWorldPosition(new THREE.Vector3());
     const left = point('LeftFoot'), right = point('RightFoot');
     const hips = point('Hips');
+    const kneeForward = Math.min(point('LeftLeg').z - left.z, point('RightLeg').z - right.z);
+    const backLean = point('Neck').z - hips.z;
     const samples = [];
     for (const hz of [30, 60, 144]) {
       e.setKeeper(-2, 0, 1, 0, 0, 0);
@@ -31,14 +33,21 @@ try {
       maxJump = Math.max(maxJump, previous.angleTo(q));
       previous.copy(q);
     }
-    return { width: left.distanceTo(right), hipHeight: hips.y,
+    e.setKeeper(0, 0, 1, 0, 0, 0);
+    document.getElementById('overlay').style.display = 'none';
+    d.camera.position.set(4, 2, keeper.root.position.z + 3);
+    d.camera.lookAt(0, 1, keeper.root.position.z);
+    d.renderer.render(d.scene, d.camera);
+    return { width: left.distanceTo(right), hipHeight: hips.y, kneeForward, backLean,
       feet: [left.y, right.y], samples, maxJumpDegrees: maxJump * 180 / Math.PI };
   });
   const s = report.stance;
   assert(s.width > .55 && s.hipHeight < 1, 'Keeper needs a wide crouched stance');
+  assert(s.kneeForward > .08 && s.backLean > .1, 'Knees must bend forward and the trunk must lean over them');
   assert(s.feet.every(y => y > -.05 && y < .2), 'Ready feet must stay near the turf');
   assert(s.samples.every(p => Math.hypot(...p.foot.map((v, i) => v - s.samples[0].foot[i])) < .005), 'Shuffle differs across frame rates');
   assert(s.maxJumpDegrees < 12, 'Crouch-to-dive pose snaps');
+  await session.page.screenshot({ path: `${CAPTURES}/keeper-ready.png` });
 } catch (error) {
   report.failures.push(String(error));
 } finally {

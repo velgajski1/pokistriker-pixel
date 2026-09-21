@@ -388,7 +388,6 @@ const KIT_KEEP = { kit: 0xff8a2b, shorts: 0x14202e, socks: 0x1b2836, boots: 0x0c
 const squad = { keeper: null, homeKeeper: null, striker: null, mates: [], foes: [], ref: null };
 
 // Speed thresholds in metres/second. Finish the run blend before sprinting.
-const IDLE_SPEED = 0.3;
 const RUN_FULL_SPEED = 3.5;
 const KICK_FADE = 0.15;
 const STRIKER_SPEED_RESPONSE = 18;
@@ -396,7 +395,8 @@ let captain = null;
 export const players = [];
 const GAITS = ['walk', 'quick_walk', 'run', 'run_alt'];
 const ANIMATIONS = ['idle', ...GAITS, 'kick', 'turn_idle_left', 'turn_idle_right',
-  'turn_walk_left', 'turn_walk_right', 'dive_left', 'dive_right'];
+  'turn_walk_left', 'turn_walk_right', 'dive_left', 'dive_right',
+  'keeper_idle', 'alert', 'slide_left', 'slide_right'];
 const CAPTAIN_BIND_SCALE = 1.85 / 1.7; // Blender bakes this into mesh bind coordinates.
 const BIPED = { hips: 'Hips', neck: 'Neck', head: 'Head',
   upperarm_L: 'LeftArm', forearm_L: 'LeftForeArm', hand_L: 'LeftHand',
@@ -475,6 +475,8 @@ async function loadCaptain() {
       const avatarModel = rig === squad.striker ? model : skeletonUtils.clone(template);
       colourCaptain(avatarModel, rig);
       if (rig !== squad.striker) attachCaptain(rig, avatarModel, gltf.animations, data, offsets);
+      if (rig.avatar) rig.avatar.idleName = rig === squad.keeper || rig === squad.homeKeeper
+        ? 'keeper_idle' : squad.foes.includes(rig) ? 'alert' : 'idle';
       players.push({ rig, root: rig.root, model: avatarModel, look: rig.look,
         team: rig === squad.ref ? 'ref' : rig === squad.keeper || squad.foes.includes(rig) ? 'away' : 'home',
         role: rig === squad.keeper || rig === squad.homeKeeper ? 'keeper'
@@ -585,7 +587,9 @@ function attachCaptain(rig, model, clips, data, offsets) {
 function sampleLocomotion(a, speed, dt) {
   const actions = a.actions, clips = a.data.clips;
   const localSpeed = speed / a.scale;
-  const moving = THREE.MathUtils.smoothstep(localSpeed, IDLE_SPEED, clips.walk.speed);
+  // Small adjustments slow the walking cycle instead of fading its footfalls
+  // into idle (which used to suppress both stride and phase advancement).
+  const moving = localSpeed > 0.00001 ? 1 : 0;
   const brisk = THREE.MathUtils.smoothstep(localSpeed, clips.walk.speed, 2.25);
   const run = THREE.MathUtils.smoothstep(localSpeed, 2.25, RUN_FULL_SPEED);
   const walkWeight = moving * (1 - brisk);
@@ -595,12 +599,14 @@ function sampleLocomotion(a, speed, dt) {
     + quickWeight / (clips.quick_walk.speed * clips.quick_walk.duration)
     + runWeight / (clips[a.runName].speed * clips[a.runName].duration))) % 1;
   for (const name of ANIMATIONS) actions[name].setEffectiveWeight(0);
-  actions.idle.setEffectiveWeight(1 - moving);
+  const idleName = a.idleName || 'idle';
+  actions[idleName].setEffectiveWeight(1 - moving);
   actions.walk.setEffectiveWeight(walkWeight);
   actions.quick_walk.setEffectiveWeight(quickWeight);
   actions[a.runName].setEffectiveWeight(runWeight);
   for (const name of GAITS) actions[name].time = ((a.phase + a.offsets[name]) % 1) * clips[name].duration;
   actions.idle.time = (actions.idle.time + dt) % clips.idle.duration;
+  if (idleName !== 'idle') actions[idleName].time = (actions[idleName].time + dt) % clips[idleName].duration;
 
   // Normalized turn clips supply the planted stepping pose; root heading is
   // still controlled by the movement code, so turns cannot spin twice.
@@ -653,32 +659,46 @@ function poseCaptain(rig, dive = 0, side = 1) {
   if (!rig.avatar) return;
   const a = rig.avatar;
   a.procedural = true;
+  const keeper = rig === squad.keeper;
+  const idleName = keeper ? 'keeper_idle' : 'idle';
   // Reset the imported pose, then orient its real bones from the gameplay pose.
-  for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(name === 'idle' ? 1 - dive : 0);
+  for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(name === idleName ? 1 - dive : 0);
   if (dive > 0) {
     const name = side < 0 ? 'dive_left' : 'dive_right';
     a.actions[name].setEffectiveWeight(dive);
     a.actions[name].time = dive * .72;
   }
   a.actions.idle.time = 0;
+  if (keeper) a.actions.keeper_idle.time = crowdTime.value % a.data.clips.keeper_idle.duration;
   a.mixer.update(0);
   // The simulation supplies the leap, lean and landing. The source supplies
   // torso/leg articulation, not a second translation or ballistic trajectory.
   const hips = a.hipBone;
-  hips.position.copy(a.hipPosition);
-  hips.quaternion.copy(a.hipQuaternion);
+  if (keeper) {
+    hips.position.lerp(a.hipPosition, dive);
+    hips.quaternion.slerp(a.hipQuaternion, dive);
+  } else {
+    hips.position.copy(a.hipPosition);
+    hips.quaternion.copy(a.hipQuaternion);
+  }
   a.model.position.copy(rig.body.position);
   a.model.quaternion.copy(rig.body.quaternion);
+  if (keeper) {
+    a.model.position.multiplyScalar(dive);
+    a.model.quaternion.slerp(_poseQ.identity(), 1 - dive);
+  }
   rig.root.updateWorldMatrix(true, true);
   for (const [bone, controller] of a.bindings) {
     const leg = bone.name === 'mixamorigLeftUpLeg' || bone.name === 'mixamorigLeftLeg'
       || bone.name === 'mixamorigRightUpLeg' || bone.name === 'mixamorigRightLeg';
+    if (keeper && (leg || dive === 0)) continue;
     if (leg && dive >= .35) continue;
     _sourcePoseQ.copy(bone.quaternion);
     controller.getWorldQuaternion(_poseQ);
     _poseQ.multiply(_downQ);
     bone.parent.getWorldQuaternion(_parentQ).invert();
     bone.quaternion.copy(_parentQ).multiply(_poseQ);
+    if (keeper) bone.quaternion.slerp(_sourcePoseQ, 1 - dive);
     if (leg && dive > 0) {
       const blend = clamp(dive / .35, 0, 1);
       bone.quaternion.slerp(_sourcePoseQ, blend * blend * (3 - 2 * blend));
@@ -1433,9 +1453,12 @@ export function setKeeper(x, dive, side, high, airY, ground) {
   // a flat sprawl and a half-propped landing from a leap.
   const lay = (ground || 0) * Math.sin(lean) * dive;
   const hipY = RIG.HIP_Y - (RIG.HIP_Y - 0.25) * lay;
-  r.body.position.y = hipY - RIG.HIP_Y * Math.cos(lean) + (airY || 0) - ready * .10;
+  r.body.position.y = hipY - RIG.HIP_Y * Math.cos(lean) + (airY || 0) - ready * .05;
   r.body.rotation.z = -side * lean;
-  r.body.rotation.x = ready * .06;
+  // +Z is forward: hinge the trunk forward while the hips sit back.
+  // Compensate around hip height instead of tipping the whole rig off its feet.
+  r.body.rotation.x = ready * .40;
+  r.body.position.z = -RIG.HIP_Y * Math.sin(r.body.rotation.x);
 
   for (const arm of r.arms) {
     arm.shoulder.rotation.z = lerp(arm.sx * 0.38, arm.sx * Math.PI, dive);
@@ -1445,9 +1468,11 @@ export function setKeeper(x, dive, side, high, airY, ground) {
   }
   for (const leg of r.legs) {
     const lift = Math.max(0, shuffle * leg.sx) * .10;
-    leg.hip.rotation.x = lerp(.32 + lift, 0.42, dive);
-    leg.hip.rotation.z = lerp(leg.sx * (.28 + shuffle * .07), -side * 0.22, dive);
-    leg.knee.rotation.x = lerp(-.64 - lift, -0.3, dive);
+    // The controller legs point down -Y. Negative hip X brings the knee
+    // forward; positive knee X folds the shin back underneath it.
+    leg.hip.rotation.x = lerp(-.80 - lift, 0.42, dive);
+    leg.hip.rotation.z = lerp(leg.sx * (.34 + shuffle * .05), -side * 0.22, dive);
+    leg.knee.rotation.x = lerp(.78 + lift, -0.3, dive);
   }
   poseCaptain(r, dive, side);
 }
@@ -1457,7 +1482,12 @@ export function setKeeper(x, dive, side, high, airY, ground) {
  * supporting knee. Keep the torso upright and hands tucked against the body;
  * only the torso, legs and boots participate in a defender's block collision.
  */
-export function setBlocker(i, x, lunge, side, airY) {
+export function blockerBallDistance(i) {
+  const root = blockerSets[i].rig.root;
+  return Math.hypot(root.position.x - objects.ball.position.x, root.position.z - objects.ball.position.z);
+}
+
+export function setBlocker(i, x, lunge, side, airY, slideTime = -1) {
   const r = blockerSets[i].rig;
   const p = formation.pressers[0]?.rig === r ? formation.pressers[0]
     : formation.pressers[1]?.rig === r ? formation.pressers[1] : null;
@@ -1465,7 +1495,26 @@ export function setBlocker(i, x, lunge, side, airY) {
     // The movement controller owns the approach; use the leg block only when
     // close enough to challenge, and never snap back to the old shot-line X.
     x = p.x;
-    if (Math.hypot(objects.ball.position.x - p.x, objects.ball.position.z - p.z) > 3) return r.root.position.x;
+    if (blockerBallDistance(i) > 3 && (slideTime < 0 || slideTime >= .95)) return r.root.position.x;
+  }
+  if (r.avatar && (slideTime >= 0 || lunge < .05)) {
+    const a = r.avatar;
+    a.procedural = true;
+    r.root.position.x = x;
+    a.model.position.set(0, 0, 0);
+    a.model.quaternion.identity();
+    for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(0);
+    const name = side < 0 ? 'slide_left' : 'slide_right';
+    const duration = a.data.clips[name].duration;
+    const t = Math.min(duration, Math.max(0, slideTime * 2));
+    const weight = slideTime < 0 ? 0 : Math.min(1, t / .12, (duration - t) / .18);
+    a.actions.alert.time = crowdTime.value % a.data.clips.alert.duration;
+    a.actions.alert.setEffectiveWeight(1 - weight);
+    a.actions[name].time = t;
+    a.actions[name].setEffectiveWeight(weight);
+    a.mixer.update(0);
+    r.root.updateWorldMatrix(true, true);
+    return x;
   }
   const lean = lunge * 0.12;
   r.root.position.x = x;
@@ -1576,7 +1625,8 @@ function formationTarget(p, bx, bz) {
 function initAmbient() {
   const add = (rig, home, team) => ambient.actors.push({
     rig, home, team, targetX: home.x, targetZ: home.z, chasing: false, pressing: false,
-    x: home.x, z: home.z, phase: Math.random() * 6.28, speed: 0, heading: 0,
+    x: home.x, z: home.z, previousX: home.x, previousZ: home.z,
+    phase: Math.random() * 6.28, speed: 0, heading: 0,
   });
 
   add(squad.striker, { x: 0, z: -9 }, 'home');
@@ -1640,7 +1690,7 @@ function moveActors(dt) {
     }
     const response = captain && p.rig === squad.striker
       ? 1 - Math.exp(-STRIKER_SPEED_RESPONSE * dt) : Math.min(1, dt * 6);
-    p.speed = lerp(p.speed, v, response);
+    p.speed = p.rig === squad.striker ? lerp(p.speed, v, response) : v;
     p.phase += p.speed * dt * 2.1;
 
     p.rig.root.position.set(p.x, 0, p.z);
@@ -1724,10 +1774,12 @@ function positionHomeKeeper(dt) {
   const bx = objects.ball.position.x, bz = objects.ball.position.z;
   const end = GOAL.PLANE_Z + PITCH.LENGTH;
   const response = 1 - Math.exp(-dt * 1.4);
+  const previousX = r.root.position.x, previousZ = r.root.position.z;
   r.root.position.x = lerp(r.root.position.x, clamp(bx * .12, -2.5, 2.5), response);
   r.root.position.z = lerp(r.root.position.z, end - clamp((end - bz) * .08, 1.2, 6), response);
   r.root.rotation.y = Math.atan2(bx - r.root.position.x, bz - r.root.position.z);
-  if (r.avatar) r.avatar.speed = 0;
+  if (r.avatar) r.avatar.speed = Math.hypot(r.root.position.x - previousX,
+    r.root.position.z - previousZ) / Math.max(dt, .001);
 }
 
 // ---------------------------------------------------------------------------
@@ -1906,6 +1958,8 @@ export function watchBall(dt, live, rebound = false) {
   for (const p of ambient.actors) {
     p.x = p.rig.root.position.x;
     p.z = p.rig.root.position.z;
+    p.previousX = p.x;
+    p.previousZ = p.z;
   }
   selectPressers(bx, bz);
 
@@ -1968,6 +2022,8 @@ export function watchBall(dt, live, rebound = false) {
     if (involved && !(live && p.pressing)) continue;
     p.rig.root.position.set(p.x, 0, p.z);
     p.rig.root.rotation.y = p.heading;
+    // Spacing nudges also need footsteps, even when the main target is reached.
+    p.speed = Math.hypot(p.x - p.previousX, p.z - p.previousZ) / Math.max(dt, .001);
     poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.17, 1));
     if (p.rig.avatar) p.rig.avatar.speed = p.speed;
   }

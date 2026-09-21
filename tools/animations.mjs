@@ -17,7 +17,8 @@ try {
     __animationRig.avatar.turnRate = 0;
   });
   report.gaits = [];
-  for (const [speed, runName, expected] of [[0, 'run', 'idle'], [1.54, 'run', 'walk'],
+  for (const [speed, runName, expected] of [[0, 'run', 'idle'], [.01, 'run', 'walk'],
+    [.1, 'run', 'walk'], [.5, 'run', 'walk'], [1.54, 'run', 'walk'],
     [2.25, 'run', 'quick_walk'], [4.7, 'run', 'run'], [4.7, 'run_alt', 'run_alt']]) {
     await page.evaluate(({ speed, runName }) => {
       const a = __animationRig.avatar;
@@ -88,7 +89,7 @@ try {
     }
     return { names, turns, dives, kickTrajectory: trajectory };
   });
-  assert(report.clips.names.length === 12, 'Not all supplied clips exported');
+  assert(report.clips.names.length === 16, 'Not all selected clips exported');
   assert(report.clips.turns.every(t => t.maxYaw < .05), 'Turn root yaw was not removed');
   assert(report.clips.dives.every(d => d.weight === 1), 'Dive clips unused');
   const contact = report.clips.kickTrajectory[12];

@@ -1,8 +1,9 @@
 import { readdirSync, writeFileSync } from 'node:fs';
 import { open, CAPTURES } from './lib.mjs';
 
-const directory = 'references/Meshy_AI_Captain_of_Tomorrow_biped';
-const files = readdirSync(directory).filter(name => name.endsWith('.glb'));
+const directory = 'references/Meshy_AI_Captain_of_Tomorrow_biped (1)/Meshy_AI_Captain_of_Tomorrow_biped';
+const files = readdirSync(directory).filter(name => name.endsWith('.glb')
+  && (!process.argv[2] || new RegExp(process.argv[2]).test(name)));
 const errors = [];
 const { browser, page } = await open(errors);
 try {

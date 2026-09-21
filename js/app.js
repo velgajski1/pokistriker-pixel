@@ -545,6 +545,8 @@ function launch() {
     b.side = Math.sign(b.target - b.baseX) || 1;
     b.depth = Math.min(1, Math.abs(b.target - b.baseX) / SHOT.BLOCK_MAX_LUNGE);
     b.delay = SHOT.BLOCK_REACTION;
+    b.lowSlide = prediction.y < .65 && Math.random() < .65;
+    b.slideTime = -1;
     b.lunge = 0;
     b.down = 0;
     b.spent = false;
@@ -692,7 +694,9 @@ function substep(h) {
         b.lunge = Math.max(0, b.lunge - SHOT.RECOVER_RATE * h);
       }
     }
-    b.x = engine.setBlocker(i, b.x, b.lunge, b.side);
+    if (b.lowSlide && b.delay <= 0 && b.slideTime < 0 && engine.blockerBallDistance(i) < 8) b.slideTime = 0;
+    if (b.slideTime >= 0) b.slideTime += h;
+    b.x = engine.setBlocker(i, b.x, b.lunge, b.side, 0, b.slideTime);
   }
 
   // --- Ball ----------------------------------------------------------------

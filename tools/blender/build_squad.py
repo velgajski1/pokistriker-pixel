@@ -11,7 +11,7 @@ import bmesh
 from mathutils import Matrix, Vector
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / 'references/Meshy_AI_Captain_of_Tomorrow_biped'
+SOURCE = ROOT / 'references/Meshy_AI_Captain_of_Tomorrow_biped (1)/Meshy_AI_Captain_of_Tomorrow_biped'
 FPS = 24
 SCALE = 1.85 / 1.7
 SOURCES = {'walk': 'Walking', 'run': 'Running', 'kick': 'Kick_a_Soccer_Ball',
@@ -19,7 +19,9 @@ SOURCES = {'walk': 'Walking', 'run': 'Running', 'kick': 'Kick_a_Soccer_Ball',
            'turn_idle_left': 'Idle_Turn_Left', 'turn_idle_right': 'Idle_Turn_Right',
            'turn_walk_left': 'Walk_Turn_Left', 'turn_walk_right': 'Walk_Turn_Right',
            'dive_left': '01a0c35d-1cd2-72af-bf7d-3d8732d52731',
-           'dive_right': '01a0c35e-c157-7267-a5a0-278b419c0134'}
+           'dive_right': '01a0c35e-c157-7267-a5a0-278b419c0134',
+           'keeper_idle': '01a0c3d7-6ce5-725a-a34e-52a339057158',
+           'alert': 'Alert', 'slide_left': 'slide_light', 'slide_right': 'slide_right'}
 GAITS = ('walk', 'quick_walk', 'run', 'run_alt')
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
@@ -69,7 +71,18 @@ for name, source in SOURCES.items():
         period = min(range(12, len(frames) // 2), key=error)
         frames = frames[:period + 1]
         source_report[name]['cycleFrames'] = period
-    if name in GAITS:
+    if name == 'keeper_idle':
+        # The preparation ends more upright than it starts. Ease back into
+        # the crouch over the final half-second instead of snapping at wrap.
+        for i in range(len(frames) - 12, len(frames)):
+            t = (i - (len(frames) - 12)) / 11
+            weight = t * t * (3 - 2 * t)
+            for bone in frames[i]:
+                loc, rot, scale = frames[i][bone].decompose()
+                first_loc, first_rot, first_scale = frames[0][bone].decompose()
+                frames[i][bone] = Matrix.LocRotScale(loc.lerp(first_loc, weight),
+                    rot.slerp(first_rot, weight), scale.lerp(first_scale, weight))
+    if name in GAITS or name in ('keeper_idle', 'alert'):
         frames[-1] = frames[0]
     samples[name] = frames
     if base_rig is None:
