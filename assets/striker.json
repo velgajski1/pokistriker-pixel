@@ -1,0 +1,28 @@
+{
+  "clips": {
+    "idle": {
+      "duration": 2.0,
+      "loop": true
+    },
+    "walk": {
+      "duration": 1.1,
+      "loop": true,
+      "speed": 1.360378
+    },
+    "run": {
+      "duration": 0.64,
+      "loop": true,
+      "speed": 6.04295
+    },
+    "kick": {
+      "duration": 1.0,
+      "loop": false,
+      "contact": 0.28
+    }
+  },
+  "kickFoot": {
+    "x": -0.229,
+    "y": 0.123482,
+    "z": 0.274367
+  }
+}

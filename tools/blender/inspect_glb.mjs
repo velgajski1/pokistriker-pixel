@@ -47,7 +47,63 @@ for (const side of ['L', 'R']) for (const name of ['shoulder', 'upperarm', 'fore
 assert.equal(gltf.skins?.length, 1, 'Exactly one skin required');
 const joints = gltf.skins[0].joints.map(i => gltf.nodes[i].name);
 assert.deepEqual([...joints].sort(), expected.sort(), 'All 22 explicitly requested joints required');
-assert.equal(gltf.animations?.length ?? 0, 0, 'No animation clips');
+const sidecar = JSON.parse(fs.readFileSync(path.replace(/\.glb$/, '.json'), 'utf8'));
+assert.deepEqual(gltf.animations.map(a => a.name).sort(), ['idle', 'kick', 'run', 'walk']);
+for (const animation of gltf.animations) {
+  const info = sidecar.clips[animation.name];
+  let duration = 0;
+  for (const channel of animation.channels) {
+    const sampler = animation.samplers[channel.sampler];
+    const times = accessor(sampler.input).flat();
+    duration = Math.max(duration, times.at(-1));
+    assert(Math.abs(times[0]) < 1e-6, 'Clips start at zero');
+    const values = accessor(sampler.output);
+    if (info.loop) {
+      const first = values[0], last = values.at(-1);
+      if (channel.target.path === 'rotation') {
+        const norm = Math.hypot(...first) * Math.hypot(...last);
+        const dot = Math.abs(first.reduce((sum, x, i) => sum + x * last[i], 0) / norm);
+        assert(2 * Math.acos(Math.min(1, dot)) < Math.PI / 180, `${animation.name}: rotation loop`);
+      } else assert(first.every((x, i) => Math.abs(x - last[i]) < 1e-4), `${animation.name}: translation/scale loop`);
+    }
+    if (gltf.nodes[channel.target.node].name === 'root' && channel.target.path === 'translation') {
+      assert(values.every(v => Math.abs(v[0]) < 1e-6 && Math.abs(v[2]) < 1e-6), 'In-place root');
+    }
+  }
+  assert(Math.abs(duration - info.duration) <= 1 / 50, `${animation.name}: duration`);
+  if (['walk', 'run'].includes(animation.name)) assert(info.speed > 0 && Number.isFinite(info.speed));
+  const capture = fileURLToPath(new URL(`../../.captures/anim-${animation.name}-side.png`, import.meta.url));
+  assert(fs.existsSync(capture), `Missing ${capture}`);
+}
+const idle = gltf.animations.find(a => a.name === 'idle');
+const kick = gltf.animations.find(a => a.name === 'kick');
+for (const channel of kick.channels) {
+  const match = idle.channels.find(c => c.target.node === channel.target.node && c.target.path === channel.target.path);
+  assert(match, 'Kick channels match idle');
+  const rest = accessor(idle.samplers[match.sampler].output)[0];
+  const values = accessor(kick.samplers[channel.sampler].output);
+  for (const endpoint of [values[0], values.at(-1)]) {
+    assert(rest.every((x, i) => Math.abs(x - endpoint[i]) < 1e-5), 'Kick returns to idle');
+  }
+}
+assert.equal(sidecar.clips.kick.contact, .28);
+assert(Object.values(sidecar.kickFoot).every(Number.isFinite));
+for (const suffix of ['front', 'contact']) assert(fs.existsSync(fileURLToPath(new URL(`../../.captures/anim-kick-${suffix}.png`, import.meta.url))));
+assert.equal(sidecar.clips.run.duration, .64);
+assert.equal(sidecar.clips.walk.duration, 1.1);
+assert(sidecar.clips.run.speed >= 5.8 && sidecar.clips.run.speed <= 6.4, 'Run speed');
+assert(sidecar.clips.walk.speed >= 1.3 && sidecar.clips.walk.speed <= 1.5, 'Walk speed');
+const contactPoint = sidecar.kickFoot;
+assert(Math.hypot(contactPoint.x + .229, contactPoint.y - .138431, contactPoint.z - .289139) < .03, 'Contact point retained');
+const footChannel = kick.channels.find(c => gltf.nodes[c.target.node].name === 'foot_R' && c.target.path === 'rotation');
+const footSampler = kick.samplers[footChannel.sampler];
+const contactIndex = accessor(footSampler.input).findIndex(t => Math.abs(t[0] - .28) < 1e-6);
+assert(contactIndex >= 0, 'Exact contact key');
+const ankleRest = gltf.nodes[footChannel.target.node].rotation ?? [0, 0, 0, 1];
+const ankleContact = accessor(footSampler.output)[contactIndex];
+const ankleDot = Math.abs(ankleRest.reduce((sum, x, i) => sum + x * ankleContact[i], 0)) / (Math.hypot(...ankleRest) * Math.hypot(...ankleContact));
+const ankleAngle = 2 * Math.acos(Math.min(1, ankleDot)) * 180 / Math.PI;
+assert(ankleAngle >= 30 && ankleAngle <= 35, `Contact ankle: ${ankleAngle}`);
 let triangles = 0, vertices = 0, largestInfluences = 0;
 for (const node of gltf.nodes.filter(n => n.mesh !== undefined)) {
   assert.equal(node.skin, 0, 'Every mesh must be skinned');
@@ -87,6 +143,8 @@ const textures = gltf.images.map((image, index) => {
   return { name: image.name, dimensions, bytes: v.byteLength };
 });
 console.log(JSON.stringify({ skins: gltf.skins.length, joints, triangles, vertices, largestInfluences, textures, bytes: file.length }, null, 2));
+assert.equal(triangles, 24500, 'Triangle count unchanged');
+assert.equal(vertices, 15834, 'Vertex count unchanged');
 assert(triangles <= 25000, 'Triangle budget exceeded');
 assert(largestInfluences <= 4, 'Influence budget exceeded');
 assert(file.length <= 3000000, '3 MB file budget exceeded');
