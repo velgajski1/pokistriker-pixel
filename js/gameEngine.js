@@ -1489,6 +1489,7 @@ export function blockerBallDistance(i) {
 
 export function setBlocker(i, x, lunge, side, airY, slideTime = -1) {
   const r = blockerSets[i].rig;
+  if (r.avatar?.passTime >= 0) return r.root.position.x;
   const p = formation.pressers[0]?.rig === r ? formation.pressers[0]
     : formation.pressers[1]?.rig === r ? formation.pressers[1] : null;
   if (p?.chasing) {
@@ -1616,6 +1617,16 @@ function selectPressers(bx, bz) {
 // Each role keeps its own corridor. Ball-side compression is limited to four
 // metres; a fullback on one wing cannot migrate to the opposite touchline.
 function formationTarget(p, bx, bz) {
+  if (p.team === 'ref') {
+    let dx = p.x - bx, dz = p.z - bz;
+    if (Math.hypot(dx, dz) < .01) { dx = bx > 0 ? -1 : 1; dz = 1; }
+    if (p.x < -28 && dx < 0 || p.x > 28 && dx > 0) dx = -dx;
+    if (p.z < GOAL.PLANE_Z + 7 && dz < 0 || p.z > GOAL.PLANE_Z + PITCH.LENGTH - 7 && dz > 0) dz = -dz;
+    const length = Math.hypot(dx, dz);
+    p.targetX = clamp(bx + dx / length * 8, -32, 32);
+    p.targetZ = clamp(bz + dz / length * 8, GOAL.PLANE_Z + 2, GOAL.PLANE_Z + PITCH.LENGTH - 2);
+    return;
+  }
   p.targetX = clamp(p.home.x + clamp((bx - p.home.x) * .18, -4, 4),
     -PITCH.WIDTH / 2 + 2, PITCH.WIDTH / 2 - 2);
   p.targetZ = clamp(p.home.z + clamp((bz + 6) * .35, -12, 18),
@@ -1670,7 +1681,8 @@ function moveActors(dt) {
       tx = clamp(a.ball.x, -32, 32); tz = clamp(a.ball.z, GOAL.PLANE_Z + 1.4, GOAL.PLANE_Z + PITCH.LENGTH - 1.4);
       top = Math.hypot(tx - p.x, tz - p.z) > 1.8 ? 5.4 : 0;
     } else if (p.team === 'ref') {
-      tx = a.ball.x + 7; tz = a.ball.z + 5; top = 3.4;
+      formationTarget(p, a.ball.x, a.ball.z);
+      tx = p.targetX; tz = p.targetZ; top = 3.4;
     } else if (i === a.holder && a.t >= 1) {
       tx = a.ball.x; tz = a.ball.z; top = 5.6;
     } else {
@@ -1726,6 +1738,30 @@ function preparePassKick(actor, ballX, ballZ, targetX, targetZ) {
     rig.avatar.model.position.set(0, 0, 0);
     rig.avatar.model.quaternion.identity();
   }
+}
+
+/** Find an upright defender who can reach the loose ball with his boot. */
+export function prepareClearance(position, velocity) {
+  let nearest = null, best = 1.5;
+  for (const p of ambient.actors) {
+    const a = p.rig.avatar;
+    if (p.team !== 'away' || !a || a.passTime >= 0
+      || a.actions.slide_left.getEffectiveWeight() > .1 || a.actions.slide_right.getEffectiveWeight() > .1) continue;
+    const d = Math.hypot(p.x - position.x, p.z - position.z);
+    if (d < best) { nearest = p; best = d; }
+  }
+  if (!nearest) return null;
+  const x = position.x + velocity.x * .28, z = position.z + velocity.z * .28;
+  if (Math.hypot(nearest.x - x, nearest.z - z) > 1.5) return null;
+  preparePassKick(nearest, x, z, x + (x >= 0 ? 12 : -12), z + 30);
+  return nearest;
+}
+
+export function clearanceInReach(actor, position) {
+  bipedBone(actor.rig.avatar.model, 'foot_R').getWorldPosition(_instep);
+  bipedBone(actor.rig.avatar.model, 'toe_R').getWorldPosition(_toe);
+  _instep.add(_toe).multiplyScalar(.5);
+  return Math.hypot(_instep.x - position.x, _instep.y - position.y, _instep.z - position.z) < .6;
 }
 
 function updateAmbient(dt) {
@@ -1965,6 +2001,7 @@ export function watchBall(dt, live, rebound = false) {
 
   for (const p of ambient.actors) {
     if (p.rig === squad.striker) continue;
+    if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
       if (blockerSets[i].rig === p.rig) { involved = true; break; }
@@ -1984,12 +2021,13 @@ export function watchBall(dt, live, rebound = false) {
       p.targetX = bx;
       p.targetZ = Math.max(bz, GOAL.PLANE_Z + 1.4);
     }
-    if (live) {
+    if (live || p.team === 'ref') {
       const dx = p.targetX - p.x, dz = p.targetZ - p.z;
       const d = Math.hypot(dx, dz);
-      const keepOff = p.chasing ? 1.8 : .35;
+      const keepOff = p.chasing ? (p.team === 'away' ? 1.0 : 1.8) : .35;
       if (d > keepOff) {
-        const top = p.chasing ? 5.4 : lerp(1.45, .65, clamp(distance / 45, 0, 1));
+        const top = p.team === 'ref' && distance < 6 ? 3.4
+          : p.chasing ? 5.4 : lerp(1.45, .65, clamp(distance / 45, 0, 1));
         const step = Math.min(d - keepOff, top * dt, (d - keepOff) * (1 - Math.exp(-1.6 * dt)));
         p.x += (dx / d) * step;
         p.z += (dz / d) * step;
@@ -2015,6 +2053,7 @@ export function watchBall(dt, live, rebound = false) {
 
   for (const p of ambient.actors) {
     if (p.rig === squad.striker) continue;
+    if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
       if (blockerSets[i].rig === p.rig) { involved = true; break; }

@@ -58,6 +58,12 @@ js/
   goal like any other. The keeper parries away from his own goal rather than
   rebounding off a rigid limb, and gathers anything slower than 12 m/s, so
   shooting straight at him is not a strategy.
+  Rebounds have a three-second limit from their first bounce/deflection. A
+  clearance moving upfield beyond 6m from goal for 0.35 seconds resolves
+  sooner (after at least 0.45 seconds of rebound play). Goal entry is checked
+  first. Non-goal verdicts remain visible for 0.8 seconds before continuing.
+  `node tools/rebound-end.mjs` checks clearances, near-goal grace and the limit
+  at 30/60/144Hz. Very late rebound goals are intentionally cut off.
 - **The whole squad uses the Meshy Captain biped.** `assets/squad.glb` shares
   body geometry across all 22 footballers and the referee, with independent skeletons and
   materials. Fifteen performances from the updated biped pack are included:

@@ -174,6 +174,8 @@ const shot = {
   aimX: 0, thetaCentre: 0,
   swing: 0, windup: 0, resolved: null, holdTimer: 0, flightTime: 0, acc: 0,
   touched: null, contactCool: 0, restTimer: 0, entered: false, follow: 0, bounced: false,
+  reboundStart: -1, awayTimer: 0,
+  clearer: null, clearanceTime: 0, clearanceCooldown: 0,
   keeperAirY: 0, keeperAirV: 0, keeperDown: 0, keeperLaunched: false,
   keeperGround: 0, keeperSpent: false,
 };
@@ -414,6 +416,8 @@ function beginHighlight(soft) {
   shot.holdTimer = 0;
   shot.flightTime = 0;
   shot.bounced = false;
+  shot.reboundStart = -1;
+  shot.awayTimer = 0;
   shot.acc = 0;
   // A real keeper narrows the angle: he shades along his line toward the
   // shooter rather than standing centrally and waiting, so a chance from wide
@@ -528,6 +532,15 @@ function launch() {
   shot.keeperDown = 0;
   shot.keeperLaunched = false;
   shot.keeperSpent = false;
+  shot.clearer = null;
+  shot.clearanceTime = 0;
+  shot.clearanceCooldown = 0;
+  shot.touched = null;
+  shot.contactCool = 0;
+  shot.restTimer = 0;
+  shot.reboundStart = -1;
+  shot.awayTimer = 0;
+  shot.bounced = false;
   shot.entered = false;
   shot.follow = 0;
   shot.keeperGround = 0;
@@ -703,11 +716,37 @@ function substep(h) {
   prevPos.x = ballPos.x; prevPos.y = ballPos.y; prevPos.z = ballPos.z;
   stepBall(ballPos, ballVel, h);
   if (prevPos.y > TURF + 1e-4 && ballPos.y <= TURF) shot.bounced = true;
+  if (shot.reboundStart < 0 && (shot.bounced || shot.touched !== null)) shot.reboundStart = shot.flightTime;
+
+  if (shot.resolved === null && !shot.entered) updateClearance(h);
 
   if (shot.resolved === null) tryResolve();
 
   // --- Netting: a spring-damper the ball sinks into, every substep ---------
   netContact(ballPos, ballVel, h, shot.entered);
+}
+
+function updateClearance(h) {
+  shot.clearanceCooldown = Math.max(0, shot.clearanceCooldown - h);
+  if (shot.clearer) {
+    shot.clearanceTime += h;
+    if (shot.clearanceTime >= .28) {
+      if (ballPos.y < .45 && engine.clearanceInReach(shot.clearer, ballPos)) {
+        const heading = shot.clearer.rig.root.rotation.y;
+        ballVel.x = Math.sin(heading) * 18;
+        ballVel.z = Math.cos(heading) * 18;
+        ballVel.y = 4;
+        touch('defender', .3);
+      }
+      shot.clearer = null;
+      shot.clearanceCooldown = .8;
+    }
+  } else if (shot.flightTime > .35 && shot.clearanceCooldown === 0 && ballPos.y < .35
+      && Math.hypot(ballVel.x, ballVel.y, ballVel.z) < 4
+      && Math.abs(ballPos.x) < PITCH.WIDTH / 2 && ballPos.z > GOAL.PLANE_Z) {
+    shot.clearer = engine.prepareClearance(ballPos, ballVel);
+    shot.clearanceTime = 0;
+  }
 }
 
 /**
@@ -801,15 +840,29 @@ function tryResolve() {
     return;
   }
 
+  // Resolve a clearly cleared rebound before waiting for rolling drag. Keep
+  // near-goal ricochets alive, but bound the entire rebound sequence (further
+  // contacts never reset its clock). Goal entry is checked above this limit.
+  const away = ballPos.z > GOAL.PLANE_Z + 6 && ballVel.z > .8;
+  shot.awayTimer = shot.reboundStart >= 0 && away ? shot.awayTimer + PHYS_DT : 0;
+  const reboundOver = shot.reboundStart >= 0
+    && reboundIsOver(ballPos, ballVel, shot.flightTime - shot.reboundStart, shot.awayTimer);
+
   // --- Dead ball: come to rest, out of play, or simply taking too long -----
   const speed2 = ballVel.x * ballVel.x + ballVel.y * ballVel.y + ballVel.z * ballVel.z;
   shot.restTimer = (speed2 < 0.4 && ballPos.y <= TURF + 0.02) ? shot.restTimer + PHYS_DT : 0;
 
-  if (shot.restTimer > 0.35
+  if (reboundOver || shot.restTimer > 0.35
       || Math.abs(ballPos.x) > 34 || ballPos.z > 26
       || shot.flightTime > 6) {
     resolve(terminalOutcome(null));
   }
+}
+
+/** Rebounds get at most three seconds; clearances upfield can finish sooner. */
+export function reboundIsOver(position, velocity, elapsed, awayFor) {
+  return elapsed >= 3 || (elapsed >= .45 && awayFor >= .35
+    && position.z > GOAL.PLANE_Z + 6 && velocity.z > .8);
 }
 
 function updateFlight(dt) {
@@ -851,7 +904,7 @@ function resolve(outcome) {
   const run = state.run;
   shot.resolved = outcome;
   engine.cheerCrowd(outcome === 'goal');
-  shot.holdTimer = 1.7;
+  shot.holdTimer = outcome === 'goal' ? 1.7 : .8;
   run.chancesLeft = Math.max(0, run.chancesLeft - 1);
 
   if (outcome === 'goal') {
