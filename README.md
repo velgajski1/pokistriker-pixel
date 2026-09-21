@@ -44,7 +44,39 @@ js/
 - **Collision follows the animation.** The keeper's and defenders' capsules are
   read off their live rig joints, so what you see reaching for the ball is what
   the save/block test uses.
+- **Opponent and supporter colours change per match.** Five palettes cover
+  crimson, ivory, gold, forest and plum kits with contrasting goalkeeper colours.
+  Crowd shirts, scarves and flags follow the opponent, mixed with home fans and
+  neutral clothing. `run.opponentColors` and `run.crowdColorSeed` are chosen once
+  at kickoff; consecutive fixtures in a run avoid repeating a palette. Materials
+  and crowd buffers are reused. `node tools/team-colors.mjs` checks all palettes,
+  crowd variation and preservation of player skin, hair and home colours.
+- **Three pitch surfaces rotate between matches.** Emerald stripes, summer
+  checkerboard and worn diagonal turf combine mowing patterns, colour variation,
+  goal-mouth wear and a fine grass bump texture. All maps are generated once at
+  boot. `run.pitchSurface` is randomly selected at match start and retained for
+  every chance; consecutive matches can draw the same surface. This is visual
+  only and does not change ball physics.
+- **The ball uses the supplied Meshy soccer GLB.** `assets/ball.glb` keeps its
+  panel geometry and textures at 6,000 triangles and 1024 px. Rebuild it with
+  Blender using `tools/blender/build_ball.py`. The model is centred and scaled
+  at boot to the 11 cm collision radius; loading failure retains the procedural
+  ball. Physics and kick timing are unchanged.
+- **Advertising boards rebound the ball.** All four pitch-side boards share
+  their dimensions with swept collision boxes, including their top and ends.
+  Impacts retain 55% of normal speed and 90% of tangential speed; balls above
+  the boards can clear them. Collisions continue during the verdict display,
+  without changing an already out-of-play result. `node tools/advertising-boards.mjs`
+  checks rebounds at 30/60/144 Hz, tunneling and rendered board alignment.
 - **The net is four real surfaces, and it stretches.** Back, both sides and
+  roof use square cord grids, with rear uprights and support rails on both
+  goals. Net motion integrates at 240Hz and continues until it settles.
+  Contacting cords wrap around the ball while ripples spread outwards;
+  progressive tension catches hard shots and caps release at 0.8m/s so the
+  ball drops inside the goal. Pockets clear when play leaves the goal.
+  `node tools/goal-net.mjs` tests back, side, roof, corner and 60m/s impacts
+  at 30/60/144Hz, plus visible deformation and settling.
+  The back, both sides and
   roof are spring-dampers the ball sinks into, not walls it bounces off - a
   35 m/s shot opens a pocket about half a metre deep. The damping is
   asymmetric (light going in, heavy coming out), because netting is lossy
@@ -118,13 +150,27 @@ js/
   near their position, releasing it beyond 10m or when it leaves play. Distant
   players walk at 0.65–1.45m/s toward their formation targets, shifting at most
   4m sideways from their home lane and moving up/down the pitch with the ball.
-  Referees hold a support position rather than chase. Scripted build-up runs
+  The referee seeks an 8m buffer from the ball, retreating at up to 3.4m/s
+  when play comes within 6m, including during aiming. Scripted build-up runs
   retain their dedicated movement. The two closest opposing outfield players
   always close down during live play, regardless of distance or whether the
   ball has bounced. The selection updates with the ball; active shot blockers
   can join the approach and use their leg block when close enough.
+  The closest defender sprints immediately at 7.2m/s, slowing only on reaching
+  the ball. The nearest available attacker within 18m also sprints to contest
+  it; the shooter becomes available after 0.9s of kick recovery. Other players
+  retain their formation behavior. `BALL_PURSUIT` in app.js controls these values.
   Even small translations play the walking cycle at the corresponding speed;
   formation spacing nudges and the far goalkeeper's adjustments are included.
+  Locomotion uses the final frame displacement, so a later defensive Alert
+  pose cannot overwrite a moving player's footsteps. `node tools/glide.mjs`
+  reproduces and checks that movement/pose ordering.
+  Upright defenders can clear loose balls below 0.35m and 7m/s when within
+  boot reach. They plant and play the soccer kick; at contact, a reachable
+  ball is sent upfield and wide at 18m/s with a small lift. Fast balls and
+  defenders still sliding do not trigger clearance attempts. The existing
+  rebound deadline still applies. `node tools/clearance.mjs` verifies referee
+  retreat, clearance contact and fast-shot exclusion.
   `window.__demo.formation` exposes actors and their targets for diagnostics;
   `node tools/formation.mjs` checks rebound pursuit, lane retention and motion
   at 30, 60 and 144Hz.

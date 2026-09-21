@@ -11,7 +11,7 @@ import {
   GOAL, PITCH, GROUND_Y, BALL_R, PHYS_DT, GRAVITY, hit,
   launchVector, stepBall, crossedGoalPlane, planeIntersection,
   classifyAtPlane, hitWoodwork, sweptCapsuleHit, reflect, predictCrossing,
-  aimAngleFor, netContact, closestPointOnSegment, GROUND_Y as TURF,
+  aimAngleFor, netContact, hitAdvertisingBoards, closestPointOnSegment, GROUND_Y as TURF,
 } from './physics.js';
 
 // ===========================================================================
@@ -234,8 +234,30 @@ function confidenceMaxForNewRun() {
   return MORALE.BASE_MAX * (1 + 0.05 * (state.career.meta.pet || 0));
 }
 
+export const OPPONENT_COLORS = [
+  { name: 'Crimson', kit: 0xc92f43, shorts: 0x20232b, socks: 0xc92f43, accent: 0xf4e8d2,
+    keeper: { kit: 0xf2af32, shorts: 0x252b33, socks: 0xf2af32 } },
+  { name: 'Ivory', kit: 0xeee9db, shorts: 0x37333a, socks: 0xeee9db, accent: 0xb62e42,
+    keeper: { kit: 0xef8235, shorts: 0x27222d, socks: 0xef8235 } },
+  { name: 'Gold', kit: 0xf2c344, shorts: 0x28272b, socks: 0xf2c344, accent: 0x28272b,
+    keeper: { kit: 0xd35b9d, shorts: 0x302439, socks: 0xd35b9d } },
+  { name: 'Forest', kit: 0x268153, shorts: 0xece9db, socks: 0x268153, accent: 0xece9db,
+    keeper: { kit: 0xf28a36, shorts: 0x2a2630, socks: 0xf28a36 } },
+  { name: 'Plum', kit: 0x963966, shorts: 0xe8e3db, socks: 0x963966, accent: 0xe8e3db,
+    keeper: { kit: 0xd8da4c, shorts: 0x292c32, socks: 0xd8da4c } },
+];
+
 function startMatch() {
   const run = state.run;
+  run.pitchSurface = Math.floor(Math.random() * engine.PITCH_SURFACES.length);
+  engine.setPitchSurface(run.pitchSurface);
+  // Draw a different opponent palette for the next fixture in this run.
+  const previousColors = run.opponentColors;
+  let colors = Math.floor(Math.random() * (OPPONENT_COLORS.length - (previousColors === undefined ? 0 : 1)));
+  if (previousColors !== undefined && colors >= previousColors) colors++;
+  run.opponentColors = colors;
+  run.crowdColorSeed = Math.floor(Math.random() * 0xffffffff);
+  engine.setMatchColors(OPPONENT_COLORS[colors], run.crowdColorSeed);
   run.clock = 0;
   run.matchGoals = 0;
   run.tickerAt = 0;
@@ -723,10 +745,11 @@ function substep(h) {
   if (shot.resolved === null) tryResolve();
 
   // --- Netting: a spring-damper the ball sinks into, every substep ---------
-  netContact(ballPos, ballVel, h, shot.entered);
+  netContact(ballPos, ballVel, h, shot.entered, prevPos);
+  hitAdvertisingBoards(prevPos, ballPos, ballVel, h);
 }
 
-function updateClearance(h) {
+export function updateClearance(h) {
   shot.clearanceCooldown = Math.max(0, shot.clearanceCooldown - h);
   if (shot.clearer) {
     shot.clearanceTime += h;
@@ -742,7 +765,7 @@ function updateClearance(h) {
       shot.clearanceCooldown = .8;
     }
   } else if (shot.flightTime > .35 && shot.clearanceCooldown === 0 && ballPos.y < .35
-      && Math.hypot(ballVel.x, ballVel.y, ballVel.z) < 4
+      && Math.hypot(ballVel.x, ballVel.y, ballVel.z) < BALL_PURSUIT.clearanceMaxSpeed
       && Math.abs(ballPos.x) < PITCH.WIDTH / 2 && ballPos.z > GOAL.PLANE_Z) {
     shot.clearer = engine.prepareClearance(ballPos, ballVel);
     shot.clearanceTime = 0;
@@ -852,7 +875,7 @@ function tryResolve() {
   const speed2 = ballVel.x * ballVel.x + ballVel.y * ballVel.y + ballVel.z * ballVel.z;
   shot.restTimer = (speed2 < 0.4 && ballPos.y <= TURF + 0.02) ? shot.restTimer + PHYS_DT : 0;
 
-  if (reboundOver || shot.restTimer > 0.35
+  if (reboundOver || (!shot.clearer && shot.restTimer > 0.35)
       || Math.abs(ballPos.x) > 34 || ballPos.z > 26
       || shot.flightTime > 6) {
     resolve(terminalOutcome(null));
@@ -865,9 +888,12 @@ export function reboundIsOver(position, velocity, elapsed, awayFor) {
     && position.z > GOAL.PLANE_Z + 6 && velocity.z > .8);
 }
 
+export const BALL_PURSUIT = { sprintSpeed: 7.2, attackerRange: 18, clearanceMaxSpeed: 7 };
+
 function updateFlight(dt) {
   // Follow only nearby loose rebounds; distant teammates retain their lanes.
-  engine.watchBall(dt, true, shot.resolved === null && (shot.bounced || shot.touched !== null));
+  engine.watchBall(dt, shot.resolved === null, shot.resolved === null && (shot.bounced || shot.touched !== null),
+    BALL_PURSUIT, shot.flightTime >= .9);
   if (shot.bounced || shot.touched !== null) engine.followReboundCamera(dt);
   engine.faceKeeper(dt, 0);            // square up to dive along the goal line
   if (shot.flightTime > 0.12 && shot.resolved === null && shot.follow < 2.4) {
@@ -890,7 +916,9 @@ function updateFlight(dt) {
     substep(PHYS_DT);
   }
 
-  engine.setStrikerKick(1, shot.flightTime);
+  if (!(engine.formation.attacker?.rig.root === engine.striker.root && engine.formation.attacker.chasing)) {
+    engine.setStrikerKick(1, shot.flightTime);
+  }
   engine.setBall(ballPos);
   engine.spinBall(ballVel.x, ballVel.z, dt);
 
@@ -1079,10 +1107,11 @@ async function boot() {
   window.__demo = {
     renderer: engine.renderer, scene: engine.scene, camera: engine.camera,
     state, shot, ball: engine.objects.ball, ready: false,
+    ballState: { position: ballPos, velocity: ballVel },
     crowd: engine.crowd, formation: engine.formation,
     dimensions: { goal: GOAL, pitch: PITCH, ballRadius: BALL_R },
   };
-  await engine.loadStriker();
+  await Promise.all([engine.loadStriker(), engine.loadBall()]);
   window.__demo.striker = engine.striker;
   window.__demo.players = engine.players;
   window.__demo.lastLaunch = engine.lastLaunch;

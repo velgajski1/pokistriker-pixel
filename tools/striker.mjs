@@ -135,7 +135,10 @@ try {
   const delta = instep.map((value, i) => value - ball[i]);
   report.contactDistance = Math.hypot(...delta);
   report.contactBehind = delta[0] * Math.sin(samples.theta) - delta[2] * Math.cos(samples.theta);
-  const ballRadius = await page.evaluate(() => window.__demo.ball.geometry.parameters.radius);
+  const ballRadius = await page.evaluate(() => {
+    window.__demo.ball.geometry.computeBoundingSphere();
+    return window.__demo.ball.geometry.boundingSphere.radius;
+  });
   assert(Math.abs(report.contactDistance - ballRadius) <= 0.05, 'Instep missed ball');
   assert(report.contactBehind < 0, 'Instep is ahead of ball');
   report.handoverDegrees = samples.jump * 180 / Math.PI;

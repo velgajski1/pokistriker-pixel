@@ -9,7 +9,8 @@ try {
   const { page } = session;
   await page.evaluate(async () => {
     const e = await import('../js/gameEngine.js');
-    e.onFrame(null);
+    window.__gaitSpeed = 0;
+    e.onFrame(dt => { __animationRig.root.position.z += window.__gaitSpeed * dt; });
     window.__animationRig = __demo.players.find(p => p.role === 'outfield').rig;
     __animationRig.avatar.procedural = false;
     __animationRig.avatar.passTime = -1;
@@ -23,6 +24,7 @@ try {
     await page.evaluate(({ speed, runName }) => {
       const a = __animationRig.avatar;
       a.speed = speed * a.scale;
+      window.__gaitSpeed = a.speed;
       a.runName = runName;
     }, { speed, runName });
     await page.waitForTimeout(100);
@@ -38,6 +40,7 @@ try {
     await page.evaluate(({ speed, rate }) => {
       const a = __animationRig.avatar;
       a.speed = speed * a.scale; a.turnRate = rate; a.turnTime = -1;
+      window.__gaitSpeed = a.speed;
     }, { speed, rate });
     await page.waitForTimeout(180);
     const weight = await page.evaluate(name => __animationRig.avatar.actions[name].getEffectiveWeight(), expected);

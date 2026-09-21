@@ -51,15 +51,31 @@ try {
     d.ball.position.set(25, .11, 20);
     run(60, 1, true);
     const released = !left.chasing;
+    reset();
+    const mate = actors.find(p => p.team === 'home' && p.rig.root !== d.striker.root);
+    d.ball.position.set(mate.x + 5, .11, mate.z);
+    e.watchBall(1 / 60, true, true);
+    const attacker = { selected: d.formation.attacker === mate, chasing: mate.chasing, speed: mate.speed };
+    reset();
+    const shooter = actors.find(p => p.rig.root === d.striker.root);
+    d.ball.position.set(shooter.x + 4, .11, shooter.z);
+    e.watchBall(1 / 60, true, true, null, false);
+    const kickProtected = !shooter.chasing;
+    e.watchBall(1 / 60, true, true, null, true);
+    const shooterChase = shooter.chasing && shooter.speed > 7 && d.striker.speed > 7;
     d.ball.position.set(-12, .11, -22);
     e.watchBall(1 / 60, true, true);
-    return { far, near, beforeBounce, closestPress, distantPress, released, outOfPlayChasers: actors.filter(p => p.chasing).length };
+    return { far, near, beforeBounce, closestPress, distantPress, released, attacker, kickProtected, shooterChase,
+      outOfPlayChasers: actors.filter(p => p.chasing).length };
   });
   const m = report.movement;
   assert(m.far.every(p => p.x < -6 && p.z > -14 && p.speed <= 1.45 && !p.chasing), 'Far fullback must walk higher while retaining his wing');
   assert(m.far.every(p => Math.hypot(p.x - m.far[0].x, p.z - m.far[0].z) < .06), 'Formation movement differs across frame rates');
   assert(m.beforeBounce && m.closestPress && m.distantPress, 'The two closest defenders must close down before a bounce, regardless of distance');
   assert(m.near.chasing && m.near.closed > 1 && m.near.speed > 1.45, 'Nearby defenders must approach the ball');
+  assert(m.near.speed > 7 && m.near.closed >= 3.59, 'Nearest defender must sprint without easing off early');
+  assert(m.attacker.selected && m.attacker.chasing && m.attacker.speed > 7, 'Nearest available attacker must sprint to the ball');
+  assert(m.kickProtected && m.shooterChase, 'Shooter must finish his kick before chasing with locomotion');
   assert(m.released && m.outOfPlayChasers === 0, 'Chasers must release distant or out-of-play balls');
 } catch (error) {
   report.failures.push(String(error));

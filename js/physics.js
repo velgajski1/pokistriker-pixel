@@ -21,6 +21,15 @@ export const GOAL = {
   BAR_Y:    2.50,   // crossbar centre axis
 };
 export const PITCH = { WIDTH: 68, LENGTH: 105 };
+export const BOARD_HEIGHT = 1.15;
+export const BOARD_THICKNESS = .25;
+const BOARD_HALF = BOARD_THICKNESS / 2;
+export const AD_BOARDS = [
+  { minX: -40, maxX: 40, minZ: GOAL.PLANE_Z - 7.9 - BOARD_HALF, maxZ: GOAL.PLANE_Z - 7.9 + BOARD_HALF },
+  { minX: -40, maxX: 40, minZ: GOAL.PLANE_Z + PITCH.LENGTH + 7.9 - BOARD_HALF, maxZ: GOAL.PLANE_Z + PITCH.LENGTH + 7.9 + BOARD_HALF },
+  { minX: -37.9 - BOARD_HALF, maxX: -37.9 + BOARD_HALF, minZ: GOAL.PLANE_Z + PITCH.LENGTH / 2 - 57, maxZ: GOAL.PLANE_Z + PITCH.LENGTH / 2 + 57 },
+  { minX: 37.9 - BOARD_HALF, maxX: 37.9 + BOARD_HALF, minZ: GOAL.PLANE_Z + PITCH.LENGTH / 2 - 57, maxZ: GOAL.PLANE_Z + PITCH.LENGTH / 2 + 57 },
+];
 
 export const GRAVITY   = -9.81;
 export const BALL_R    = 0.11;     // 69.1 cm circumference, size five
@@ -31,6 +40,53 @@ export const POST_RESTITUTION = 0.55;
 
 /** Fixed integration substep. 240Hz -> at most 0.17m of travel per test. */
 export const PHYS_DT = 1 / 240;
+
+/** Swept sphere against board boxes, including ends and top edges. Resolve
+ * the unused part of the substep after impact, so fast balls cannot tunnel. */
+export function hitAdvertisingBoards(previous, position, velocity, dt) {
+  let sx = previous.x, sy = previous.y, sz = previous.z;
+  let remaining = dt, hit = false;
+  for (let bounce = 0; bounce < 3; bounce++) {
+    const dx = position.x - sx, dy = position.y - sy, dz = position.z - sz;
+    let first = 2, nx = 0, ny = 0, nz = 0;
+    for (const board of AD_BOARDS) {
+      let enter = 0, leave = 1, ax = 0, ay = 0, az = 0, valid = true;
+      for (let axis = 0; axis < 3; axis++) {
+        const start = axis === 0 ? sx : axis === 1 ? sy : sz;
+        const delta = axis === 0 ? dx : axis === 1 ? dy : dz;
+        const min = (axis === 0 ? board.minX : axis === 1 ? 0 : board.minZ) - BALL_R;
+        const max = (axis === 0 ? board.maxX : axis === 1 ? BOARD_HEIGHT : board.maxZ) + BALL_R;
+        if (Math.abs(delta) < 1e-10) {
+          if (start < min || start > max) { valid = false; break; }
+          continue;
+        }
+        let near = (min - start) / delta, far = (max - start) / delta;
+        const sign = delta > 0 ? -1 : 1;
+        if (near > far) { const swap = near; near = far; far = swap; }
+        if (near >= enter) {
+          enter = near; ax = axis === 0 ? sign : 0; ay = axis === 1 ? sign : 0; az = axis === 2 ? sign : 0;
+        }
+        leave = Math.min(leave, far);
+        if (enter > leave) { valid = false; break; }
+      }
+      if (valid && enter <= 1 && leave >= 0 && (ax || ay || az) && enter < first) {
+        first = enter; nx = ax; ny = ay; nz = az;
+      }
+    }
+    if (first > 1) break;
+    hit = true;
+    sx += dx * first + nx * .001; sy += dy * first + ny * .001; sz += dz * first + nz * .001;
+    const normalSpeed = velocity.x * nx + velocity.y * ny + velocity.z * nz;
+    velocity.x = (velocity.x - normalSpeed * nx) * .9 - normalSpeed * nx * .55;
+    velocity.y = (velocity.y - normalSpeed * ny) * .9 - normalSpeed * ny * .55;
+    velocity.z = (velocity.z - normalSpeed * nz) * .9 - normalSpeed * nz * .55;
+    remaining *= 1 - first;
+    position.x = sx + velocity.x * remaining;
+    position.y = Math.max(GROUND_Y, sy + velocity.y * remaining);
+    position.z = sz + velocity.z * remaining;
+  }
+  return hit;
+}
 
 // ---- Ball mechanics --------------------------------------------------------
 export const AIM_CLAMP = 0.9;    // hard bound on arrow angle, radians
@@ -245,15 +301,16 @@ export function hitWoodwork(from, to, pos, vel) {
 // ---------------------------------------------------------------------------
 export const NET = {
   DEPTH: 2.0,
-  STIFFNESS: 3000,     // restoring force per metre of stretch, per unit mass
+  STIFFNESS: 900,      // soft initial give, firmer as the cords stretch
   // Netting is lossy, not springy: it takes the ball deep (light damping on
   // the way in) and then refuses to give the energy back (heavy on the way
   // out). Symmetric damping either kills the stretch or turns it into a
   // trampoline; this gets a deep pocket AND a dead ball.
-  DAMPING_IN: 10,
-  DAMPING_OUT: 130,
-  MAX_STRETCH: 1.15,   // hard backstop so nothing can ever be pushed through
-  FRICTION: 7.5,       // tangential drag while pressed into the mesh, per second
+  DAMPING_IN: 18,
+  DAMPING_OUT: 45,
+  MAX_STRETCH: .85,    // hard backstop so nothing can ever be pushed through
+  FRICTION: 5.5,       // tangential drag while pressed into the mesh, per second
+  RELEASE_SPEED: .8,   // loose cords return a gentle pop, not a hard-wall rebound
 };
 
 export const NET_PANELS = [
@@ -268,7 +325,11 @@ export const NET_PANELS = [
  * in world space. The renderer reads this to shape the mesh, so what is drawn
  * is the same pocket the ball is actually resting in.
  */
-export const netPockets = NET_PANELS.map(() => ({ depth: 0, x: 0, y: 0, z: 0, touched: false }));
+export const netPockets = NET_PANELS.map(() => ({ depth: 0, x: 0, y: 0, z: 0, touched: false, side: 1 }));
+
+export function releaseNetPockets() {
+  for (const pocket of netPockets) { pocket.touched = false; pocket.depth = 0; }
+}
 
 /**
  * Continuous ball-vs-netting contact, called once per physics substep.
@@ -278,51 +339,69 @@ export const netPockets = NET_PANELS.map(() => ({ depth: 0, x: 0, y: 0, z: 0, to
  * tension stops it, and the damping means almost none of that energy comes
  * back, so the ball drops out of the pocket instead of rebounding.
  */
-export function netContact(pos, vel, dt, inside) {
-  let struck = -1;
-  // Only a ball that actually entered through the mouth may touch the net.
-  // Without this, one sailing OVER the bar clips the roof panel from above
-  // and gets pushed down into the goal, and one wide of the post gets pushed
-  // back in through the side.
-  if (!inside || pos.z > GOAL.PLANE_Z) {
-    for (const k of netPockets) k.touched = false;
-    return -1;
-  }
+function withinNetPanel(i, x, y, z, margin) {
+  const across = Math.abs(x) <= GOAL.HALF_W + margin;
+  const height = y >= -margin && y <= GOAL.HEIGHT + margin;
+  const depth = z >= GOAL.PLANE_Z - NET.DEPTH - margin && z <= GOAL.PLANE_Z + margin;
+  return i === 0 ? across && height : i === 3 ? across && depth : height && depth;
+}
 
+export function netContact(pos, vel, dt, inside, previous = null) {
+  let struck = -1;
   for (let i = 0; i < NET_PANELS.length; i++) {
     const p = NET_PANELS[i];
     const pocket = netPockets[i];
-    const c = p.axis === 'x' ? pos.x : p.axis === 'y' ? pos.y : pos.z;
-
-    // Signed gap to the rest surface; negative means the mesh is stretched.
-    const gap = p.n * (c - p.at) - BALL_R;
+    const c = pos[p.axis];
+    const px = previous ? previous.x : pos.x - vel.x * dt;
+    const py = previous ? previous.y : pos.y - vel.y * dt;
+    const pz = previous ? previous.z : pos.z - vel.z * dt;
+    const start = p.axis === 'x' ? px : p.axis === 'y' ? py : pz;
+    // Latch the contact side until release: a stretching net must never flip
+    // its normal when the ball centre passes through the undeformed plane.
+    const side = pocket.touched ? pocket.side : (start - p.at) * p.n >= 0 ? 1 : -1;
+    const normal = p.n * side;
+    const gap = normal * (c - p.at) - BALL_R;
     if (gap >= 0) { pocket.touched = false; continue; }
-
+    const startGap = normal * (start - p.at) - BALL_R;
+    const t = startGap > 0 ? Math.min(1, startGap / (startGap - gap)) : 0;
+    const valid = pocket.touched
+      ? withinNetPanel(i, pos.x, pos.y, pos.z, BALL_R + NET.MAX_STRETCH)
+      : withinNetPanel(i, px + (pos.x - px) * t, py + (pos.y - py) * t,
+        pz + (pos.z - pz) * t, BALL_R);
+    if (!valid) { pocket.touched = false; continue; }
     const pen = -gap;
-    const vn = (p.axis === 'x' ? vel.x : p.axis === 'y' ? vel.y : vel.z) * p.n;
-
+    const vn = vel[p.axis] * normal;
     // Tension pushes back along the inward normal; damping bleeds the energy.
     const damp = vn < 0 ? NET.DAMPING_IN : NET.DAMPING_OUT;
-    const accel = NET.STIFFNESS * pen - damp * vn;
-    if (p.axis === 'x') vel.x += accel * p.n * dt;
-    else if (p.axis === 'y') vel.y += accel * p.n * dt;
-    else vel.z += accel * p.n * dt;
+    // Cords may push the ball back in, never suck it back into the pocket.
+    // Progressive tension gives a satisfying deep hit without a trampoline.
+    const accel = Math.max(0, (NET.STIFFNESS + 2400 * pen * pen) * pen - damp * vn);
+    if (p.axis === 'x') vel.x += accel * normal * dt;
+    else if (p.axis === 'y') vel.y += accel * normal * dt;
+    else vel.z += accel * normal * dt;
+    const release = (p.axis === 'x' ? vel.x : p.axis === 'y' ? vel.y : vel.z) * normal;
+    if (release > NET.RELEASE_SPEED) {
+      if (p.axis === 'x') vel.x = NET.RELEASE_SPEED * normal;
+      else if (p.axis === 'y') vel.y = NET.RELEASE_SPEED * normal;
+      else vel.z = NET.RELEASE_SPEED * normal;
+    }
 
     // Drag across the face of the mesh.
-    const drag = Math.max(0, 1 - NET.FRICTION * dt);
+    const drag = Math.exp(-NET.FRICTION * dt);
     if (p.axis === 'x') { vel.y *= drag; vel.z *= drag; }
     else if (p.axis === 'y') { vel.x *= drag; vel.z *= drag; }
     else { vel.x *= drag; vel.y *= drag; }
 
     // Backstop: nothing gets through, however hard it is hit.
     if (pen > NET.MAX_STRETCH) {
-      const fix = (pen - NET.MAX_STRETCH) * p.n;
+      const fix = (pen - NET.MAX_STRETCH) * normal;
       if (p.axis === 'x') { pos.x += fix; if (vn < 0) vel.x = 0; }
       else if (p.axis === 'y') { pos.y += fix; if (vn < 0) vel.y = 0; }
       else { pos.z += fix; if (vn < 0) vel.z = 0; }
     }
 
-    pocket.depth = Math.min(pen, NET.MAX_STRETCH);
+    pocket.depth = Math.min(pen, NET.MAX_STRETCH) * side;
+    pocket.side = side;
     pocket.touched = true;
     pocket.x = pos.x; pocket.y = pos.y; pocket.z = pos.z;
     struck = i;

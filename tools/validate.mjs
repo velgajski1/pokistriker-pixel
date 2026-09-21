@@ -12,6 +12,20 @@ try {
   assert(await page.evaluate(() => window.__demo.striker.model === 'captain'), 'Captain did not load');
   page.setDefaultTimeout(15000);
   report.gpu = await gpuString(page);
+  await page.evaluate(() => {
+    const d = window.__demo;
+    window.__pitchCheck = { match: null, surface: null, colors: null, changesWithinMatch: 0 };
+    const checkPitch = () => {
+      const run = d.state.run, check = window.__pitchCheck;
+      if (d.state.screen === 'MATCH' && run) {
+        const surface = d.scene.getObjectByName('pitch-turf').material.map.uuid;
+        if (check.match === run.match && (check.surface !== surface || check.colors !== run.opponentColors)) check.changesWithinMatch++;
+        check.match = run.match; check.surface = surface; check.colors = run.opponentColors;
+      }
+      requestAnimationFrame(checkPitch);
+    };
+    checkPitch();
+  });
   const phase = wanted => page.waitForFunction(value => window.__demo.state.phase === value, wanted);
   const shoot = async () => {
     await page.keyboard.press('Space');
@@ -56,6 +70,8 @@ try {
     }
   }
   report.frameStats = frameStats(await page.evaluate(() => window.__smokeFrames.samples));
+  report.pitchStable = await page.evaluate(() => window.__pitchCheck.changesWithinMatch === 0);
+  assert(report.pitchStable, 'Pitch texture changed within a match');
   if (report.frameStats.p95 >= 25) {
     const message = `SIM frame p95 ${report.frameStats.p95.toFixed(2)} ms exceeds budget`;
     if (/SwiftShader|llvmpipe/i.test(report.gpu)) report.warnings.push(message);

@@ -17,7 +17,8 @@
  * exactly what the save/block test uses.
  */
 import * as THREE from 'three';
-import { GOAL, PITCH, BALL_START, BALL_R, NET, netPockets } from './physics.js';
+import { GOAL, PITCH, BALL_START, BALL_R, NET, netPockets, releaseNetPockets,
+  AD_BOARDS, BOARD_HEIGHT, BOARD_THICKNESS } from './physics.js';
 
 // ---- File-scope scratch. Never allocate inside the rAF path. --------------
 const _camTarget = new THREE.Vector3(0, 1.35, GOAL.PLANE_Z);
@@ -374,6 +375,7 @@ function buildHumanoid({ kit, shorts, socks, boots, gloves, number, lite }, look
   body.add(neckMarker);
 
   return { root, body, arms, legs, hipMarker, neckMarker, scale: look.height,
+    kitMaterials: { kit: matKit, shorts: matShorts, socks: matSocks },
     look, kit: { kit, shorts, socks, boots, gloves }, avatar: null };
 }
 
@@ -384,6 +386,49 @@ const KIT_HOME = { kit: 0x2f6bff, shorts: 0xf4f7fa, socks: 0x2f6bff, boots: 0x10
 const KIT_AWAY = { kit: 0xe23b4e, shorts: 0x1b1f27, socks: 0xe23b4e, boots: 0x0f1116 };
 const KIT_REF  = { kit: 0x14181f, shorts: 0x14181f, socks: 0x14181f, boots: 0x0a0c10 };
 const KIT_KEEP = { kit: 0xff8a2b, shorts: 0x14202e, socks: 0x1b2836, boots: 0x0c1017, gloves: 0xe8f0ff };
+
+function recolourKit(rig, kit) {
+  for (const region of ['kit', 'shorts', 'socks']) {
+    rig.kit[region] = kit[region];
+    rig.kitMaterials[region].color.setHex(kit[region]);
+  }
+  rig.avatar?.model.traverse(node => {
+    if (node.isMesh && Object.hasOwn(kit, node.material.name)) {
+      node.material.color.setHex(kit[node.material.name]);
+    }
+  });
+}
+
+/** Match-only recolouring: reuse all rig materials and crowd instance buffers. */
+export function setMatchColors(theme, seed) {
+  for (const rig of squad.foes) recolourKit(rig, theme);
+  recolourKit(squad.keeper, theme.keeper);
+  const tint = new THREE.Color();
+  for (const mesh of crowd.batches) {
+    const part = mesh.userData.part;
+    if (part !== 0 && part !== 5 && part !== 6) continue;
+    for (let i = 0; i < mesh.count; i++) {
+      const hash = (Math.imul(i + 1 + mesh.userData.pose * 917, 1664525) + seed) >>> 0;
+      const awayFan = hash % 10 < 7;
+      const primary = awayFan ? theme.kit : KIT_HOME.kit;
+      const accent = awayFan ? theme.accent : KIT_HOME.shorts;
+      const shirt = hash % 17 === 0 ? 0xd9d5c9 : hash % 13 === 0 ? 0x30343a
+        : hash % 5 === 0 ? accent : primary;
+      tint.setHex(part === 0 ? shirt : part === 5 ? primary : accent);
+      if (part === 0) tint.multiplyScalar(.78 + ((hash >>> 8) % 23) / 100);
+      mesh.setColorAt(i, tint);
+    }
+    mesh.instanceColor.needsUpdate = true;
+  }
+  if (supporterFlagMap) {
+    const canvas = supporterFlagMap.image, paint = canvas.getContext('2d');
+    for (let i = 0; i < 8; i++) {
+      paint.fillStyle = '#' + (i % 2 ? theme.accent : theme.kit).toString(16).padStart(6, '0');
+      paint.fillRect(i * 16, 0, 16, 64);
+    }
+    supporterFlagMap.needsUpdate = true;
+  }
+}
 
 const squad = { keeper: null, homeKeeper: null, striker: null, mates: [], foes: [], ref: null };
 
@@ -478,6 +523,7 @@ async function loadCaptain() {
       if (rig.avatar) rig.avatar.idleName = rig === squad.keeper || rig === squad.homeKeeper
         ? 'keeper_idle' : squad.foes.includes(rig) ? 'alert' : 'idle';
       players.push({ rig, root: rig.root, model: avatarModel, look: rig.look,
+        motionX: rig.root.position.x, motionZ: rig.root.position.z,
         team: rig === squad.ref ? 'ref' : rig === squad.keeper || squad.foes.includes(rig) ? 'away' : 'home',
         role: rig === squad.keeper || rig === squad.homeKeeper ? 'keeper'
           : rig === squad.striker ? 'striker' : rig === squad.ref ? 'referee' : 'outfield' });
@@ -652,6 +698,28 @@ function animateSquad(dt) {
     if (a.passTime >= 0) sampleKick(a, passClipTime(a, dt));
     else sampleLocomotion(a, a.speed, dt);
     a.mixer.update(dt);
+  }
+}
+
+/** Use the final rendered displacement, after AI, collision poses and spacing.
+ * A blocker could previously be moved by the chase controller and then have
+ * its walking pose overwritten with Alert during the physics substeps. */
+function syncPlayerLocomotion(dt) {
+  for (const player of players) {
+    const r = player.rig, a = r.avatar;
+    const distance = Math.hypot(r.root.position.x - player.motionX, r.root.position.z - player.motionZ);
+    player.motionX = r.root.position.x;
+    player.motionZ = r.root.position.z;
+    if (!a || player.role === 'keeper' || a.passTime >= 0 || distance > 2) continue;
+    const speed = distance / Math.max(dt, .001);
+    if (a.procedural) {
+      // Preserve committed dives/blocks/slides; replace only a standing alert.
+      if (speed <= .00001 || a.actions.alert.getEffectiveWeight() < .99) continue;
+      a.turnTime = -1;
+      a.turnRate = 0;
+      poseRun(r, a.phase, speed / 4.5);
+    }
+    a.speed = speed;
   }
 }
 
@@ -847,19 +915,78 @@ export function getBlockerCapsules() {
 // ---------------------------------------------------------------------------
 // Arena
 // ---------------------------------------------------------------------------
-function turfTexture() {
+const turfMaps = [];
+let turfMaterial;
+export const PITCH_SURFACES = ['Emerald stripes', 'Summer checkerboard', 'Worn diagonal'];
+
+function turfTexture(variant) {
+  const c = document.createElement('canvas');
+  c.width = 1024; c.height = 1536;
+  const g = c.getContext('2d');
+  let seed = 7351 + variant * 919;
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  const colors = [[48, 100, 43], [76, 111, 46], [65, 98, 46]];
+  const base = colors[variant];
+  const pixels = g.createImageData(c.width, c.height);
+  for (let y = 0; y < c.height; y++) {
+    const z = (y / c.height - .5) * 145;
+    for (let x = 0; x < c.width; x++) {
+      const px = (x / c.width - .5) * 120;
+      const inPitch = Math.abs(px) < PITCH.WIDTH / 2 && Math.abs(z) < PITCH.LENGTH / 2;
+      const band = variant === 0 ? Math.floor((z + 52.5) / 8.08)
+        : variant === 1 ? Math.floor((px + 34) / 8.5) + Math.floor((z + 52.5) / 8.08)
+        : Math.floor((px + z + 100) / 8);
+      const mowing = inPitch ? (band % 2 ? 6 : -5) : -9;
+      const mottling = Math.sin(px * .53 + Math.sin(z * .31)) * 2.5
+        + Math.sin(z * 1.7 + px * .77) * 1.5;
+      const grain = (random() - .5) * 16;
+      const i = (y * c.width + x) * 4;
+      pixels.data[i] = base[0] + mowing + mottling + grain;
+      pixels.data[i + 1] = base[1] + mowing + mottling + grain;
+      pixels.data[i + 2] = base[2] + mowing * .6 + mottling + grain * .6;
+      pixels.data[i + 3] = 255;
+    }
+  }
+  g.putImageData(pixels, 0, 0);
+  // Soft wear around both goal mouths and midfield, never baked-in markings.
+  for (let i = 0; i < (variant === 2 ? 180 : 55); i++) {
+    const end = i % 3;
+    const x = c.width * .5 + (random() - .5) * (end === 2 ? 160 : 90);
+    const y = c.height * (.5 + (end === 2 ? 0 : end === 0 ? -49 / 145 : 49 / 145))
+      + (random() - .5) * 75;
+    const radius = 4 + random() * 21;
+    const patch = g.createRadialGradient(x, y, 0, x, y, radius);
+    patch.addColorStop(0, variant === 2 ? 'rgba(151,124,68,.13)' : 'rgba(131,125,65,.06)');
+    patch.addColorStop(1, 'rgba(131,125,65,0)');
+    g.fillStyle = patch; g.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  t.name = PITCH_SURFACES[variant];
+  return t;
+}
+
+function turfDetail() {
   const c = document.createElement('canvas');
   c.width = c.height = 256;
   const g = c.getContext('2d');
-  for (let i = 0; i < 8; i++) {
-    g.fillStyle = i % 2 ? '#1d5f34' : '#19532d';
-    g.fillRect(0, i * 32, 256, 32);
+  g.fillStyle = '#808080'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 18000; i++) {
+    const tone = 60 + (Math.random() * 135) | 0;
+    g.fillStyle = `rgb(${tone},${tone},${tone})`;
+    g.fillRect(Math.random() * 256, Math.random() * 256, .7, 1 + Math.random() * 3);
   }
   const t = new THREE.CanvasTexture(c);
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(6, 9);
-  t.anisotropy = 4;
+  t.repeat.set(80, 97);
+  t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   return t;
+}
+
+export function setPitchSurface(index) {
+  if (!turfMaterial || !Number.isInteger(index) || index < 0 || index >= turfMaps.length) return;
+  turfMaterial.map = turfMaps[index];
 }
 
 function ballTexture() {
@@ -886,9 +1013,12 @@ function ballTexture() {
 }
 
 function buildField() {
+  for (let i = 0; i < PITCH_SURFACES.length; i++) turfMaps.push(turfTexture(i));
+  turfMaterial = new THREE.MeshStandardMaterial({ map: turfMaps[0], roughness: .96,
+    bumpMap: turfDetail(), bumpScale: .018 });
   const field = new THREE.Mesh(
     new THREE.PlaneGeometry(120, 145),
-    new THREE.MeshStandardMaterial({ map: turfTexture(), roughness: 0.95 })
+    turfMaterial
   );
   field.rotation.x = -Math.PI / 2;
   field.position.z = GOAL.PLANE_Z + PITCH.LENGTH / 2;
@@ -940,7 +1070,7 @@ function buildField() {
 function buildGoal() {
   const goalMeshes = [];
   const frame = new THREE.MeshStandardMaterial({ color: 0xf4f7fa, roughness: 0.4 });
-  const postGeo = new THREE.CylinderGeometry(GOAL.POST_R, GOAL.POST_R, GOAL.BAR_Y, 12);
+  const postGeo = new THREE.CylinderGeometry(GOAL.POST_R, GOAL.POST_R, GOAL.BAR_Y, 20);
   for (const sx of [-1, 1]) {
     const p = new THREE.Mesh(postGeo, frame);
     p.position.set(sx * GOAL.POST_X, GOAL.BAR_Y / 2, GOAL.PLANE_Z);
@@ -958,13 +1088,44 @@ function buildGoal() {
   scene.add(bar);
   goalMeshes.push(bar);
 
-  const net = new THREE.MeshBasicMaterial({
-    color: 0xc4d6e8, wireframe: true, transparent: true, opacity: 0.42,
+  const net = new THREE.LineBasicMaterial({
+    color: 0xe5e9df, transparent: true, opacity: 0.64, depthWrite: false,
   });
   const depth = NET.DEPTH;
+  const grid = (width, height, cols, rows) => {
+    const geometry = new THREE.PlaneGeometry(width, height, cols, rows);
+    const indices = [];
+    for (let y = 0; y <= rows; y++) for (let x = 0; x <= cols; x++) {
+      const i = y * (cols + 1) + x;
+      if (x < cols) indices.push(i, i + 1);
+      if (y < rows) indices.push(i, i + cols + 1);
+    }
+    geometry.setIndex(indices);
+    const lines = new THREE.LineSegments(geometry, net);
+    lines.name = 'goal-net';
+    lines.frustumCulled = false; // pockets extend outside the rest bounds
+    return lines;
+  };
+  const support = (ax, ay, az, bx, by, bz) => {
+    const a = new THREE.Vector3(ax, ay, az), b = new THREE.Vector3(bx, by, bz);
+    const direction = b.clone().sub(a);
+    const rail = new THREE.Mesh(new THREE.CylinderGeometry(.025, .025, direction.length(), 8), frame);
+    rail.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+    rail.position.copy(a).add(b).multiplyScalar(.5);
+    rail.name = 'goal-support';
+    scene.add(rail); goalMeshes.push(rail);
+  };
+  for (const side of [-1, 1]) {
+    const x = side * GOAL.POST_X;
+    support(x, .025, GOAL.PLANE_Z, x, .025, GOAL.PLANE_Z - depth);
+    support(x, .025, GOAL.PLANE_Z - depth, x, GOAL.BAR_Y, GOAL.PLANE_Z - depth);
+    support(x, GOAL.BAR_Y, GOAL.PLANE_Z, x, GOAL.BAR_Y, GOAL.PLANE_Z - depth);
+  }
+  support(-GOAL.POST_X, .025, GOAL.PLANE_Z - depth, GOAL.POST_X, .025, GOAL.PLANE_Z - depth);
+  support(-GOAL.POST_X, GOAL.BAR_Y, GOAL.PLANE_Z - depth, GOAL.POST_X, GOAL.BAR_Y, GOAL.PLANE_Z - depth);
 
   // Panel order must match physics.NET_PANELS: back, left, right, roof.
-  const back = new THREE.Mesh(new THREE.PlaneGeometry(GOAL.HALF_W * 2, GOAL.HEIGHT, 22, 9), net);
+  const back = grid(GOAL.HALF_W * 2, GOAL.HEIGHT, 42, 14);
   back.position.set(0, GOAL.HEIGHT / 2, GOAL.PLANE_Z - depth);
   scene.add(back);
   goalMeshes.push(back);
@@ -972,7 +1133,7 @@ function buildGoal() {
 
   let idx = 1;
   for (const sx of [-1, 1]) {
-    const side = new THREE.Mesh(new THREE.PlaneGeometry(depth, GOAL.HEIGHT, 6, 9), net);
+    const side = grid(depth, GOAL.HEIGHT, 12, 14);
     side.rotation.y = Math.PI / 2;
     side.position.set(sx * GOAL.HALF_W, GOAL.HEIGHT / 2, GOAL.PLANE_Z - depth / 2);
     scene.add(side);
@@ -980,7 +1141,7 @@ function buildGoal() {
     registerNetPanel(side, idx++, sx, 0);
   }
 
-  const top = new THREE.Mesh(new THREE.PlaneGeometry(GOAL.HALF_W * 2, depth, 22, 6), net);
+  const top = grid(GOAL.HALF_W * 2, depth, 42, 12);
   top.rotation.x = Math.PI / 2;
   top.position.set(0, GOAL.HEIGHT, GOAL.PLANE_Z - depth / 2);
   scene.add(top);
@@ -1009,12 +1170,13 @@ function buildGoal() {
 const netPanels = [];
 const _local = new THREE.Vector3();
 let netEnergy = 0;
+let netAccumulator = 0;
 
 const NET_TENSION = 620;     // pull toward the neighbours - the "connected" feel
 const NET_ANCHOR = 26;       // weak pull back to flat; the pinned rim does the rest
 const NET_DAMP = 5.5;
 const NET_DRIVE = 2400;      // how hard the ball's pocket drags the mesh
-const NET_RELAX_STEPS = 3;
+const NET_STEP = 1 / 240;
 
 function registerNetPanel(mesh, index, outX, outZ, outY) {
   mesh.updateWorldMatrix(true, false);
@@ -1052,6 +1214,7 @@ function registerNetPanel(mesh, index, outX, outZ, outY) {
     disp: new Float32Array(count),
     vel: new Float32Array(count),
     drive: new Float32Array(count),
+    contact: new Float32Array(count),
   };
 }
 
@@ -1067,20 +1230,24 @@ function updateNets(dt) {
     if (!panel) continue;
     const pocket = netPockets[i];
     panel.drive.fill(0);
+    panel.contact.fill(0);
 
-    if (pocket.touched && pocket.depth > 0.001) {
+    if (pocket.touched && Math.abs(pocket.depth) > 0.001) {
       live = true;
       _local.set(pocket.x, pocket.y, pocket.z);
       panel.mesh.worldToLocal(_local);
 
       // A deeper punch drags a wider area of mesh in with it.
-      const radius = 0.55 + pocket.depth * 1.5;
+      const radius = 0.55 + Math.abs(pocket.depth) * 1.5;
       const r2 = radius * radius;
       for (let v = 0; v < panel.drive.length; v++) {
         if (panel.pinned[v]) continue;
         const dx = panel.localX[v] - _local.x;
         const dy = panel.localY[v] - _local.y;
         const d2 = dx * dx + dy * dy;
+        if (d2 < BALL_R * BALL_R) {
+          panel.contact[v] = Math.max(0, Math.abs(pocket.depth) - BALL_R + Math.sqrt(BALL_R * BALL_R - d2)) * pocket.side;
+        }
         if (d2 > r2) continue;
         const f = 1 - Math.sqrt(d2) / radius;
         panel.drive[v] = pocket.depth * f * f * panel.sign;
@@ -1091,8 +1258,10 @@ function updateNets(dt) {
   if (!live && netEnergy <= 0) return;
   netEnergy = live ? 0.9 : netEnergy - dt;
 
-  const h = Math.min(dt, 1 / 60) / NET_RELAX_STEPS;
-  for (let step = 0; step < NET_RELAX_STEPS; step++) {
+  netAccumulator += dt;
+  const h = NET_STEP;
+  while (netAccumulator + 1e-10 >= h) {
+    netAccumulator -= h;
     for (const panel of netPanels) {
       if (!panel) continue;
       const { disp, vel, drive, nbr, pinned } = panel;
@@ -1120,8 +1289,15 @@ function updateNets(dt) {
   let stillMoving = false;
   for (const panel of netPanels) {
     if (!panel) continue;
-    const { attr, baseZ, disp, vel } = panel;
+    const { attr, baseZ, disp, vel, contact, sign } = panel;
     for (let v = 0; v < disp.length; v++) {
+      // Keep the cords around the ball's surface while the surrounding mesh
+      // catches up, rather than letting the ball visibly pass through it.
+      const side = Math.sign(contact[v]);
+      if (side && disp[v] * sign * side < Math.abs(contact[v])) {
+        disp[v] = contact[v] * sign;
+        if (vel[v] * sign * side < 0) vel[v] = 0;
+      }
       if (Math.abs(disp[v]) > 2e-4 || Math.abs(vel[v]) > 2e-3) stillMoving = true;
       attr.setZ(v, baseZ[v] + disp[v]);
     }
@@ -1134,11 +1310,14 @@ function updateNets(dt) {
       panel.disp.fill(0);
       panel.vel.fill(0);
     }
+  } else if (stillMoving) {
+    netEnergy = Math.max(netEnergy, .1);
   }
 }
 
 const crowdTime = { value: 0 };
 const crowdCheer = { value: 0 };
+let supporterFlagMap;
 export const crowd = { count: 0, batches: [], get time() { return crowdTime.value; },
   get excitement() { return crowdCheer.value; } };
 export function cheerCrowd(goal) { crowdCheer.value = goal ? 1 : 0.35; }
@@ -1270,9 +1449,11 @@ function buildStands() {
     roof.position.set(stand.x - sin * 11, 12.1, stand.z - cos * 11);
     roof.rotation.y = stand.angle;
     scene.add(roof);
-    const board = new THREE.Mesh(new THREE.BoxGeometry(stand.width, 1.15, .25),
+    const bounds = AD_BOARDS[stands.indexOf(stand)];
+    const board = new THREE.Mesh(new THREE.BoxGeometry(stand.width, BOARD_HEIGHT, BOARD_THICKNESS),
       new THREE.MeshLambertMaterial({ color: stand.angle === 0 ? 0x1c4084 : 0x293d59 }));
-    board.position.set(stand.x + sin * 1.1, .575, stand.z + cos * 1.1);
+    board.position.set((bounds.minX + bounds.maxX) / 2, BOARD_HEIGHT / 2, (bounds.minZ + bounds.maxZ) / 2);
+    board.name = 'advertising-board';
     board.rotation.y = stand.angle;
     scene.add(board);
   }
@@ -1287,6 +1468,8 @@ function buildStands() {
       if (!parts[part]) continue;
       const mesh = new THREE.InstancedMesh(parts[part], material, fans.length);
       mesh.name = 'crowd-' + pose + '-' + part;
+      mesh.userData.part = part;
+      mesh.userData.pose = pose;
       for (let i = 0; i < fans.length; i++) {
         const fan = fans[i];
         transform.position.set(fan.x, fan.y, fan.z);
@@ -1325,6 +1508,7 @@ function buildSupporterFlags() {
     paint.fillRect(i * 16, 0, 16, 64);
   }
   const flagMap = new THREE.CanvasTexture(cloth);
+  supporterFlagMap = flagMap;
   flagMap.colorSpace = THREE.SRGBColorSpace;
   const flagMaterial = new THREE.MeshLambertMaterial({ map: flagMap, side: THREE.DoubleSide });
   flagMaterial.onBeforeCompile = shader => {
@@ -1361,6 +1545,54 @@ function buildBall() {
   b.position.set(BALL_START.x, BALL_START.y, BALL_START.z);
   scene.add(b);
   objects.ball = b;
+}
+
+let ballLoad;
+export function loadBall() {
+  if (!ballLoad) ballLoad = loadBallModel();
+  return ballLoad;
+}
+
+async function loadBallModel() {
+  let timer;
+  try {
+    const gltf = await Promise.race([
+      import('three/addons/loaders/GLTFLoader.js').then(({ GLTFLoader }) =>
+        new GLTFLoader().loadAsync('assets/ball.glb')),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Ball load timed out')), 10000); }),
+    ]);
+    gltf.scene.updateMatrixWorld(true);
+    const mesh = gltf.scene.getObjectByProperty('isMesh', true);
+    if (!mesh) throw new Error('Ball asset has no mesh');
+    // Bake the asset transform and centre its geometry, keeping the existing
+    // ball object and its physics-driven position/rotation stable.
+    const geometry = mesh.geometry;
+    geometry.applyMatrix4(mesh.matrixWorld);
+    geometry.computeBoundingSphere();
+    const { center, radius } = geometry.boundingSphere;
+    if (!(radius > 0)) throw new Error('Ball asset has invalid bounds');
+    geometry.translate(-center.x, -center.y, -center.z);
+    geometry.scale(BALL_R / radius, BALL_R / radius, BALL_R / radius);
+    geometry.computeBoundingSphere();
+    geometry.computeBoundingBox();
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of materials) {
+      material.metalness = 0;
+      material.side = THREE.FrontSide;
+      if (material.map) material.map.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    }
+    objects.ball.geometry.dispose();
+    objects.ball.material.map.dispose();
+    objects.ball.material.dispose();
+    objects.ball.geometry = geometry;
+    objects.ball.material = mesh.material;
+    objects.ball.name = 'soccer-ball';
+    objects.ball.userData.asset = 'assets/ball.glb';
+  } catch (error) {
+    console.warn('Using procedural ball fallback:', error);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function buildAimRig() {
@@ -1597,7 +1829,7 @@ const ambient = {
   to: { x: 0, z: -6 },
   t: 1, dur: 1, holder: 0, wait: 0, passReceiver: -1,
 };
-export const formation = { actors: ambient.actors, pressers: [null, null] };
+export const formation = { actors: ambient.actors, pressers: [null, null], attacker: null };
 
 function selectPressers(bx, bz) {
   let first = null, second = null, firstD = Infinity, secondD = Infinity;
@@ -1986,7 +2218,7 @@ function turnToward(cur, want, maxStep) {
  * Nearby players follow a loose rebound; everyone else walks with the team
  * shape. The launch itself does not send the whole formation after the ball.
  */
-export function watchBall(dt, live, rebound = false) {
+export function watchBall(dt, live, rebound = false, pursuit = null, strikerReady = false) {
   const bx = objects.ball.position.x;
   const bz = objects.ball.position.z;
   // Active blockers also participate; their app-driven block pose must not
@@ -1998,9 +2230,17 @@ export function watchBall(dt, live, rebound = false) {
     p.previousZ = p.z;
   }
   selectPressers(bx, bz);
+  formation.attacker = null;
+  let attackerDistance = pursuit?.attackerRange ?? 18;
+  for (const p of ambient.actors) {
+    if (p.team !== 'home' || (p.rig === squad.striker && !strikerReady)
+      || p.rig.avatar?.passTime >= 0) continue;
+    const distance = Math.hypot(bx - p.x, bz - p.z);
+    if (distance < attackerDistance) { formation.attacker = p; attackerDistance = distance; }
+  }
 
   for (const p of ambient.actors) {
-    if (p.rig === squad.striker) continue;
+    if (p.rig === squad.striker && (!strikerReady || p !== formation.attacker)) { p.chasing = false; continue; }
     if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
@@ -2014,7 +2254,7 @@ export function watchBall(dt, live, rebound = false) {
     const distance = Math.hypot(bx - p.x, bz - p.z);
     const inPlay = Math.abs(bx) < PITCH.WIDTH / 2 && bz > GOAL.PLANE_Z
       && bz < GOAL.PLANE_Z + PITCH.LENGTH;
-    p.chasing = live && inPlay && (p.pressing || (rebound && p.team !== 'ref'
+    p.chasing = live && inPlay && (p.pressing || p === formation.attacker || (rebound && p.team !== 'ref'
       && distance < (p.chasing ? 10 : 7)
       && Math.hypot(bx - p.targetX, bz - p.targetZ) < 12));
     if (p.chasing) {
@@ -2024,11 +2264,13 @@ export function watchBall(dt, live, rebound = false) {
     if (live || p.team === 'ref') {
       const dx = p.targetX - p.x, dz = p.targetZ - p.z;
       const d = Math.hypot(dx, dz);
-      const keepOff = p.chasing ? (p.team === 'away' ? 1.0 : 1.8) : .35;
+      const urgent = p.chasing && (p === formation.pressers[0] || p === formation.attacker);
+      const keepOff = p.chasing ? (urgent ? .65 : p.team === 'away' ? 1.0 : 1.8) : .35;
       if (d > keepOff) {
         const top = p.team === 'ref' && distance < 6 ? 3.4
-          : p.chasing ? 5.4 : lerp(1.45, .65, clamp(distance / 45, 0, 1));
-        const step = Math.min(d - keepOff, top * dt, (d - keepOff) * (1 - Math.exp(-1.6 * dt)));
+          : urgent ? (pursuit?.sprintSpeed ?? 7.2) : p.chasing ? 5.4 : lerp(1.45, .65, clamp(distance / 45, 0, 1));
+        const step = urgent ? Math.min(d - keepOff, top * dt)
+          : Math.min(d - keepOff, top * dt, (d - keepOff) * (1 - Math.exp(-1.6 * dt)));
         p.x += (dx / d) * step;
         p.z += (dz / d) * step;
         p.speed = step / Math.max(dt, .001);
@@ -2052,7 +2294,7 @@ export function watchBall(dt, live, rebound = false) {
   separate(dt);
 
   for (const p of ambient.actors) {
-    if (p.rig === squad.striker) continue;
+    if (p.rig === squad.striker && (!strikerReady || p !== formation.attacker)) continue;
     if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
@@ -2065,6 +2307,7 @@ export function watchBall(dt, live, rebound = false) {
     p.speed = Math.hypot(p.x - p.previousX, p.z - p.previousZ) / Math.max(dt, .001);
     poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.17, 1));
     if (p.rig.avatar) p.rig.avatar.speed = p.speed;
+    if (p.rig === squad.striker && captain) { captainSpeed = p.speed; kickTime = -1; }
   }
 }
 
@@ -2156,7 +2399,9 @@ function aimCameraAt(origin) {
  * appears with no move behind it (a Super Sub injection).
  */
 export function setupChance(origin, blockerCount, soft) {
+  releaseNetPockets();
   formation.pressers[0] = formation.pressers[1] = null;
+  formation.attacker = null;
   for (const p of ambient.actors) { p.pressing = false; p.chasing = false; }
   chance.origin.x = origin.x;
   chance.origin.y = origin.y;
@@ -2225,6 +2470,7 @@ export function setupChance(origin, blockerCount, soft) {
 
 /** Restores the wide broadcast framing used while the match simulates. */
 export function frameAmbient() {
+  releaseNetPockets();
   _camHome.set(0, 13.5, 11);
   _camTargetWant.set(0, 0, GOAL.PLANE_Z + 7);
   objects.arrow.visible = objects.guide.visible = objects.elevation.visible = false;
@@ -2297,6 +2543,7 @@ function tick() {
   crowdCheer.value = Math.max(0, crowdCheer.value - dt * .18);
   if (frameCb) frameCb(dt);
   positionHomeKeeper(dt);
+  syncPlayerLocomotion(dt);
   animateCaptain(dt);
   animateSquad(dt);
   captureLaunch();
