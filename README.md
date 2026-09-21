@@ -66,6 +66,13 @@ js/
   beards are only built for the four players you ever see close up — the
   keeper, the striker and the two active defenders. `parade(offset, count)` is
   exported as a dev aid to line the squad up for a look at the variety.
+- **A goal has to be entered, not just occupied.** The ball must cross the
+  line inside the frame AND then get the whole way over it. Occupying the goal
+  volume is not enough on its own, because a ball shoved clear of the inside
+  of a post - which stands ON the line - lands in that volume without ever
+  having crossed. The netting is gated on the same flag, so a shot sailing
+  over the bar cannot clip the roof panel from above and get pushed back down
+  into the goal.
 - **Nobody freezes.** The keeper's dive height is a real ballistic arc, not a
   number baked into the dive pose - he pushes off, peaks around 0.8m as the
   ball arrives, lands, lies there a beat and picks himself up. Defenders get
@@ -93,15 +100,15 @@ Measured against the real modules, by aim quality (goal % per chance):
 
 | play | converts |
 |---|---|
-| random mashing | ~30% |
-| straight down the middle | ~38% |
-| decent aim and power | ~38% |
-| threading it just inside the post | ~43% |
+| random mashing | ~24% |
+| straight down the middle | ~36% |
+| decent aim and power | ~37% |
+| threading it just inside the post | ~35% |
 | top corner, precise | ~47% |
 | + Leg Day 5 and Natural Talent 5 | ~56% |
 
 Aiming *at* the post rather than just inside it converts **0%** and hits the
-woodwork 57% of the time - the reward for precision has a cliff right next to
+woodwork 60% of the time - the reward for precision has a cliff right next to
 it. Drilling low into a two-man block converts ~6%; lifting the same shot over
 it converts ~30%, which is what the power phase is really for.
 

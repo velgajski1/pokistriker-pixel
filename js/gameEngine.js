@@ -1266,9 +1266,54 @@ export function watchBall(dt, chase) {
 
     // Always tick the run cycle a little so nobody is a statue.
     p.phase += Math.max(p.speed, 0.8) * dt * 2.1;
+  }
+
+  separate(dt);
+
+  for (const p of ambient.actors) {
+    if (p.rig === squad.striker) continue;
+    let involved = false;
+    for (let i = 0; i < chance.blockerCount; i++) {
+      if (blockerSets[i].rig === p.rig) { involved = true; break; }
+    }
+    if (involved) continue;
     p.rig.root.position.set(p.x, 0, p.z);
     p.rig.root.rotation.y = p.heading;
     poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.17, 1));
+  }
+}
+
+/**
+ * Keeps chasers from stacking into one another. Everyone converging on the
+ * same ball ends up occupying the same square metre otherwise, which reads as
+ * one four-headed player.
+ */
+const MIN_SEP = 1.15;
+function separate(dt) {
+  const a = ambient.actors;
+  const push = Math.min(1, dt * 9);
+  for (let i = 0; i < a.length; i++) {
+    for (let j = i + 1; j < a.length; j++) {
+      const dx = a[j].x - a[i].x, dz = a[j].z - a[i].z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 >= MIN_SEP * MIN_SEP || d2 < 1e-6) continue;
+      const d = Math.sqrt(d2);
+      const shove = (MIN_SEP - d) * 0.5 * push;
+      const nx = dx / d, nz = dz / d;
+      a[i].x -= nx * shove; a[i].z -= nz * shove;
+      a[j].x += nx * shove; a[j].z += nz * shove;
+    }
+  }
+
+  // ...and nobody stands inside the striker either.
+  const s = squad.striker.root.position;
+  for (const p of a) {
+    if (p.rig === squad.striker) continue;
+    const dx = p.x - s.x, dz = p.z - s.z;
+    const d = Math.hypot(dx, dz);
+    if (d >= MIN_SEP || d < 1e-6) continue;
+    p.x += (dx / d) * (MIN_SEP - d) * push;
+    p.z += (dz / d) * (MIN_SEP - d) * push;
   }
 }
 
