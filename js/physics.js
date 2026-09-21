@@ -358,7 +358,7 @@ export function netContact(pos, vel, dt, inside, previous = null) {
     const start = p.axis === 'x' ? px : p.axis === 'y' ? py : pz;
     // Latch the contact side until release: a stretching net must never flip
     // its normal when the ball centre passes through the undeformed plane.
-    const side = pocket.touched ? pocket.side : (start - p.at) * p.n >= 0 ? 1 : -1;
+    const side = pocket.touched ? pocket.side : inside ? 1 : (start - p.at) * p.n >= 0 ? 1 : -1;
     const normal = p.n * side;
     const gap = normal * (c - p.at) - BALL_R;
     if (gap >= 0) { pocket.touched = false; continue; }
@@ -367,7 +367,8 @@ export function netContact(pos, vel, dt, inside, previous = null) {
     const valid = pocket.touched
       ? withinNetPanel(i, pos.x, pos.y, pos.z, BALL_R + NET.MAX_STRETCH)
       : withinNetPanel(i, px + (pos.x - px) * t, py + (pos.y - py) * t,
-        pz + (pos.z - pz) * t, BALL_R);
+        pz + (pos.z - pz) * t, BALL_R + (inside ? NET.MAX_STRETCH : 0));
+    if (inside && pos.z > GOAL.PLANE_Z) { pocket.touched = false; continue; }
     if (!valid) { pocket.touched = false; continue; }
     const pen = -gap;
     const vn = vel[p.axis] * normal;

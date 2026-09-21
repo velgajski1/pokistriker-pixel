@@ -50,15 +50,17 @@ const SHOT = {
   WINDUP: 0.28,                   // strike animation before the ball leaves
   KEEPER_REACTION: 0.10,
   KEEPER_SPEED: 8.2,
-  KEEPER_READ_ERROR: 0.92,        // how badly he misreads the shot, in metres
-  KEEPER_READ_ERROR_Y: 0.60,      // ...and how badly he reads its height
-  KEEPER_SET_SPREAD: 0.55,        // jitter on top of his angle-narrowing
+  KEEPER_SET_SPEED: 3.8,          // grounded repositioning while tracking flight
+  KEEPER_COMMIT_TIME: .24,       // extend only shortly before the ball arrives
+  KEEPER_READ_ERROR: 0.24,        // lateral uncertainty after seeing the strike
+  KEEPER_READ_ERROR_Y: 0.18,
+  KEEPER_SET_SPREAD: 0.25,
   KEEPER_ANGLE_NARROW: 0.25,      // how far he shades toward the shooter
   KEEPER_LEAP: 2.8,               // upward launch of a dive, m/s
   KEEPER_LEAP_HIGH: 2.4,          // ...plus this much again for a high one
   RECOVER_DELAY: 0.30,            // beat on the ground before picking himself up
   RECOVER_RATE: 1.7,              // how fast the dive/lunge unwinds afterwards
-  KEEPER_STAND_ZONE: 0.50,        // inside this he stays on his feet and blocks
+  KEEPER_STAND_ZONE: 0.70,        // inside this he stays on his feet and blocks
   KEEPER_MAX_DIVE: 1.75,          // a dive displaces the body this far, at most
   KEEPER_DIVE_TIME: 0.25,         // ...and takes this long to fully extend
   SAVE_RESTITUTION: 0.42,
@@ -158,6 +160,7 @@ const prevPos = { x: 0, y: 0, z: 0 };
 const hitPoint = { x: 0, y: 0, z: 0 };
 const contactPoint = { x: 0, y: 0, z: 0 };
 const prediction = { x: 0, y: 0, t: 0 };
+const keeperAim = { x: 0, y: 0, z: 0 };
 const origin = { x: 0, y: GROUND_Y, z: 0 };
 
 /** Live defender state, one entry per blocker planted on the shot line. */
@@ -167,7 +170,31 @@ const blockers = [
 ];
 let blockerCount = 0;
 
+export const KEEPER_PROGRESS = { distanceScale: 30, perGoal: .24, perMatch: .14 };
+
+/** Continuous, bounded progression; evaluated once per chance, never mid-shot. */
+export function keeperAbility(distance, goals = 0, match = 1) {
+  const pressure = Math.max(0, distance - 10) / KEEPER_PROGRESS.distanceScale
+    + Math.max(0, goals) * KEEPER_PROGRESS.perGoal
+    + Math.max(0, match - 1) * KEEPER_PROGRESS.perMatch;
+  const skill = 1 - Math.exp(-pressure);
+  const blend = (base, elite) => base + (elite - base) * skill;
+  return {
+    skill, distance, goals, match,
+    reaction: blend(SHOT.KEEPER_REACTION, .065),
+    diveSpeed: blend(SHOT.KEEPER_SPEED, 10),
+    setSpeed: blend(SHOT.KEEPER_SET_SPEED, 5.5),
+    readError: blend(SHOT.KEEPER_READ_ERROR, .06),
+    heightError: blend(SHOT.KEEPER_READ_ERROR_Y, .045),
+    setSpread: blend(SHOT.KEEPER_SET_SPREAD, .10),
+    diveTime: blend(SHOT.KEEPER_DIVE_TIME, .18),
+    catchSpeed: blend(SHOT.KEEPER_CATCH_SPEED, 18),
+    parryBias: blend(SHOT.KEEPER_PARRY_BIAS, .82),
+  };
+}
+
 const shot = {
+  keeperAbility: keeperAbility(10),
   theta: 0, sweepDir: 1, power: 0, powerDir: 1,
   keeperSetX: 0, keeperX: 0, keeperTarget: 0, keeperDive: 0,
   keeperDelay: 0, keeperSide: 1, diveDepth: 1, keeperHigh: 0,
@@ -178,6 +205,7 @@ const shot = {
   clearer: null, clearanceTime: 0, clearanceCooldown: 0,
   keeperAirY: 0, keeperAirV: 0, keeperDown: 0, keeperLaunched: false,
   keeperGround: 0, keeperSpent: false,
+  keeperReadX: 0, keeperReadY: 0, keeperJumpAt: 0,
 };
 
 // ===========================================================================
@@ -187,7 +215,13 @@ const meta = (k) => state.career.meta[k] || 0;
 const train = (k) => state.run.training[k] || 0;
 
 const confidenceMax = () => MORALE.BASE_MAX * (1 + 0.05 * meta('pet'));
-const sweepSpeed = () => SHOT.BASE_SWEEP * (1 - 0.12 * train('target')) * (1 - 0.05 * meta('veins'));
+export const DISTANCE_AIM = { baseRange: 10, increasePerMetre: .05, maxMultiplier: 2.5 };
+export function aimDistanceMultiplier(distance) {
+  return Math.min(DISTANCE_AIM.maxMultiplier,
+    1 + Math.max(0, distance - DISTANCE_AIM.baseRange) * DISTANCE_AIM.increasePerMetre);
+}
+const sweepSpeed = () => SHOT.BASE_SWEEP * (1 - 0.12 * train('target')) * (1 - 0.05 * meta('veins'))
+  * aimDistanceMultiplier(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z));
 const speedScale = () => (1 + 0.06 * train('legday')) * (1 + 0.05 * meta('talent'));
 const goalPayout = () => ECONOMY.GOAL_PAYOUT + ECONOMY.BOOT_BONUS * meta('boot');
 /** Ice Bath: how close to the inside of the post still gets pulled in. */
@@ -410,6 +444,7 @@ function prepareChance() {
 
 function beginHighlight(soft) {
   const run = state.run;
+  engine.captureSelectionPoses();
   // Clock freezes and the arena brightens instantly.
   ui.setDimmed(false);
   ui.setTicker(Math.floor(run.clock), CHANCE_CALLS[(Math.random() * CHANCE_CALLS.length) | 0]);
@@ -445,38 +480,31 @@ function beginHighlight(soft) {
   // shooter rather than standing centrally and waiting, so a chance from wide
   // gives you far less of the goal to aim at than the raw geometry suggests.
   const narrow = Math.max(-2.6, Math.min(2.6, origin.x * SHOT.KEEPER_ANGLE_NARROW));
-  shot.keeperSetX = narrow + (Math.random() * 2 - 1) * SHOT.KEEPER_SET_SPREAD;
+  shot.keeperAbility = keeperAbility(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z), run.matchGoals, run.match);
+  shot.keeperSetX = narrow + (Math.random() * 2 - 1) * shot.keeperAbility.setSpread;
   shot.keeperX = shot.keeperSetX;
   shot.keeperDive = 0;
   shot.keeperSide = 1;
   shot.diveDepth = 1;
   engine.setKeeper(shot.keeperX, 0, 1);
+  engine.restoreSelectionPoses();
+  engine.faceStrikerForSelection();
 
   state.phase = 'AIM';
   ui.setPrompt('Tap / Space to lock aim');
 }
 
 /** Keeps the arena alive while the clock is frozen and you are aiming. */
-function updateChanceIdle(dt) {
-  engine.watchBall(dt, false);
-  engine.faceKeeper(dt, 0.45);
-  engine.setKeeper(
-    shot.keeperSetX + Math.sin(state.elapsed * 3.1) * 0.11, 0, 1, 0,
-    0);
-}
-
 function updateAim(dt) {
-  updateChanceIdle(dt);
   // Triangle sweep across the goalmouth, delta-scaled.
   shot.aimX += shot.sweepDir * sweepSpeed() * dt;
-  if (shot.aimX > SHOT.AIM_SPAN)  { shot.aimX = SHOT.AIM_SPAN;  shot.sweepDir = -1; }
-  if (shot.aimX < -SHOT.AIM_SPAN) { shot.aimX = -SHOT.AIM_SPAN; shot.sweepDir = 1; }
+  if (shot.aimX > SHOT.AIM_SPAN)  { shot.aimX = 2 * SHOT.AIM_SPAN - shot.aimX; shot.sweepDir = -1; }
+  if (shot.aimX < -SHOT.AIM_SPAN) { shot.aimX = -2 * SHOT.AIM_SPAN - shot.aimX; shot.sweepDir = 1; }
   shot.theta = aimAngleFor(origin, shot.aimX);
   engine.setAim(shot.theta);
 }
 
 function updatePower(dt) {
-  updateChanceIdle(dt);
   shot.power += shot.powerDir * SHOT.POWER_CYCLE * dt;
   if (shot.power > 1) { shot.power = 1; shot.powerDir = -1; }
   if (shot.power < 0) { shot.power = 0; shot.powerDir = 1; }
@@ -529,25 +557,29 @@ function launch() {
   engine.setStrikerKick(1);
   engine.recordStrikerLaunch();
 
-  // Keeper AI reads the shot, badly, and with a reaction delay. He cannot
+  // Read the arrival at the keeper, with modest uncertainty and reaction delay. He cannot
   // slide the length of the line either: a dive displaces him KEEPER_MAX_DIVE
   // at most, and his arms have to cover the rest.
-  predictCrossing(origin, theta, shot.power, speedScale(), prediction);
-  const err = (Math.random() * 2 - 1) * SHOT.KEEPER_READ_ERROR;
+  predictCrossing(origin, theta, shot.power, speedScale(), prediction, engine.keeperLineZ());
+  const err = (Math.random() * 2 - 1) * shot.keeperAbility.readError;
+  shot.keeperReadX = err;
+  shot.keeperReadY = (Math.random() * 2 - 1) * shot.keeperAbility.heightError;
   const read = Math.max(-GOAL.HALF_W - 0.4, Math.min(GOAL.HALF_W + 0.4, prediction.x + err));
   shot.keeperTarget = Math.max(
     shot.keeperSetX - SHOT.KEEPER_MAX_DIVE,
     Math.min(shot.keeperSetX + SHOT.KEEPER_MAX_DIVE, read)
   );
   const travel = Math.abs(shot.keeperTarget - shot.keeperSetX);
-  const readY = prediction.y + (Math.random() * 2 - 1) * SHOT.KEEPER_READ_ERROR_Y;
+  const readY = prediction.y + shot.keeperReadY;
   shot.keeperHigh = Math.max(0, Math.min(1, (readY - 1.05) / 1.3));
   shot.keeperSide = Math.sign(shot.keeperTarget - shot.keeperSetX) || 1;
   // How committed the dive is. A keeper reaching 20cm stays on his feet and
   // blocks with his body; only a full-stretch save goes horizontal. Without
   // this he threw himself sideways out of the way of every central shot.
-  shot.diveDepth = Math.min(1, travel / SHOT.KEEPER_MAX_DIVE);
-  shot.keeperDelay = SHOT.KEEPER_REACTION;
+  shot.diveDepth = Math.max(0, Math.min(1, (travel - SHOT.KEEPER_STAND_ZONE)
+    / (SHOT.KEEPER_MAX_DIVE - SHOT.KEEPER_STAND_ZONE)));
+  shot.keeperJumpAt = Math.max(shot.keeperAbility.reaction, prediction.t - .25);
+  shot.keeperDelay = shot.keeperAbility.reaction;
   shot.keeperDive = 0;
   shot.keeperAirY = 0;
   shot.keeperAirV = 0;
@@ -649,7 +681,7 @@ function parryAway() {
   const pl = Math.hypot(px, py, pz);
   px /= pl; py /= pl; pz /= pl;
 
-  const b = SHOT.KEEPER_PARRY_BIAS;
+  const b = shot.keeperAbility.parryBias;
   ballVel.x = (ballVel.x / sp * (1 - b) + px * b) * sp;
   ballVel.y = (ballVel.y / sp * (1 - b) + py * b) * sp;
   ballVel.z = (ballVel.z / sp * (1 - b) + pz * b) * sp;
@@ -660,18 +692,47 @@ function parryAway() {
  * swept query. Running this at PHYS_DT rather than per frame is what stops a
  * 40 m/s ball from stepping straight over the keeper or the woodwork.
  */
-function substep(h) {
+export function substep(h) {
   shot.flightTime += h;
 
   // --- Keeper --------------------------------------------------------------
+  const keeperZ = engine.keeperLineZ();
+  const arrival = ballVel.z < -.1 ? (keeperZ + .25 - ballPos.z) / ballVel.z : -1;
+  if (!shot.keeperLaunched && shot.keeperDelay <= 0 && arrival >= 0 && shot.resolved === null) {
+    // More flight time means more observation and more grounded positioning.
+    // Refine the same read error rather than drawing fresh random noise.
+    const uncertainty = 1 / (1 + shot.flightTime * 3);
+    const readX = ballPos.x + ballVel.x * arrival + shot.keeperReadX * uncertainty;
+    const readY = Math.max(BALL_R, ballPos.y + ballVel.y * arrival + .5 * GRAVITY * arrival * arrival)
+      + shot.keeperReadY * uncertainty;
+    shot.keeperTarget = Math.max(-GOAL.HALF_W + .25, Math.min(GOAL.HALF_W - .25, readX));
+    if (arrival <= SHOT.KEEPER_COMMIT_TIME) {
+      shot.keeperTarget = Math.max(shot.keeperX - SHOT.KEEPER_MAX_DIVE,
+        Math.min(shot.keeperX + SHOT.KEEPER_MAX_DIVE, shot.keeperTarget));
+    }
+    shot.keeperJumpAt = shot.flightTime + Math.max(0, arrival - SHOT.KEEPER_COMMIT_TIME);
+    shot.keeperHigh = Math.max(0, Math.min(1, (readY - 1.05) / 1.3));
+    const remaining = Math.abs(shot.keeperTarget - shot.keeperX);
+    shot.keeperSide = Math.sign(shot.keeperTarget - shot.keeperX) || shot.keeperSide;
+    shot.diveDepth = Math.max(0, Math.min(1, (remaining - SHOT.KEEPER_STAND_ZONE)
+      / (SHOT.KEEPER_MAX_DIVE - SHOT.KEEPER_STAND_ZONE)));
+  }
   if (shot.keeperDelay > 0) {
     shot.keeperDelay -= h;
     // Short grounded side steps set his feet before committing to the leap.
     const gap = shot.keeperTarget - shot.keeperX;
     const step = 1.8 * h;
     shot.keeperX += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
+  } else if (!shot.keeperLaunched && shot.flightTime < shot.keeperJumpAt) {
+    const gap = shot.keeperTarget - shot.keeperX;
+    const step = shot.keeperAbility.setSpeed * h;
+    shot.keeperX += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
+    // Do not consume the dive/recovery while the ball is still far away.
+    shot.keeperDive = 0;
+    shot.keeperSpent = false;
+    shot.keeperGround = 0;
   } else {
-    if (!shot.keeperLaunched) {
+    if (!shot.keeperLaunched && shot.flightTime >= shot.keeperJumpAt) {
       // He leaves the ground as the dive starts: a low sprawl barely gets air,
       // a leap for the top corner gets plenty.
       shot.keeperLaunched = true;
@@ -682,12 +743,12 @@ function substep(h) {
     // adjustment is made standing up, and gating this on being airborne left
     // him rooted for any shot too close to need a dive.
     const gap = shot.keeperTarget - shot.keeperX;
-    const step = SHOT.KEEPER_SPEED * h;
+    const step = shot.keeperAbility.diveSpeed * h;
     shot.keeperX += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
 
     const airborne = shot.keeperAirV !== 0 || shot.keeperAirY > 0;
     if (airborne) {
-      shot.keeperDive = Math.min(shot.diveDepth, shot.keeperDive + h / SHOT.KEEPER_DIVE_TIME);
+      shot.keeperDive = Math.min(shot.diveDepth, shot.keeperDive + h / shot.keeperAbility.diveTime);
       if (shot.keeperDive >= shot.diveDepth) shot.keeperSpent = true;
       shot.keeperAirV += GRAVITY * h;
       shot.keeperAirY += shot.keeperAirV * h;
@@ -697,7 +758,7 @@ function substep(h) {
       // without that latch the recovery below decays the dive, this branch
       // sees it dip under diveDepth and winds it straight back up, and he
       // never gets off the floor.
-      shot.keeperDive = Math.min(shot.diveDepth, shot.keeperDive + h / SHOT.KEEPER_DIVE_TIME);
+      shot.keeperDive = Math.min(shot.diveDepth, shot.keeperDive + h / shot.keeperAbility.diveTime);
       if (shot.keeperDive >= shot.diveDepth) shot.keeperSpent = true;
     } else {
       // Down. Take a beat, then push himself back up off the turf.
@@ -708,8 +769,16 @@ function substep(h) {
       }
     }
   }
+  // Standing saves track the actual incoming trajectory, including low bounces.
+  // Hands follow this target through real rig joints; no enlarged hit area.
+  const tracking = shot.keeperDelay <= 0 && shot.diveDepth < .35 && arrival >= 0 && arrival < .65
+    && shot.resolved === null;
+  keeperAim.x = ballPos.x + ballVel.x * Math.max(0, arrival);
+  keeperAim.y = Math.max(BALL_R, ballPos.y + ballVel.y * Math.max(0, arrival)
+    + .5 * GRAVITY * Math.max(0, arrival) ** 2);
+  keeperAim.z = keeperZ + .25;
   engine.setKeeper(shot.keeperX, shot.keeperDive, shot.keeperSide, shot.keeperHigh,
-    shot.keeperAirY, shot.keeperGround);
+    shot.keeperAirY, shot.keeperGround, tracking ? keeperAim : null);
 
   // --- Defenders -----------------------------------------------------------
   for (let i = 0; i < blockerCount; i++) {
@@ -817,7 +886,7 @@ function tryResolve() {
       if (!sweptCapsuleHit(prevPos, ballPos, caps[i])) continue;
       const speed = Math.hypot(ballVel.x, ballVel.y, ballVel.z);
       deflect(caps[i], SHOT.SAVE_RESTITUTION);
-      if (speed < SHOT.KEEPER_CATCH_SPEED) {
+      if (speed < shot.keeperAbility.catchSpeed) {
         ballVel.x = ballVel.y = ballVel.z = 0;    // gathered cleanly
         shot.touched = 'keeper';
         resolve('save');
@@ -894,7 +963,7 @@ function updateFlight(dt) {
   // Follow only nearby loose rebounds; distant teammates retain their lanes.
   engine.watchBall(dt, shot.resolved === null, shot.resolved === null && (shot.bounced || shot.touched !== null),
     BALL_PURSUIT, shot.flightTime >= .9);
-  if (shot.bounced || shot.touched !== null) engine.followReboundCamera(dt);
+  if (shot.resolved !== 'goal' && (shot.bounced || shot.touched !== null)) engine.followReboundCamera(dt);
   engine.faceKeeper(dt, 0);            // square up to dive along the goal line
   if (shot.flightTime > 0.12 && shot.resolved === null && shot.follow < 2.4) {
     const stride = 3.4 * dt;
@@ -936,6 +1005,10 @@ function resolve(outcome) {
   run.chancesLeft = Math.max(0, run.chancesLeft - 1);
 
   if (outcome === 'goal') {
+    let celebrationIndex = Math.floor(Math.random() * (engine.CELEBRATIONS.length - (run.lastCelebration === undefined ? 0 : 1)));
+    if (run.lastCelebration !== undefined && celebrationIndex >= run.lastCelebration) celebrationIndex++;
+    run.lastCelebration = celebrationIndex;
+    shot.holdTimer = engine.startCelebration(engine.CELEBRATIONS[celebrationIndex]);
     run.goals += 1;
     run.matchGoals += 1;
     run.cash += goalPayout();
@@ -973,6 +1046,7 @@ function resolve(outcome) {
 
 function finishChance() {
   const run = state.run;
+  engine.stopCelebration();
 
   if (run.confidence <= 0) { benched(); return; }
 
@@ -1088,6 +1162,7 @@ function renderTraining() {
 // ===========================================================================
 function frame(dt) {
   state.elapsed += dt;
+  engine.setAnimationsPaused(state.screen === 'MATCH' && (state.phase === 'AIM' || state.phase === 'POWER'));
 
   // The pitch keeps playing behind the menus and the training room too.
   if (state.screen !== 'MATCH') { engine.runAmbient(dt); return; }
@@ -1099,6 +1174,7 @@ function frame(dt) {
     case 'WINDUP': updateWindup(dt); break;
     case 'FLIGHT': updateFlight(dt); break;
   }
+  engine.setAnimationsPaused(state.phase === 'AIM' || state.phase === 'POWER');
 }
 
 async function boot() {

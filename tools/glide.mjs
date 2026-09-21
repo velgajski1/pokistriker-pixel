@@ -29,6 +29,39 @@ try {
     assert(speed ? result.walk > .99 && Math.abs(result.measured - speed) < .001 : result.alert > .99,
       'Moving Alert pose must walk and stopped defender must settle');
   }
+  for (const kind of ['striker-recovery', 'keeper-ready', 'ref-idle', 'slow-turn']) {
+    await page.evaluate(async kind => {
+      const e = await import('../js/gameEngine.js');
+      const p = kind === 'striker-recovery' ? __demo.players.find(p => p.role === 'striker')
+        : kind === 'keeper-ready' ? __demo.players[0]
+        : __demo.players.find(p => p.team === 'ref');
+      __glide.player = p;
+      __glide.kind = kind;
+      e.onFrame(dt => {
+        p.root.position.x += .08 * dt;
+        if (kind === 'striker-recovery') e.setStrikerKick(1, 5);
+        else if (kind === 'keeper-ready') e.setKeeper(p.root.position.x, 0, 1, 0, 0, 0);
+        else {
+          const a = p.rig.avatar;
+          for (const action of Object.values(a.actions)) action.setEffectiveWeight(0);
+          a.actions.idle.setEffectiveWeight(1);
+          a.procedural = kind === 'ref-idle';
+          a.turnRate = kind === 'slow-turn' ? 2 : 0;
+          a.speed = 0;
+        }
+      });
+    }, kind);
+    await page.waitForTimeout(350);
+    const result = await page.evaluate(() => {
+      const p = __glide.player;
+      const w = p.role === 'striker' ? __demo.striker.weights()
+        : Object.fromEntries(Object.entries(p.rig.avatar.actions).map(([n, a]) => [n, a.getEffectiveWeight()]));
+      return { kind: __glide.kind, moving: w.walk + w.quick_walk + w.run + w.run_alt + w.turn_walk_left + w.turn_walk_right,
+        idle: w.idle + w.alert + w.keeper_idle + w.turn_idle_left + w.turn_idle_right };
+    });
+    report.cases.push(result);
+    assert(result.moving > .99 && result.idle < .001, `${kind} moved with an idle pose`);
+  }
 } catch (error) {
   report.failures.push(String(error));
 } finally {

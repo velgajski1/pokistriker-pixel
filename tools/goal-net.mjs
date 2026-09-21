@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { open, assert, CAPTURES } from './lib.mjs';
-import { GOAL, NET, PHYS_DT, stepBall, netContact, netPockets } from '../js/physics.js';
+import { GOAL, NET, PHYS_DT, stepBall, netContact, netPockets, releaseNetPockets } from '../js/physics.js';
 const report = { errors: [], failures: [], shots: [] };
 let browser;
 try {
@@ -10,6 +10,7 @@ try {
     ['corner', 3.3, 2.1, 12, 9, -35], ['hard', 0, .4, 0, 0, -60],
   ]) {
     for (const hz of [30, 60, 144]) {
+      releaseNetPockets();
       const p = { x, y, z: GOAL.PLANE_Z - .2 }, v = { x: vx, y: vy, z: vz };
       let accumulator = 0, stretch = 0, contact = false, returnSpeed = 0;
       for (let frame = 0; frame < hz * 3; frame++) {
@@ -24,13 +25,16 @@ try {
       }
       report.shots.push({ name, hz, stretch, contact, returnSpeed, position: p, speed: Math.hypot(v.x, v.y, v.z) });
       assert(contact && stretch <= NET.MAX_STRETCH + 1e-6, 'Shot escaped net stretch limit');
-      assert(p.z < GOAL.PLANE_Z && p.y < .3, 'Scored ball should settle inside the goal');
+      assert(p.z < GOAL.PLANE_Z && p.z >= GOAL.PLANE_Z - NET.DEPTH - NET.MAX_STRETCH
+        && Math.abs(p.x) <= GOAL.HALF_W + NET.MAX_STRETCH && p.y < .3,
+      'Scored ball should settle inside the goal');
       assert(returnSpeed < 8, 'Net returned too much energy');
     }
     const group = report.shots.slice(-3);
     assert(group.every(s => Math.abs(s.position.z - group[0].position.z) < 1e-7), 'Net physics differs across FPS');
   }
   const p = { x: 4, y: 3, z: -21 }, v = { x: -4, y: -3, z: -20 };
+  releaseNetPockets();
   netContact(p, v, PHYS_DT, false);
   assert(v.x === -4 && v.y === -3 && v.z === -20, 'Missed shots must not be sucked into net');
   const session = await open(report.errors);
@@ -39,6 +43,7 @@ try {
   await page.evaluate(async () => {
     const e = await import('../js/gameEngine.js');
     const physics = await import('../js/physics.js');
+    physics.releaseNetPockets();
     e.parade(0, 1);
     __demo.players[0].root.position.y = -50;
     document.getElementById('overlay').style.display = 'none';
@@ -74,6 +79,33 @@ try {
     })));
   assert(report.settledVisualStretch < report.peakVisualStretch * .2, 'Net must settle rather than freeze deformed');
   await page.screenshot({ path: `${CAPTURES}/net-settled.png` });
+  await page.evaluate(async () => {
+    const e = await import('../js/gameEngine.js');
+    const physics = await import('../js/physics.js');
+    physics.releaseNetPockets();
+    const p = { x: 0, y: 1.2, z: -23 }, v = { x: 0, y: 0, z: 35 }, previous = { ...p };
+    let acc = 0;
+    e.onFrame(dt => {
+      acc += dt;
+      while (acc >= physics.PHYS_DT) {
+        acc -= physics.PHYS_DT;
+        Object.assign(previous, p);
+        physics.stepBall(p, v, physics.PHYS_DT);
+        physics.netContact(p, v, physics.PHYS_DT, false, previous);
+      }
+      e.setBall(p);
+    });
+  });
+  await page.waitForTimeout(150);
+  report.outsideVisualStretch = await page.evaluate(() => {
+    const back = __demo.scene.children.find(n => n.name === 'goal-net');
+    const p = back.geometry.attributes.position;
+    let max = 0;
+    for (let i = 0; i < p.count; i++) max = Math.max(max, p.getZ(i));
+    return max;
+  });
+  assert(report.outsideVisualStretch > .04, 'Outside impact must deform the back net inward');
+  await page.screenshot({ path: `${CAPTURES}/net-outside-impact.png` });
 } catch (error) {
   report.failures.push(String(error));
 } finally {

@@ -234,8 +234,13 @@ function numberTexture(n) {
   g.font = 'bold 92px ui-monospace, monospace';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
+  g.strokeStyle = '#17202a';
+  g.lineWidth = 7;
+  g.lineJoin = 'round';
+  g.strokeText(String(n), 64, 68);
   g.fillText(String(n), 64, 68);
   const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
   numberCache.set(n, t);
   return t;
 }
@@ -375,6 +380,7 @@ function buildHumanoid({ kit, shorts, socks, boots, gloves, number, lite }, look
   body.add(neckMarker);
 
   return { root, body, arms, legs, hipMarker, neckMarker, scale: look.height,
+    number,
     kitMaterials: { kit: matKit, shorts: matShorts, socks: matSocks },
     look, kit: { kit, shorts, socks, boots, gloves }, avatar: null };
 }
@@ -439,7 +445,10 @@ const STRIKER_SPEED_RESPONSE = 18;
 let captain = null;
 export const players = [];
 const GAITS = ['walk', 'quick_walk', 'run', 'run_alt'];
-const ANIMATIONS = ['idle', ...GAITS, 'kick', 'turn_idle_left', 'turn_idle_right',
+export const CELEBRATIONS = ['celebrate_backflip', 'celebrate_backflip_hooks', 'celebrate_dance', 'celebrate_heart'];
+export const celebration = { name: null, time: 0, duration: 0, phase: null,
+  runTime: 0, runDuration: 1.5, startX: 0, targetX: 0 };
+const ANIMATIONS = ['idle', ...GAITS, 'kick', ...CELEBRATIONS, 'turn_idle_left', 'turn_idle_right',
   'turn_walk_left', 'turn_walk_right', 'dive_left', 'dive_right',
   'keeper_idle', 'alert', 'slide_left', 'slide_right'];
 const CAPTAIN_BIND_SCALE = 1.85 / 1.7; // Blender bakes this into mesh bind coordinates.
@@ -519,6 +528,7 @@ async function loadCaptain() {
     for (const rig of rigs) {
       const avatarModel = rig === squad.striker ? model : skeletonUtils.clone(template);
       colourCaptain(avatarModel, rig);
+      addShirtNumber(avatarModel, rig.number);
       if (rig !== squad.striker) attachCaptain(rig, avatarModel, gltf.animations, data, offsets);
       if (rig.avatar) rig.avatar.idleName = rig === squad.keeper || rig === squad.homeKeeper
         ? 'keeper_idle' : squad.foes.includes(rig) ? 'alert' : 'idle';
@@ -532,16 +542,60 @@ async function loadCaptain() {
     squad.striker.root.scale.setScalar(1);
     squad.striker.root.add(model);
     captain = { model, mixer, actions, data, offsets, passTime: -1, turnTime: -1, turnName: '',
-      turnRate: 0, phase: 0, runName: 'run', scale: 1 };
+      turnRate: 0, phase: 0, runName: 'run', scale: 1, moveBlend: 0, moveBones: [], movePose: [] };
+    model.traverse(node => {
+      if (node.isBone) { captain.moveBones.push(node); captain.movePose.push(node.quaternion.clone()); }
+    });
     striker.model = 'captain';
     striker.mixer = mixer;
     keeperSet = makeCapsuleSet(squad.keeper);
     for (let i = 0; i < blockerSets.length; i++) blockerSets[i] = makeCapsuleSet(squad.foes[i], false);
+    cachePausePoses();
   } catch (error) {
     console.warn('Captain unavailable; using procedural striker.', error);
   } finally {
     clearTimeout(timer);
   }
+}
+
+let shirtNumberGeometry;
+function addShirtNumber(model, number) {
+  if (number == null) return;
+  let shirt;
+  model.traverse(node => { if (node.isSkinnedMesh && node.material.name === 'kit') shirt = node; });
+  if (!shirt) return;
+  if (!shirtNumberGeometry) {
+    // Copy the back's skin weights so the print bends with the actual shirt.
+    const geometry = shirt.geometry.clone();
+    const position = geometry.attributes.position, normal = geometry.attributes.normal;
+    const uv = geometry.attributes.uv;
+    const scale = CAPTAIN_BIND_SCALE;
+    const indices = [];
+    for (let i = 0; i < geometry.index.count; i += 3) {
+      const a = geometry.index.getX(i), b = geometry.index.getX(i + 1), c = geometry.index.getX(i + 2);
+      const y = (position.getY(a) + position.getY(b) + position.getY(c)) / 3;
+      const x = (position.getX(a) + position.getX(b) + position.getX(c)) / 3;
+      if (Math.abs(x) < .24 * scale && y > 1.0 * scale && y < 1.5 * scale
+        && normal.getZ(a) + normal.getZ(b) + normal.getZ(c) < -1) indices.push(a, b, c);
+    }
+    geometry.setIndex(indices);
+    for (let i = 0; i < position.count; i++) {
+      uv.setXY(i, .5 - position.getX(i) / (.32 * scale), (position.getY(i) / scale - 1.04) / .39);
+      position.setXYZ(i, position.getX(i) + normal.getX(i) * .002,
+        position.getY(i) + normal.getY(i) * .002, position.getZ(i) + normal.getZ(i) * .002);
+    }
+    shirtNumberGeometry = geometry;
+  }
+  const material = new THREE.MeshStandardMaterial({ map: numberTexture(number),
+    roughness: .85, transparent: true, alphaTest: .1, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
+  material.name = 'shirt-number';
+  const print = new THREE.SkinnedMesh(shirtNumberGeometry, material);
+  print.name = 'shirt-number';
+  print.userData.number = number;
+  print.frustumCulled = false;
+  print.bind(shirt.skeleton, shirt.bindMatrix);
+  shirt.add(print);
 }
 
 function colourCaptain(model, rig) {
@@ -622,6 +676,10 @@ function attachCaptain(rig, model, clips, data, offsets) {
   model.scale.x = rig.look.build;
   rig.root.add(model);
   rig.avatar = { model, mixer, actions, data, offsets, bindings, procedural: false, phase: Math.random(), speed: 0,
+    saveArms: ['L', 'R'].map(side => [bipedBone(model, 'forearm_' + side),
+      bipedBone(model, 'upperarm_' + side), bipedBone(model, 'hand_' + side)]),
+    saveLegs: ['L', 'R'].map(side => [bipedBone(model, 'shin_' + side),
+      bipedBone(model, 'thigh_' + side), bipedBone(model, 'foot_' + side)]),
     passTime: -1, turnTime: -1, turnName: '', turnRate: 0, scale: rig.scale,
     runName: rig.look.build > 1 ? 'run_alt' : 'run', hipBone: bipedBone(model, 'hips'), hipPosition: bipedBone(model, 'hips').position.clone(),
     hipQuaternion: bipedBone(model, 'hips').quaternion.clone() };
@@ -656,9 +714,9 @@ function sampleLocomotion(a, speed, dt) {
 
   // Normalized turn clips supply the planted stepping pose; root heading is
   // still controlled by the movement code, so turns cannot spin twice.
-  if (localSpeed >= 3) a.turnTime = -1;
+  if (localSpeed >= 3 || (moving && a.turnName?.startsWith('turn_idle'))) a.turnTime = -1;
   if (a.turnTime < 0 && Math.abs(a.turnRate) > .8 && localSpeed < 3) {
-    a.turnName = localSpeed < .5 ? (a.turnRate > 0 ? 'turn_idle_left' : 'turn_idle_right')
+    a.turnName = !moving ? (a.turnRate > 0 ? 'turn_idle_left' : 'turn_idle_right')
       : (a.turnRate > 0 ? 'turn_walk_left' : 'turn_walk_right');
     a.turnTime = 0;
   }
@@ -706,20 +764,32 @@ function animateSquad(dt) {
  * its walking pose overwritten with Alert during the physics substeps. */
 function syncPlayerLocomotion(dt) {
   for (const player of players) {
-    const r = player.rig, a = r.avatar;
+    const r = player.rig, a = r === squad.striker ? captain : r.avatar;
     const distance = Math.hypot(r.root.position.x - player.motionX, r.root.position.z - player.motionZ);
     player.motionX = r.root.position.x;
     player.motionZ = r.root.position.z;
-    if (!a || player.role === 'keeper' || a.passTime >= 0 || distance > 2) continue;
+    if (!a || distance > 2) continue;
     const speed = distance / Math.max(dt, .001);
-    if (a.procedural) {
-      // Preserve committed dives/blocks/slides; replace only a standing alert.
-      if (speed <= .00001 || a.actions.alert.getEffectiveWeight() < .99) continue;
+    // Keep real action clips while active, but never let their idle recovery
+    // override translation. Include the striker and both keepers in this pass.
+    const kickEnd = a.data.clips.kick.duration;
+    const passing = a.passTime >= 0 && a.passTime < .28 + kickEnd - a.data.clips.kick.contact;
+    const shooting = r === squad.striker && kickTime >= 0 && kickTime < kickEnd;
+    const action = passing || shooting || (r === squad.striker && celebration.name) || a.saveActive
+      || a.actions.slide_left.getEffectiveWeight() > .1 || a.actions.slide_right.getEffectiveWeight() > .1
+      || a.actions.dive_left.getEffectiveWeight() > .35 || a.actions.dive_right.getEffectiveWeight() > .35;
+    if (action) continue;
+    if (speed > .00001) {
+      a.passTime = -1;
+      if (r === squad.striker) kickTime = -1;
+    }
+    if (a.procedural && speed > .00001) {
       a.turnTime = -1;
       a.turnRate = 0;
       poseRun(r, a.phase, speed / 4.5);
     }
     a.speed = speed;
+    if (r === squad.striker) captainSpeed = speed;
   }
 }
 
@@ -776,7 +846,7 @@ function poseCaptain(rig, dive = 0, side = 1) {
 }
 
 export function setStrikerKick(windup, flight = -1) {
-  if (!captain) return;
+  if (!captain || celebration.name) return;
   kickTime = flight < 0 ? clamp(windup, 0, 1) * captain.data.clips.kick.contact
     : captain.data.clips.kick.contact + flight;
 }
@@ -785,12 +855,94 @@ export function recordStrikerLaunch() {
   launchPending = true;
 }
 
+export function startCelebration(name) {
+  if (!captain || !CELEBRATIONS.includes(name)) return 1.7;
+  celebration.name = name;
+  celebration.time = 0;
+  celebration.duration = captain.data.clips[name].duration;
+  celebration.phase = 'run';
+  celebration.runTime = 0;
+  captain.passTime = -1;
+  captain.moveBlend = 0;
+  captainSpeed = 0;
+  kickTime = -1;
+  for (let i = 0; i < captain.moveBones.length; i++) captain.movePose[i].copy(captain.moveBones[i].quaternion);
+  const root = squad.striker.root;
+  root.position.y = 0;
+  celebration.startX = root.position.x;
+  // Head toward the nearer sideline supporters, keeping the route clear of
+  // the goal frame/net and finishing inside the touchline.
+  const side = root.position.x < 0 ? -1 : 1;
+  celebration.targetX = root.position.x + side * Math.min(5.4, Math.max(0, PITCH.WIDTH / 2 - 1 - Math.abs(root.position.x)));
+  captain.turnTime = -1;
+  captain.turnRate = 0;
+  return celebration.runDuration + celebration.duration + .3;
+}
+
+export function stopCelebration() { celebration.name = null; celebration.phase = null; }
+
+function frameCelebration() {
+  const root = squad.striker.root;
+  const side = celebration.targetX >= celebration.startX ? 1 : -1;
+  // Begin at the run-in camera angle, then orbit gently during the performance.
+  const angle = Math.atan2(side * 5, 1.5) + side * celebration.time * .18;
+  const radius = Math.hypot(5, 1.5);
+  _camHome.set(root.position.x + Math.sin(angle) * radius, 2.6,
+    root.position.z + Math.cos(angle) * radius);
+  _camTargetWant.set(root.position.x, 1.15, root.position.z);
+}
+
 function animateCaptain(dt) {
   if (!captain) return;
+  if (celebration.name) {
+    if (celebration.phase === 'run') {
+      const root = squad.striker.root;
+      const previousX = root.position.x;
+      celebration.runTime = Math.min(celebration.runDuration, celebration.runTime + dt);
+      const t = celebration.runTime / celebration.runDuration;
+      root.position.x = lerp(celebration.startX, celebration.targetX, t * t * (3 - 2 * t));
+      root.rotation.y = turnToward(root.rotation.y,
+        celebration.targetX >= celebration.startX ? Math.PI / 2 : -Math.PI / 2, dt * 7);
+      captainSpeed = dt > 0 ? Math.abs(root.position.x - previousX) / dt : 0;
+      sampleLocomotion(captain, captainSpeed, dt);
+      captain.mixer.update(0);
+      frameCelebration();
+      if (t >= 1) {
+        celebration.phase = 'perform';
+        captainSpeed = 0;
+        for (let i = 0; i < captain.moveBones.length; i++) captain.movePose[i].copy(captain.moveBones[i].quaternion);
+      }
+      return;
+    }
+    frameCelebration();
+    celebration.time += dt;
+    for (const name of ANIMATIONS) captain.actions[name].setEffectiveWeight(0);
+    const endBlend = THREE.MathUtils.smoothstep(celebration.time, celebration.duration, celebration.duration + .3);
+    captain.actions[celebration.name].setEffectiveWeight(1 - endBlend);
+    captain.actions[celebration.name].time = Math.min(celebration.time, celebration.duration);
+    captain.actions.idle.setEffectiveWeight(endBlend);
+    captain.actions.idle.time = 0;
+    captain.mixer.update(0);
+    if (celebration.time < .2) for (let i = 0; i < captain.moveBones.length; i++) {
+      captain.moveBones[i].quaternion.slerp(captain.movePose[i], 1 - celebration.time / .2);
+    }
+    return;
+  }
+  if (captainSpeed > .00001 && kickTime < 0 && captain.passTime < 0
+    && captain.actions.kick.getEffectiveWeight() > .01) {
+    captain.moveBlend = .35;
+    for (let i = 0; i < captain.moveBones.length; i++) captain.movePose[i].copy(captain.moveBones[i].quaternion);
+  }
   if (captain.passTime >= 0) sampleKick(captain, passClipTime(captain, dt));
   else if (kickTime >= 0) sampleKick(captain, kickTime);
   else sampleLocomotion(captain, captainSpeed, dt);
   captain.mixer.update(dt);
+  if (captain.moveBlend > 0) {
+    captain.moveBlend = Math.max(0, captain.moveBlend - dt);
+    for (let i = 0; i < captain.moveBones.length; i++) {
+      captain.moveBones[i].quaternion.slerp(captain.movePose[i], captain.moveBlend / .35);
+    }
+  }
 }
 
 function captureLaunch() {
@@ -827,7 +979,7 @@ function buildSquad() {
     scene.add(m.root);
   }
   for (let i = 0; i < 10; i++) {
-    const f = buildHumanoid({ ...KIT_AWAY, number: 2 + i, lite: i > 1 }, looks[n++]);
+    const f = buildHumanoid({ ...KIT_AWAY, number: [4, 5, 3, 2, 8, 6, 10, 11, 9, 7][i], lite: i > 1 }, looks[n++]);
     squad.foes.push(f);
     scene.add(f.root);
   }
@@ -1665,8 +1817,52 @@ function poseRun(rig, phase, amp) {
  * mid-air for as long as the pose was held.
  */
 let keeperShufflePhase = 0;
-export function setKeeper(x, dive, side, high, airY, ground) {
+const _saveTarget = new THREE.Vector3();
+const _saveJoint = new THREE.Vector3();
+const _saveFrom = new THREE.Vector3();
+const _saveTo = new THREE.Vector3();
+const _saveInverse = new THREE.Quaternion();
+const _saveTurn = new THREE.Quaternion();
+export function keeperLineZ() { return squad.keeper.root.position.z; }
+
+function reachKeeperHands(rig, target) {
+  if (!rig.avatar) return;
+  // A close low shot gets a foot block rather than passing through the wide
+  // ready stance. Move the real boot and knee, preserving the supporting leg.
+  if (target.y < .45) {
+    let selected = rig.avatar.saveLegs[0], nearest = Infinity;
+    for (const chain of rig.avatar.saveLegs) {
+      chain[2].getWorldPosition(_saveJoint);
+      const distance = Math.abs(_saveJoint.x - target.x);
+      if (distance < nearest) { selected = chain; nearest = distance; }
+    }
+    _saveTarget.set(target.x, .13, target.z);
+    reachKeeperChain(selected);
+  }
+  for (let arm = 0; arm < 2; arm++) {
+    const chain = rig.avatar.saveArms[arm];
+    _saveTarget.set(target.x + (arm === 0 ? -.09 : .09), target.y, target.z);
+    reachKeeperChain(chain);
+  }
+}
+
+function reachKeeperChain(chain) {
+  for (let pass = 0; pass < 4; pass++) for (let j = 0; j < 2; j++) {
+    const joint = chain[j];
+    joint.getWorldPosition(_saveJoint);
+    chain[2].getWorldPosition(_saveFrom);
+    joint.getWorldQuaternion(_saveInverse).invert();
+    _saveFrom.sub(_saveJoint).applyQuaternion(_saveInverse).normalize();
+    _saveTo.copy(_saveTarget).sub(_saveJoint).applyQuaternion(_saveInverse).normalize();
+    _saveTurn.setFromUnitVectors(_saveFrom, _saveTo);
+    joint.quaternion.multiply(_saveTurn);
+    joint.updateWorldMatrix(false, true);
+  }
+}
+
+export function setKeeper(x, dive, side, high, airY, ground, target = null) {
   const r = squad.keeper;
+  if (r.avatar) r.avatar.saveActive = !!target || dive > .05 || airY > .01;
   const h = high || 0;
   const lean = dive * (1.35 - h * 0.55);
   const dx = x - r.root.position.x;
@@ -1707,6 +1903,7 @@ export function setKeeper(x, dive, side, high, airY, ground) {
     leg.knee.rotation.x = lerp(.78 + lift, -0.3, dive);
   }
   poseCaptain(r, dive, side);
+  if (target) reachKeeperHands(r, target);
 }
 
 /**
@@ -2240,7 +2437,7 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
   }
 
   for (const p of ambient.actors) {
-    if (p.rig === squad.striker && (!strikerReady || p !== formation.attacker)) { p.chasing = false; continue; }
+    if (p.rig === squad.striker && (celebration.name || !strikerReady || p !== formation.attacker)) { p.chasing = false; continue; }
     if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
@@ -2294,7 +2491,7 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
   separate(dt);
 
   for (const p of ambient.actors) {
-    if (p.rig === squad.striker && (!strikerReady || p !== formation.attacker)) continue;
+    if (p.rig === squad.striker && (celebration.name || !strikerReady || p !== formation.attacker)) continue;
     if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
@@ -2466,6 +2663,11 @@ export function setupChance(origin, blockerCount, soft) {
   }
 
   aimCameraAt(origin);
+  // Chance placement is a scene reset, even when a rig moves less than 2m.
+  for (const player of players) {
+    player.motionX = player.root.position.x;
+    player.motionZ = player.root.position.z;
+  }
 }
 
 /** Restores the wide broadcast framing used while the match simulates. */
@@ -2514,6 +2716,7 @@ export function init(canvas) {
   buildGoal();
   buildStands();
   buildSquad();
+  cachePausePoses();
   buildBall();
   buildAimRig();
 
@@ -2536,18 +2739,102 @@ function resize() {
   renderer.setSize(w, h, false);
 }
 
+let animationsPaused = false;
+const pausePoses = [];
+let pauseCaptured = false;
+function cachePausePoses() {
+  pausePoses.length = 0;
+  for (const rig of [squad.keeper, squad.homeKeeper, squad.striker, ...squad.mates, ...squad.foes, squad.ref]) {
+    rig.root.traverse(node => pausePoses.push({ node, root: node === rig.root, position: node.position.clone(),
+      quaternion: node.quaternion.clone(), scale: node.scale.clone() }));
+  }
+  pauseCaptured = false;
+}
+
+// Chance placement can change root positions, but selection should retain the
+// animation pose from the build-up, rather than sample a new idle or kick pose.
+export function captureSelectionPoses() {
+  pauseCaptured = false;
+  holdPlayerPoses();
+}
+
+export function restoreSelectionPoses() {
+  for (const pose of pausePoses) {
+    if (pose.root) continue;
+    pose.node.position.copy(pose.position);
+    pose.node.quaternion.copy(pose.quaternion);
+    pose.node.scale.copy(pose.scale);
+  }
+  pauseCaptured = false;
+}
+
+const _selectionLeft = new THREE.Vector3();
+const _selectionRight = new THREE.Vector3();
+const _selectionUp = new THREE.Vector3(0, 1, 0);
+const _selectionTurn = new THREE.Quaternion();
+const _selectionParent = new THREE.Quaternion();
+export function faceStrikerForSelection() {
+  // The frozen turn clip can contain torso yaw in addition to the root heading.
+  // Align that actual torso before freezing, retaining its limb articulation.
+  placeStrikerForKick(Math.atan2(chance.dirX, -chance.dirZ));
+  if (!captain) return;
+  const hips = bipedBone(captain.model, 'hips');
+  const left = captain.model.getObjectByName('mixamorigLeftShoulder');
+  const right = captain.model.getObjectByName('mixamorigRightShoulder');
+  if (!hips || !left || !right) return;
+  left.getWorldPosition(_selectionLeft);
+  right.getWorldPosition(_selectionRight);
+  _selectionLeft.sub(_selectionRight);
+  const facing = Math.atan2(-_selectionLeft.z, _selectionLeft.x);
+  const wanted = Math.atan2(chance.dirX, chance.dirZ);
+  _selectionTurn.setFromAxisAngle(_selectionUp, wanted - facing);
+  hips.parent.getWorldQuaternion(_selectionParent);
+  _selectionTurn.multiply(_selectionParent);
+  _selectionParent.invert().multiply(_selectionTurn);
+  hips.quaternion.premultiply(_selectionParent);
+  hips.updateWorldMatrix(false, true);
+  pauseCaptured = false;
+}
+
+export function setAnimationsPaused(paused) {
+  if (paused === animationsPaused) return;
+  animationsPaused = paused;
+  pauseCaptured = false;
+  if (captain) captain.mixer.timeScale = paused ? 0 : 1;
+  for (const player of players) if (player.rig.avatar) player.rig.avatar.mixer.timeScale = paused ? 0 : 1;
+  if (paused) holdPlayerPoses();
+}
+
+function holdPlayerPoses() {
+  for (const pose of pausePoses) {
+    if (!pauseCaptured) {
+      pose.position.copy(pose.node.position);
+      pose.quaternion.copy(pose.node.quaternion);
+      pose.scale.copy(pose.node.scale);
+    } else {
+      pose.node.position.copy(pose.position);
+      pose.node.quaternion.copy(pose.quaternion);
+      pose.node.scale.copy(pose.scale);
+    }
+  }
+  pauseCaptured = true;
+}
+
 function tick() {
   // Single delta source: every consumer scales its displacement against this.
   const dt = Math.min(clock.getDelta(), 0.05);
-  crowdTime.value += dt;
-  crowdCheer.value = Math.max(0, crowdCheer.value - dt * .18);
   if (frameCb) frameCb(dt);
-  positionHomeKeeper(dt);
-  syncPlayerLocomotion(dt);
-  animateCaptain(dt);
-  animateSquad(dt);
+  if (!animationsPaused) {
+    crowdTime.value += dt;
+    crowdCheer.value = Math.max(0, crowdCheer.value - dt * .18);
+    positionHomeKeeper(dt);
+    syncPlayerLocomotion(dt);
+    animateCaptain(dt);
+    animateSquad(dt);
+    updateNets(dt);
+  }
+  if (animationsPaused) holdPlayerPoses();
   captureLaunch();
-  updateNets(dt);
 
   _camWant.copy(_camHome);
   if (shakeAmp > 0.001) {

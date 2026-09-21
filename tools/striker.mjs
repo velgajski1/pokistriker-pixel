@@ -80,7 +80,10 @@ try {
         bones.forEach((bone, i) => { samples.jump = Math.max(samples.jump, rotations[i].angleTo(bone.quaternion)); });
         samples.handoverFrames++;
       }
-      if (phase === 'FLIGHT' && d.shot.flightTime > 0.9 && weights.idle >= 0.99) samples.idleReturned = true;
+      if (phase === 'FLIGHT' && d.shot.flightTime > 0.9
+        && (weights.idle >= .99 || (speed > .00001 && weights.walk + weights.quick_walk + weights.run + weights.run_alt >= .99))) {
+        samples.idleReturned = true; // Recovery can now continue into a rebound chase.
+      }
       bones.forEach((bone, i) => rotations[i].copy(bone.quaternion));
       rootPrevious.copy(root.position);
       previousRun = running;

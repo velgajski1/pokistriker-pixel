@@ -50,6 +50,18 @@
     "slide_right": {
       "duration": 1.7916666666666667
     },
+    "celebrate_backflip": {
+      "duration": 2.1666666666666665
+    },
+    "celebrate_backflip_hooks": {
+      "duration": 5.875
+    },
+    "celebrate_dance": {
+      "duration": 8.208333333333334
+    },
+    "celebrate_heart": {
+      "duration": 6.208333333333333
+    },
     "idle": {
       "duration": 2.0
     }
@@ -136,6 +148,26 @@
       "file": "slide_right",
       "sourceDuration": 1.7916666666666667,
       "sourceFrames": 44
+    },
+    "celebrate_backflip": {
+      "file": "Backflip",
+      "sourceDuration": 2.1666666666666665,
+      "sourceFrames": 53
+    },
+    "celebrate_backflip_hooks": {
+      "file": "Backflip_and_Hooks",
+      "sourceDuration": 5.875,
+      "sourceFrames": 142
+    },
+    "celebrate_dance": {
+      "file": "All_Night_Dance",
+      "sourceDuration": 8.208333333333334,
+      "sourceFrames": 198
+    },
+    "celebrate_heart": {
+      "file": "Big_Heart_Gesture",
+      "sourceDuration": 6.208333333333333,
+      "sourceFrames": 150
     }
   }
 }

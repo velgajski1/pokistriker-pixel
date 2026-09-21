@@ -44,6 +44,35 @@ js/
 - **Collision follows the animation.** The keeper's and defenders' capsules are
   read off their live rig joints, so what you see reaching for the ball is what
   the save/block test uses.
+- **Long shots are harder to aim.** Marker speed scales with distance to the
+  goal centre: 1x within 10m, 1.5x at 20m, 2x at 30m, capped at 2.5x from 40m.
+  Target Practice and Ice in the Veins still reduce speed multiplicatively.
+  Power timing is unchanged. This increases long-range difficulty; historical
+  conversion rates need remeasurement.
+- **Aiming freezes the action.** Player poses (including idle), crowd/flags and
+  net animation pause during AIM and POWER. Aim and power controls remain live;
+  animation resumes with the windup. `node tools/aim-pause.mjs` checks frozen
+  player transforms and crowd time, responsive controls and resumption.
+  All player mixers are explicitly paused and cached transforms are held before
+  rendering, including both goalkeepers, so late procedural updates cannot
+  change the frozen pose during either selection phase.
+  Selection retains the current build-up animation poses rather than sampling
+  a fresh idle, walking or kick pose when the pause begins.
+  The shooter's root and preserved torso yaw are aligned toward goal before
+  locking the pose, including when the build-up ends mid-turn.
+- **Goals trigger the supplied celebrations.** The scorer performs Backflip,
+  Backflip and Hooks, All Night Dance or Big Heart Gesture, with no consecutive
+  repeat in a run. He first runs about 5.4m toward the nearer sideline crowd over
+  1.5 seconds, slows to a stop and performs facing the supporters. The camera
+  follows the run, then slowly orbits the scorer at about 10 degrees/second
+  while framing the full clip (roughly 4–10 seconds total including
+  recovery), then match simulation resumes. Clips keep
+  their vertical motion and rotation; gameplay owns horizontal positioning.
+  `node tools/celebrations.mjs` checks all four performances and goal triggering.
+- **Both elevens wear conventional shirt numbers.** Keepers use 1; fullbacks
+  2/3, centre-backs 4/5, midfielders 6/8/10 and attackers 7/9/11. Back prints
+  inherit the shirt's skin weights so they bend with running, kicking and diving.
+  White digits have a dark outline for contrast across all kit palettes.
 - **Opponent and supporter colours change per match.** Five palettes cover
   crimson, ivory, gold, forest and plum kits with contrasting goalkeeper colours.
   Crowd shirts, scarves and flags follow the opponent, mixed with home fans and
@@ -58,7 +87,8 @@ js/
   every chance; consecutive matches can draw the same surface. This is visual
   only and does not change ball physics.
 - **The ball uses the supplied Meshy soccer GLB.** `assets/ball.glb` keeps its
-  panel geometry and textures at 6,000 triangles and 1024 px. Rebuild it with
+  panel geometry at 6,000 triangles with 512 px JPEG textures (about 279 KB).
+  The export script enforces a 500,000-byte maximum. Rebuild it with
   Blender using `tools/blender/build_ball.py`. The model is centred and scaled
   at boot to the 11 cm collision radius; loading failure retains the procedural
   ball. Physics and kick timing are unchanged.
@@ -138,9 +168,11 @@ js/
   line inside the frame AND then get the whole way over it. Occupying the goal
   volume is not enough on its own, because a ball shoved clear of the inside
   of a post - which stands ON the line - lands in that volume without ever
-  having crossed. The netting is gated on the same flag, so a shot sailing
-  over the bar cannot clip the roof panel from above and get pushed back down
-  into the goal.
+  having crossed. Net contact is independent of scoring: finite panels collide
+  from both sides, retaining the impact side throughout the stretch. Outside
+  hits deform inward and return outward; a ball landing on the roof can rest
+  there. None of these contacts grants goal entry. `node tools/outside-net.mjs`
+  covers both sides, the back, roof, fast sweeps and 30/60/144 Hz agreement.
 - **Nobody freezes.** The keeper's dive height is a real ballistic arc, not a
   number baked into the dive pose - he pushes off, peaks around 0.8m as the
   ball arrives, lands, lies there a beat and picks himself up. Defenders get
@@ -162,9 +194,12 @@ js/
   retain their formation behavior. `BALL_PURSUIT` in app.js controls these values.
   Even small translations play the walking cycle at the corresponding speed;
   formation spacing nudges and the far goalkeeper's adjustments are included.
-  Locomotion uses the final frame displacement, so a later defensive Alert
-  pose cannot overwrite a moving player's footsteps. `node tools/glide.mjs`
-  reproduces and checks that movement/pose ordering.
+  Locomotion uses final frame displacement for all players, including the striker
+  and both keepers. Moving idle/Alert/ready poses and expired kick recovery yield
+  to walking or running; slow moving turns use walking turn clips. Active kicks,
+  slides, dives and keeper save reaches retain their action animation. Teleports
+  between chances are excluded. `node tools/glide.mjs` reproduces these cases,
+  including movement as slow as 0.04m/s.
   Upright defenders can clear loose balls below 0.35m and 7m/s when within
   boot reach. They plant and play the soccer kick; at contact, a reachable
   ball is sent upfield and wide at 18m/s with a small lift. Fast balls and
@@ -192,6 +227,15 @@ js/
   to follow his visible joints. `node tools/keeper-ready.mjs` checks the stance,
   turf clearance, frame-rate agreement and transition into the dive. This
   pre-jump adjustment and lower stance change the keeper's save coverage.
+  Shot reads now use arrival at the keeper's line with smaller lateral/height
+  errors. He stays grounded inside a 0.7m adjustment zone and times wider
+  jumps to arrival. Standing saves guide actual hand joints toward the ball;
+  low shots use a real boot block. Collision radii are unchanged.
+  While the ball is distant he repositions at up to 3.8m/s, refines his live
+  trajectory read, and saves the dive/recovery for the last 0.24s before arrival.
+  Longer flight gives him more time to cover the goal; final dive travel remains
+  capped at 1.75m from his improved position. `node tools/keeper-saves.mjs` checks
+  27 close and 20m/30m shots across three heights, including delayed commitment.
   Reading a high shot converts the sideways sprawl into an upright leap
   with overhead arms. Without it the top third of the goal was free, because a
   body lying horizontal at hip height cannot get near it — and no amount of
@@ -251,10 +295,20 @@ and source/cycle durations are recorded in `assets/squad.json`.
 
 ### Difficulty
 
+Keeper ability progresses continuously with distance, goals conceded in the
+current match and career run match number. `KEEPER_PROGRESS` tunes the curve;
+`shot.keeperAbility` exposes the profile captured at chance start. Higher skill
+reduces read/position errors and reaction time, increases movement speed, speeds
+up dive extension and improves catches/parries. Improvements approach bounded
+limits; body size and collision radii do not grow. Match goals reset for the next
+fixture, while match-number progression continues until a new run.
+`node tools/keeper-progression.mjs` checks each progression axis and its limits.
+
 The table below predates the imported squad skeleton, dive animations and corrected goal,
 post and ball dimensions. These alter coverage, target size and collision
-clearance, so conversion rates need remeasurement. Shot speed, lift and AI
-tuning constants have not been retuned to compensate.
+clearance, so conversion rates need remeasurement. Keeper reads, standing saves
+and jump timing have since been strengthened to punish shots close to him;
+the historical conversion figures below do not represent the current balance.
 
 Measured against the real modules, by aim quality (goal % per chance):
 

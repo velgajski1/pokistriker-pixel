@@ -92,7 +92,7 @@ try {
     }
     return { names, turns, dives, kickTrajectory: trajectory };
   });
-  assert(report.clips.names.length === 16, 'Not all selected clips exported');
+  assert(report.clips.names.length === 20, 'Not all selected clips exported');
   assert(report.clips.turns.every(t => t.maxYaw < .05), 'Turn root yaw was not removed');
   assert(report.clips.dives.every(d => d.weight === 1), 'Dive clips unused');
   const contact = report.clips.kickTrajectory[12];

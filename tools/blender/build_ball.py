@@ -26,9 +26,13 @@ for obj in list(bpy.context.scene.objects):
         polygon.use_smooth = True
     print('BALL triangles', len(obj.data.polygons))
 for image in bpy.data.images:
-    if image.size[0] > 1024 or image.size[1] > 1024:
-        ratio = 1024 / max(image.size)
+    if image.size[0] > 512 or image.size[1] > 512:
+        ratio = 512 / max(image.size)
         image.scale(round(image.size[0] * ratio), round(image.size[1] * ratio))
         image.pack()
 bpy.ops.export_scene.gltf(filepath=str(ROOT / 'assets/ball.glb'), export_format='GLB',
-                         export_animations=False, export_materials='EXPORT', export_yup=True)
+                         export_animations=False, export_materials='EXPORT', export_yup=True,
+                         export_image_format='JPEG', export_jpeg_quality=80)
+size = (ROOT / 'assets/ball.glb').stat().st_size
+assert size <= 500_000, f'Ball exceeds 500 KB: {size} bytes'
+print('BALL bytes', size)

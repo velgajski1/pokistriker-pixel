@@ -23,6 +23,9 @@ SOURCES = {'walk': 'Walking', 'run': 'Running', 'kick': 'Kick_a_Soccer_Ball',
            'keeper_idle': '01a0c3d7-6ce5-725a-a34e-52a339057158',
            'alert': 'Alert', 'slide_left': 'slide_light', 'slide_right': 'slide_right'}
 GAITS = ('walk', 'quick_walk', 'run', 'run_alt')
+CELEBRATIONS = {'celebrate_backflip': 'Backflip', 'celebrate_backflip_hooks': 'Backflip_and_Hooks',
+                'celebrate_dance': 'All_Night_Dance', 'celebrate_heart': 'Big_Heart_Gesture'}
+SOURCES.update(CELEBRATIONS)
 bpy.ops.object.select_all(action='SELECT')
 bpy.ops.object.delete(use_global=False)
 bpy.context.scene.render.fps = FPS
@@ -31,7 +34,8 @@ source_report = {}
 base_rig = base_mesh = None
 for name, source in SOURCES.items():
     before = set(bpy.data.objects)
-    bpy.ops.import_scene.gltf(filepath=str(next(SOURCE.glob('*_Animation_' + source + '_withSkin.glb'))))
+    directory = ROOT / 'references/Meshy_AI_Captain_of_Tomorrow_biped' if name in CELEBRATIONS else SOURCE
+    bpy.ops.import_scene.gltf(filepath=str(next(directory.glob('*_Animation_' + source + '_withSkin.glb'))))
     imported = set(bpy.data.objects) - before
     rig = next(o for o in imported if o.type == 'ARMATURE')
     mesh = next(o for o in imported if o.type == 'MESH' and o.find_armature() == rig)
