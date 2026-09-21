@@ -1,8 +1,15 @@
 # BENCHED — A Striker's Roguelite
 
 A turn-based attacking-football roguelite in Three.js. Matches simulate at
-**10 in-game minutes per real second** (90' in 9s). When a chance arrives the
-clock freezes, the arena brightens and you aim, power up and shoot.
+**200 match seconds per real second** (27 seconds of clock progression for
+90 minutes, excluding shots, reactions and any minimum gap holds). Between chances
+the camera cuts overhead and both teams pass, press and contest possession at
+2× speed in a lower, landscape-aligned view of the pitch. It pans and zooms into the
+normal shooting view over the next chance's 2.4-second build-up, which plays
+at normal animation speed. The match clock freezes while you aim and shoot.
+`node tools/match-simulation.mjs` checks timing, camera transitions and the
+return overhead after a celebration. Chances still follow the career schedule;
+ambient possession changes do not award extra goals.
 
 ## Run it
 
@@ -75,6 +82,30 @@ js/
   Reactions blend from the current pose and play for at most 4.5 seconds,
   followed by a 0.3-second return to idle. `node tools/reactions.mjs` checks
   all four clips on both roles, missed-shot triggering and cleanup.
+  Walk Sad retains its original lower-body motion, with relaxed upper-body
+  articulation and lowered clavicles to avoid a hunched, inflated neck/shoulder
+  appearance. `node tools/sad-walk.mjs` renders four poses beside normal walking.
+  During a missed-shot reaction, an in-bounds ball remains live for everyone
+  except the reacting shooter: nearby players chase, teammates reposition and
+  defenders can clear slow balls. Pursuit stops when the ball leaves the pitch.
+  The verdict and reward stay fixed. `node tools/miss-continuation.mjs` checks
+  both cases while preserving the shooter's reaction.
+- **Defenders walk after conceding.** All ten opposing outfield players head
+  in varied directions at a slow pace during the scorer's celebration. Half
+  use Walk Sad before blending into walking; the rest walk slowly throughout.
+  No idle/alert poses interrupt this movement. The keeper retains his separate
+  reaction, and normal match movement resumes after the celebration.
+  `node tools/defender-reactions.mjs` checks all ten through a long celebration.
+- **Forward gaits follow facing.** Players turn first for destinations behind
+  them, then walk or run forward through the turn. Rebound spacing follows the
+  final movement direction, and scorers turn before running toward the crowd.
+  `node tools/forward-movement.mjs` checks walking/running at 30, 60 and 144 Hz.
+- **Player faces share clean, animated surface detail.** The importer welds
+  split seams before decimation, smooths the head and reshapes the scalp.
+  Continuous skin/hair shading supplies hairlines, eyes, brows and restrained
+  stubble on selected looks. The headband is flush with the scalp. Crew cuts,
+  side parts and swept hair join the existing styles (17 appearance presets).
+  `node tools/faces.mjs` renders every preset to `.captures/faces.png`.
 - **Both elevens wear conventional shirt numbers.** Keepers use 1; fullbacks
   2/3, centre-backs 4/5, midfielders 6/8/10 and attackers 7/9/11. Back prints
   inherit the shirt's skin weights so they bend with running, kicking and diving.

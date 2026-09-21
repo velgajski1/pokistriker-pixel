@@ -110,6 +110,13 @@ for action in list(bpy.data.actions):
 rig.data.pose_position = 'REST'
 bpy.context.view_layer.objects.active = mesh
 mesh.select_set(True)
+# Weld split UV seams before simplification so facial islands stay connected.
+bm = bmesh.new()
+bm.from_mesh(mesh.data)
+bmesh.ops.remove_doubles(bm, verts=list(bm.verts), dist=.00001)
+bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+bm.to_mesh(mesh.data)
+bm.free()
 decimate = mesh.modifiers.new('Shared squad triangle budget', 'DECIMATE')
 decimate.ratio = min(1, 24000 / len(mesh.data.polygons))
 bpy.ops.object.modifier_apply(modifier=decimate.name)
@@ -122,9 +129,22 @@ head_vertices = [v for v in bm.verts if v.co.z > 1.43 and abs(v.co.x) < .14]
 for _ in range(3):
     bmesh.ops.smooth_vert(bm, verts=head_vertices, factor=.22,
                           use_axis_x=True, use_axis_y=True, use_axis_z=True)
-for height in (.12, .44, .63, .88):
+# Replace the source's bulky sculpted fringe with a clean scalp foundation.
+# Blend through the forehead so hair and skin retain exactly matching seams.
+for v in head_vertices:
+    t = max(0, min(1, (v.co.z - 1.575) / .045))
+    t = t * t * (3 - 2 * t)
+    direction = Vector((v.co.x / .093, (v.co.y - .005) / .10, (v.co.z - 1.575) / .105))
+    direction.normalize()
+    target = Vector((direction.x * .093, .005 + direction.y * .10, 1.575 + direction.z * .105))
+    v.co = v.co.lerp(target, t)
+for height in (.12, .44, .63, .88, 1.43, 1.465):
     bmesh.ops.bisect_plane(bm, geom=list(bm.verts) + list(bm.edges) + list(bm.faces),
                           plane_co=(0, 0, height), plane_no=(0, 0, 1), dist=.00001)
+for side in (-1, 1):
+    # Raised sides of a small crew-neck opening; keep the trapezius in cloth.
+    bmesh.ops.bisect_plane(bm, geom=list(bm.verts) + list(bm.edges) + list(bm.faces),
+                          plane_co=(0, 0, 1.43), plane_no=(-side * .6, 0, 1), dist=.00001)
 bm.to_mesh(mesh.data)
 bm.free()
 
@@ -151,7 +171,9 @@ for polygon in mesh.data.polygons:
         region = 'hair'
     elif abs(x) > .69 and z > 1.10:
         region = 'gloves'
-    elif (z > 1.405 and abs(x) < .14) or (abs(x) > .36 and z > 1.10):
+    # A close crew neck at the base of the neck keeps the upper chest and
+    # trapezius covered. The cut above makes a clean sewn edge, not triangles.
+    elif (z > min(1.465, 1.43 + abs(x) * .6) and abs(x) < .14) or (abs(x) > .36 and z > 1.10):
         region = 'skin'
     elif z > .88:
         region = 'kit'
@@ -165,6 +187,10 @@ for polygon in mesh.data.polygons:
         region = 'boots'
     polygon.material_index = names.index(region)
     polygon.use_smooth = True
+
+# Discard imported split normals after reshaping; keeping them makes the old
+# fringe appear embossed on the smooth scalp, especially on bald players.
+mesh.data.normals_split_custom_set([(0, 0, 0)] * len(mesh.data.loops))
 
 rig.data.pose_position = 'POSE'
 rig.animation_data_create()
@@ -184,6 +210,35 @@ idle = {bone.name: bone.matrix_basis.copy() for bone in rig.pose.bones}
 samples['idle'] = [dict(idle) for _ in range(49)]
 for i, frame in enumerate(samples['idle']):
     frame['mixamorig:Spine2'] = frame['mixamorig:Spine2'] @ Matrix.Rotation(math.sin(i / 48 * math.tau) * .012, 4, 'X')
+
+# Keep the sad steps and lowered gaze, but remove the source's braced,
+# raised-shoulder silhouette. Borrow relaxed articulation from normal walking
+# without scaling bones or changing the player's physique.
+relaxed_upper = {'Spine': .35, 'Spine1': .45, 'Spine2': .65, 'Neck': .65, 'Head': .35,
+                 'LeftShoulder': .85, 'RightShoulder': .85,
+                 'LeftArm': .65, 'RightArm': .65, 'LeftForeArm': .45, 'RightForeArm': .45}
+walk = samples['walk']
+for i, frame in enumerate(samples['react_walk_sad']):
+    phase = (i * .75) % (len(walk) - 1)
+    first = int(phase)
+    fraction = phase - first
+    for name, weight in relaxed_upper.items():
+        key = 'mixamorig:' + name
+        loc, rot, scale = frame[key].decompose()
+        walk_loc, walk_rot, walk_scale = walk[first][key].decompose()
+        next_loc, next_rot, next_scale = walk[first + 1][key].decompose()
+        frame[key] = Matrix.LocRotScale(walk_loc.lerp(next_loc, fraction),
+            rot.slerp(walk_rot.slerp(next_rot, fraction), weight), walk_scale.lerp(next_scale, fraction))
+    for bone in rig.pose.bones:
+        bone.matrix_basis = frame[bone.name]
+    bpy.context.view_layer.update()
+    for side, sign in (('Left', 1), ('Right', -1)):
+        bone = rig.pose.bones['mixamorig:' + side + 'Shoulder']
+        origin = bone.head.copy()
+        rotation = Matrix.Rotation(math.radians(8) * sign, 4, 'Y')
+        bone.matrix = Matrix.Translation(origin) @ rotation @ Matrix.Translation(-origin) @ bone.matrix
+        bpy.context.view_layer.update()
+        frame[bone.name] = bone.matrix_basis.copy()
 
 # The supplied kick strikes on the forward swing near 0.5 s. Its foot passes
 # above a ground ball, so lower only the kicking leg through contact with CCD

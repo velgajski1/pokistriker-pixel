@@ -20,10 +20,12 @@ import {
 const MAX_LEVEL = 5;
 
 const CLOCK = {
-  MINUTES_PER_SECOND: 10,   // 90' of football in exactly 9 real seconds
+  MINUTES_PER_SECOND: 200 / 60, // 200x clock: 90 match minutes in 27 real seconds.
   FULL_TIME: 90,
   TICKER_INTERVAL: 1.5,
 };
+const MATCH_PLAY = { SPEED: 2, MIN_GAP: 3.5, APPROACH: 2.4 };
+const DEFENDER_REACTION = { sadSpeed: .65, slowMin: .7, slowMax: 1.05 };
 
 const ECONOMY = {
   GOAL_PAYOUT: 100,
@@ -297,6 +299,7 @@ function startMatch() {
   run.tickerAt = 0;
   run.superSubUsed = false;
   run.building = false;
+  run.simTime = 0;
   run.chancesLeft = rollChances();
 
   // Spread the opportunities across the 90 with a little jitter.
@@ -312,11 +315,11 @@ function startMatch() {
   state.phase = 'SIM';
   ui.hideOverlay();
   ui.showHud(true);
-  ui.setDimmed(true);
+  ui.setDimmed(false);
   ui.showPower(false);
   ui.setPrompt('');
   blockerCount = 0;
-  engine.frameAmbient();
+  engine.frameAmbient(true);
   pushHud();
   ui.setTicker(0, 'Kick-off. You are on the shoulder of the last defender.');
 }
@@ -369,9 +372,11 @@ function pushHud() {
 // ===========================================================================
 function updateSim(dt) {
   const run = state.run;
-  run.clock += dt * CLOCK.MINUTES_PER_SECOND;
+  run.simTime += dt;
+  const next = run.schedule[0];
+  run.clock = Math.min(next ?? CLOCK.FULL_TIME, run.clock + dt * CLOCK.MINUTES_PER_SECOND);
 
-  if (run.clock >= CLOCK.FULL_TIME) {
+  if (run.clock >= CLOCK.FULL_TIME && run.simTime >= MATCH_PLAY.MIN_GAP) {
     run.clock = CLOCK.FULL_TIME;
     pushHud();
     endMatch();
@@ -391,13 +396,12 @@ function updateSim(dt) {
 
   // Start the move that creates the next chance, timed so its final pass
   // lands on the striker exactly as the clock hits the scheduled minute.
-  const next = run.schedule[0];
   if (next !== undefined && !run.building) {
     const secondsAway = (next - run.clock) / CLOCK.MINUTES_PER_SECOND;
-    if (secondsAway <= BUILDUP_LEAD) {
+    if (secondsAway <= BUILDUP_LEAD && run.simTime >= MATCH_PLAY.MIN_GAP) {
       run.building = true;
       prepareChance();
-      engine.startBuildup(origin, secondsAway, blockerCount);
+      engine.startBuildup(origin, MATCH_PLAY.APPROACH, blockerCount);
       run.buildLine = BUILDUP_CALLS[(Math.random() * BUILDUP_CALLS.length) | 0];
       ui.setTicker(Math.floor(run.clock), run.buildLine);
       run.tickerAt = 0.4;
@@ -411,7 +415,7 @@ function updateSim(dt) {
       beginHighlight(true);
     }
   } else {
-    engine.runAmbient(dt);
+    engine.runMatchSimulation(dt, MATCH_PLAY.SPEED);
   }
 }
 
@@ -781,7 +785,7 @@ export function substep(h) {
     shot.keeperAirY, shot.keeperGround, tracking ? keeperAim : null);
 
   // --- Defenders -----------------------------------------------------------
-  for (let i = 0; i < blockerCount; i++) {
+  for (let i = 0; i < blockerCount && shot.resolved === null; i++) {
     const b = blockers[i];
     if (b.delay > 0) {
       b.delay -= h;
@@ -809,7 +813,7 @@ export function substep(h) {
   if (prevPos.y > TURF + 1e-4 && ballPos.y <= TURF) shot.bounced = true;
   if (shot.reboundStart < 0 && (shot.bounced || shot.touched !== null)) shot.reboundStart = shot.flightTime;
 
-  if (shot.resolved === null && !shot.entered) updateClearance(h);
+  if ((shot.resolved === null || missedBallInPlay()) && !shot.entered) updateClearance(h);
 
   if (shot.resolved === null) tryResolve();
 
@@ -959,10 +963,19 @@ export function reboundIsOver(position, velocity, elapsed, awayFor) {
 
 export const BALL_PURSUIT = { sprintSpeed: 7.2, attackerRange: 18, clearanceMaxSpeed: 7 };
 
+export function missedBallInPlay() {
+  return shot.resolved !== null && shot.resolved !== 'goal'
+    && Math.abs(ballPos.x) <= PITCH.WIDTH / 2 + BALL_R
+    && ballPos.z >= GOAL.PLANE_Z - BALL_R
+    && ballPos.z <= GOAL.PLANE_Z + PITCH.LENGTH + BALL_R;
+}
+
 function updateFlight(dt) {
+  const continuePlay = missedBallInPlay();
   // Follow only nearby loose rebounds; distant teammates retain their lanes.
-  engine.watchBall(dt, shot.resolved === null, shot.resolved === null && (shot.bounced || shot.touched !== null),
-    BALL_PURSUIT, shot.flightTime >= .9);
+  engine.watchBall(dt, shot.resolved === null || continuePlay,
+    continuePlay || (shot.resolved === null && (shot.bounced || shot.touched !== null)),
+    BALL_PURSUIT, shot.flightTime >= .9, continuePlay);
   if (shot.resolved === null && (shot.bounced || shot.touched !== null)) engine.followReboundCamera(dt);
   engine.faceKeeper(dt, 0);            // square up to dive along the goal line
   if (shot.flightTime > 0.12 && shot.resolved === null && shot.follow < 2.4) {
@@ -1008,6 +1021,7 @@ function resolve(outcome) {
   run.chancesLeft = Math.max(0, run.chancesLeft - 1);
 
   if (outcome === 'goal') {
+    engine.startDefenderReactions(DEFENDER_REACTION);
     let celebrationIndex = Math.floor(Math.random() * (engine.CELEBRATIONS.length - (run.lastCelebration === undefined ? 0 : 1)));
     if (run.lastCelebration !== undefined && celebrationIndex >= run.lastCelebration) celebrationIndex++;
     run.lastCelebration = celebrationIndex;
@@ -1056,12 +1070,13 @@ function finishChance() {
 
   trySuperSub();
 
-  // Back to SIMULATING: re-dim, pull the camera out, resume the clock.
+  // Cut overhead immediately, then play through the gap before the next move.
   state.phase = 'SIM';
   blockerCount = 0;
   run.building = false;
-  engine.frameAmbient();
-  ui.setDimmed(true);
+  run.simTime = 0;
+  engine.frameAmbient(true);
+  ui.setDimmed(false);
   ui.setPrompt('');
   run.tickerAt = 0;
   pushHud();
@@ -1189,6 +1204,7 @@ async function boot() {
     state, shot, ball: engine.objects.ball, ready: false,
     ballState: { position: ballPos, velocity: ballVel },
     crowd: engine.crowd, formation: engine.formation,
+    matchView: engine.matchView,
     dimensions: { goal: GOAL, pitch: PITCH, ballRadius: BALL_R },
   };
   await Promise.all([engine.loadStriker(), engine.loadBall()]);

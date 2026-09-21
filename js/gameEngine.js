@@ -451,6 +451,7 @@ const GAITS = ['walk', 'quick_walk', 'run', 'run_alt'];
 export const CELEBRATIONS = ['celebrate_backflip', 'celebrate_backflip_hooks', 'celebrate_dance', 'celebrate_heart'];
 export const REACTIONS = ['react_stomp', 'react_shout', 'react_confused', 'react_walk_sad'];
 export const reactions = { keeper: null, shooter: null };
+export const defenderReactions = { active: false, tracks: [] };
 export const celebration = { name: null, time: 0, duration: 0, phase: null,
   runTime: 0, runDuration: 1.5, startX: 0, targetX: 0 };
 const ANIMATIONS = ['idle', ...GAITS, 'kick', ...CELEBRATIONS, ...REACTIONS, 'turn_idle_left', 'turn_idle_right',
@@ -556,6 +557,12 @@ async function loadCaptain() {
     keeperSet = makeCapsuleSet(squad.keeper);
     for (let i = 0; i < blockerSets.length; i++) blockerSets[i] = makeCapsuleSet(squad.foes[i], false);
     cachePausePoses();
+    for (const rig of squad.foes) {
+      const track = { rig, actor: ambient.actors.find(p => p.rig === rig), time: 0,
+        sad: false, speed: 0, heading: 0, position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+      rig.avatar.goalWalk = track;
+      defenderReactions.tracks.push(track);
+    }
     for (const role of ['keeper', 'shooter']) {
       const rig = role === 'keeper' ? squad.keeper : squad.striker;
       const avatar = role === 'keeper' ? rig.avatar : captain;
@@ -632,7 +639,7 @@ function shadeCaptainFace(material, look) {
       if (faceBind.y > 1.405 && abs(faceBind.x) < .14) {
         vec3 p = faceBind;
         float front = smoothstep(-.035, .065, p.z);
-        float hairline = mix(1.505, 1.631, front);
+        float hairline = mix(1.505, 1.61, front);
         hairline -= .024 * smoothstep(.045, .085, abs(p.x)) * front;
         if (faceStyle == 3.0) hairline += .012 * sin(p.x * 28.0) * front;
         if (faceStyle == 4.0 || faceStyle == 5.0) hairline -= .016 * front;
@@ -647,16 +654,64 @@ function shadeCaptainFace(material, look) {
           float part = 1.0 - smoothstep(.001, .0035, abs(p.x - .025 - p.z * .15));
           hairColour = mix(hairColour, faceSkin * .65, part * .65);
         }
-        float jaw = smoothstep(1.443, 1.46, p.y) * (1.0 - smoothstep(1.505, 1.535, p.y));
+        float jaw = smoothstep(1.443, 1.46, p.y) * (1.0 - smoothstep(1.505, 1.53, p.y));
         float beard = jaw * smoothstep(.005, .05, p.z) * faceBeard;
         vec3 skinColour = mix(faceSkin, faceHair, beard * (.88 + grain * .12));
         diffuseColor.rgb = mix(skinColour, hairColour, hair);
+        float eyeX = abs(p.x) - .033;
+        float eye = 1.0 - smoothstep(.8, 1.2, length(vec2(eyeX / .012, (p.y - 1.576) / .0035)));
+        eye *= smoothstep(.065, .08, p.z);
+        float iris = 1.0 - smoothstep(.0025, .0045, abs(eyeX));
+        diffuseColor.rgb = mix(diffuseColor.rgb, mix(faceSkin * 1.08, vec3(.025), iris), eye * .8);
+        float brow = (1.0 - smoothstep(.011, .016, abs(eyeX)))
+          * (1.0 - smoothstep(.0015, .004, abs(p.y - 1.59 + eyeX * .10))) * front;
+        diffuseColor.rgb = mix(diffuseColor.rgb, faceHair, brow * .65);
         if (faceStyle == 6.0) {
           float band = 1.0 - smoothstep(.004, .006, abs(p.y - 1.632 + p.z * .06));
           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(.045), band);
         }
       }`);
   };
+}
+
+const captainHairShapes = new Map();
+function captainHairGeometry(style, headIndex) {
+  const key = style + ':' + headIndex;
+  if (captainHairShapes.has(key)) return captainHairShapes.get(key);
+  const positions = [], indices = [], joints = [], weights = [];
+  const rings = 20, segments = 40;
+  const volume = style === 'afro' ? .033 : style === 'curls' ? .016
+    : style === 'floppy' || style === 'swept' ? .014 : style === 'bald' || style === 'buzz' ? 0 : .006;
+  for (let row = 0; row <= rings; row++) {
+    for (let col = 0; col <= segments; col++) {
+      const phi = col / segments * Math.PI * 2;
+      const facing = Math.cos(phi);
+      const edge = 1.585 + facing * (facing > 0 ? .023 : .065);
+      const theta = row / rings * Math.acos((edge - 1.575) / .108);
+      const top = Math.max(0, Math.cos(theta));
+      const curls = style === 'afro' || style === 'curls'
+        ? .003 * Math.sin(phi * 12) * Math.sin(theta * 18) * Math.sin(theta) : 0;
+      const radius = volume * top + curls;
+      const sweep = style === 'sidepart' || style === 'swept' ? .012 * top * top : 0;
+      positions.push((Math.sin(phi) * Math.sin(theta) * (.096 + radius) + sweep) * CAPTAIN_BIND_SCALE,
+        (1.575 + Math.cos(theta) * .108 + volume * top * top + curls) * CAPTAIN_BIND_SCALE,
+        (Math.cos(phi) * Math.sin(theta) * (.104 + radius)) * CAPTAIN_BIND_SCALE);
+      joints.push(headIndex, 0, 0, 0); weights.push(1, 0, 0, 0);
+      if (row < rings && col < segments) {
+        const a = row * (segments + 1) + col, b = a + segments + 1;
+        indices.push(a, b, a + 1, b, b + 1, a + 1);
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(joints, 4));
+  geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  captainHairShapes.set(key, geometry);
+  return geometry;
 }
 
 function colourCaptain(model, rig) {
@@ -673,25 +728,8 @@ function colourCaptain(model, rig) {
         : region === 'gloves' ? rig.kit.gloves || rig.look.skin : rig.kit[region] ?? 0xffffff);
     if (region === 'hair') {
       scalp = node;
-      // Only the small hair primitive varies in shape; the body stays shared.
-      node.geometry = node.geometry.clone();
-      const position = node.geometry.attributes.position;
-      const style = rig.look.style;
-      const volume = style === 'afro' ? 1.45 : style === 'curls' ? 1.15
-        : style === 'floppy' ? 1.15 : style === 'buzz' || style === 'bald' ? 0.55
-          : style === 'crew' ? .72 : style === 'swept' ? 1.12 : 1;
-      for (let i = 0; i < position.count; i++) {
-        const y = position.getY(i);
-        const blend = THREE.MathUtils.smoothstep(y, 1.64 * CAPTAIN_BIND_SCALE, 1.70 * CAPTAIN_BIND_SCALE);
-        const width = 1 + (volume - 1) * blend * 0.45;
-        const sweep = style === 'sidepart' || style === 'swept' ? blend * .014 * CAPTAIN_BIND_SCALE : 0;
-        position.setXYZ(i, position.getX(i) * width + sweep,
-          y + Math.max(0, y - 1.64 * CAPTAIN_BIND_SCALE) * (volume - 1) * blend,
-          position.getZ(i) * width);
-      }
-      position.needsUpdate = true;
-      node.geometry.computeVertexNormals();
-      node.geometry.computeBoundingSphere();
+      const headIndex = node.skeleton.bones.indexOf(bipedBone(model, 'head'));
+      node.geometry = captainHairGeometry(rig.look.style, headIndex);
     }
   });
   if (scalp && ['headband', 'ponytail', 'bun'].includes(rig.look.style)) {
@@ -809,9 +847,10 @@ function animateSquad(dt) {
   for (const player of players) {
     const rig = player.rig;
     if (rig === squad.keeper && reactions.keeper?.name) { sampleReaction(reactions.keeper, dt); continue; }
+    if (defenderReactions.active && rig?.avatar?.goalWalk) { animateDefenderReaction(rig.avatar.goalWalk, dt); continue; }
     if (!rig?.avatar || rig.avatar.procedural) continue;
     const a = rig.avatar;
-    if (a.passTime >= 0) sampleKick(a, passClipTime(a, dt));
+    if (a.passTime >= 0) sampleKick(a, passClipTime(a, matchFrameDt ? 0 : dt));
     else sampleLocomotion(a, a.speed, dt);
     a.mixer.update(dt);
   }
@@ -834,7 +873,7 @@ function syncPlayerLocomotion(dt) {
     const passing = a.passTime >= 0 && a.passTime < .28 + kickEnd - a.data.clips.kick.contact;
     const shooting = r === squad.striker && kickTime >= 0 && kickTime < kickEnd;
     const action = passing || shooting || (r === squad.striker && (celebration.name || reactions.shooter?.name))
-      || (r === squad.keeper && reactions.keeper?.name) || a.saveActive
+      || (r === squad.keeper && reactions.keeper?.name) || (defenderReactions.active && a.goalWalk) || a.saveActive
       || a.actions.slide_left.getEffectiveWeight() > .1 || a.actions.slide_right.getEffectiveWeight() > .1
       || a.actions.dive_left.getEffectiveWeight() > .35 || a.actions.dive_right.getEffectiveWeight() > .35;
     if (action) continue;
@@ -960,7 +999,57 @@ export function startReaction(role, name) {
 }
 
 export function stopReactions() {
+  defenderReactions.active = false;
   for (const role of ['keeper', 'shooter']) if (reactions[role]) reactions[role].name = null;
+}
+
+export function startDefenderReactions(tuning) {
+  defenderReactions.active = true;
+  const alternate = Math.random() < .5 ? 0 : 1;
+  for (let i = 0; i < defenderReactions.tracks.length; i++) {
+    const track = defenderReactions.tracks[i], a = track.rig.avatar;
+    track.time = 0;
+    track.sad = i % 2 === alternate;
+    track.speed = track.sad ? tuning.sadSpeed : lerp(tuning.slowMin, tuning.slowMax, Math.random());
+    track.heading = Math.random() * Math.PI * 2;
+    track.position.copy(a.model.position);
+    track.quaternion.copy(a.model.quaternion);
+    a.passTime = -1; a.turnTime = -1; a.turnRate = 0; a.saveActive = false;
+    a.procedural = false;
+    track.actor.script = null;
+    track.actor.pressing = track.actor.chasing = false;
+  }
+}
+
+function animateDefenderReaction(track, dt) {
+  const root = track.rig.root, a = track.rig.avatar;
+  track.time += dt;
+  const dx = Math.sin(root.rotation.y), dz = Math.cos(root.rotation.y);
+  if ((Math.abs(root.position.x) > PITCH.WIDTH / 2 - 3 && dx * root.position.x > 0)
+    || (root.position.z < GOAL.PLANE_Z + 3 && dz < 0)
+    || (root.position.z > GOAL.PLANE_Z + PITCH.LENGTH - 3 && dz > 0)) {
+    track.heading = Math.atan2(-root.position.x, GOAL.PLANE_Z + PITCH.LENGTH / 2 - root.position.z);
+  }
+  root.rotation.y = turnToward(root.rotation.y, track.heading, dt * 1.8);
+  root.position.x += Math.sin(root.rotation.y) * track.speed * dt;
+  root.position.z += Math.cos(root.rotation.y) * track.speed * dt;
+  root.position.y = 0;
+  track.actor.x = root.position.x; track.actor.z = root.position.z;
+  track.actor.heading = root.rotation.y; track.actor.speed = a.speed = track.speed;
+  const walk = a.data.clips.walk, sad = a.data.clips.react_walk_sad;
+  // The supplied sad walk is a finite performance. Finish into a walking
+  // cycle, never its static end pose or an idle, for long celebrations.
+  const sadWeight = track.sad ? 1 - THREE.MathUtils.smoothstep(track.time, sad.duration - .35, sad.duration) : 0;
+  for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(0);
+  a.actions.react_walk_sad.setEffectiveWeight(sadWeight);
+  a.actions.react_walk_sad.time = Math.min(track.time, sad.duration);
+  a.phase = (a.phase + dt * track.speed / (walk.speed * track.rig.root.scale.y * walk.duration)) % 1;
+  a.actions.walk.setEffectiveWeight(1 - sadWeight);
+  a.actions.walk.time = a.phase * walk.duration;
+  a.mixer.update(0);
+  const blend = Math.max(0, 1 - track.time / .3);
+  a.model.position.copy(track.position).multiplyScalar(blend);
+  a.model.quaternion.identity().slerp(track.quaternion, blend);
 }
 
 function sampleReaction(track, dt) {
@@ -999,10 +1088,11 @@ function animateCaptain(dt) {
       const root = squad.striker.root;
       const previousX = root.position.x;
       celebration.runTime = Math.min(celebration.runDuration, celebration.runTime + dt);
-      const t = celebration.runTime / celebration.runDuration;
+      // Give the scorer time to turn toward the crowd before the run starts.
+      const t = Math.max(0, (celebration.runTime - .3) / (celebration.runDuration - .3));
       root.position.x = lerp(celebration.startX, celebration.targetX, t * t * (3 - 2 * t));
       root.rotation.y = turnToward(root.rotation.y,
-        celebration.targetX >= celebration.startX ? Math.PI / 2 : -Math.PI / 2, dt * 7);
+        celebration.targetX >= celebration.startX ? Math.PI / 2 : -Math.PI / 2, dt * 12);
       captainSpeed = dt > 0 ? Math.abs(root.position.x - previousX) / dt : 0;
       sampleLocomotion(captain, captainSpeed, dt);
       captain.mixer.update(0);
@@ -1033,7 +1123,7 @@ function animateCaptain(dt) {
     captain.moveBlend = .35;
     for (let i = 0; i < captain.moveBones.length; i++) captain.movePose[i].copy(captain.moveBones[i].quaternion);
   }
-  if (captain.passTime >= 0) sampleKick(captain, passClipTime(captain, dt));
+  if (captain.passTime >= 0) sampleKick(captain, passClipTime(captain, matchFrameDt ? 0 : dt));
   else if (kickTime >= 0) sampleKick(captain, kickTime);
   else sampleLocomotion(captain, captainSpeed, dt);
   captain.mixer.update(dt);
@@ -2019,6 +2109,7 @@ export function blockerBallDistance(i) {
 
 export function setBlocker(i, x, lunge, side, airY, slideTime = -1) {
   const r = blockerSets[i].rig;
+  if (defenderReactions.active && r.avatar?.goalWalk) return r.root.position.x;
   if (r.avatar?.passTime >= 0) return r.root.position.x;
   const p = formation.pressers[0]?.rig === r ? formation.pressers[0]
     : formation.pressers[1]?.rig === r ? formation.pressers[1] : null;
@@ -2125,15 +2216,17 @@ const ambient = {
   ball: { x: 0, y: BALL_R, z: -6 },
   from: { x: 0, z: -6 },
   to: { x: 0, z: -6 },
-  t: 1, dur: 1, holder: 0, wait: 0, passReceiver: -1,
+  t: 1, dur: 1, holder: 0, wait: 0, passReceiver: -1, possessionTime: 0,
 };
+export const matchView = { mode: 'broadcast', speed: 1, simulatedSeconds: 0 };
+let matchFrameDt = 0;
 export const formation = { actors: ambient.actors, pressers: [null, null], attacker: null };
 
-function selectPressers(bx, bz) {
+function selectPressers(bx, bz, team = 'away') {
   let first = null, second = null, firstD = Infinity, secondD = Infinity;
   for (const p of ambient.actors) {
     p.pressing = false;
-    if (p.team !== 'away') continue;
+    if (p.team !== team) continue;
     const d = (p.x - bx) ** 2 + (p.z - bz) ** 2;
     if (d < firstD) { second = first; secondD = firstD; first = p; firstD = d; }
     else if (d < secondD) { second = p; secondD = d; }
@@ -2177,13 +2270,23 @@ function initAmbient() {
 }
 
 function pickReceiver() {
-  // Anyone but the current holder and the referee.
-  let i = 0, guard = 0;
-  do {
-    i = (Math.random() * ambient.actors.length) | 0;
-    guard++;
-  } while ((i === ambient.holder || ambient.actors[i].team === 'ref') && guard < 30);
-  return i;
+  const holder = ambient.actors[ambient.holder];
+  let best = ambient.holder, bestScore = -Infinity;
+  for (let i = 0; i < ambient.actors.length; i++) {
+    const p = ambient.actors[i];
+    if (p === holder || p.team !== holder.team) continue;
+    const distance = Math.hypot(p.x - holder.x, p.z - holder.z);
+    let space = 15;
+    for (const opponent of ambient.actors) {
+      if (opponent.team !== p.team && opponent.team !== 'ref') {
+        space = Math.min(space, Math.hypot(opponent.x - p.x, opponent.z - p.z));
+      }
+    }
+    const forward = (p.z - holder.z) * (holder.team === 'home' ? -1 : 1);
+    const score = Math.random() * 12 + space + forward * .15 - distance * .25;
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  return best;
 }
 
 /**
@@ -2193,7 +2296,7 @@ function pickReceiver() {
  */
 function moveActors(dt) {
   const a = ambient;
-  selectPressers(a.ball.x, a.ball.z);
+  selectPressers(a.ball.x, a.ball.z, matchFrameDt && a.actors[a.holder].team === 'away' ? 'home' : 'away');
   for (let i = 0; i < a.actors.length; i++) {
     const p = a.actors[i];
     const animation = p.rig === squad.striker ? captain : p.rig.avatar;
@@ -2202,6 +2305,7 @@ function moveActors(dt) {
       if (p.rig === squad.striker) captainSpeed = 0;
       continue;
     }
+    p.heading = p.rig.root.rotation.y;
     const previousHeading = p.heading;
     let tx, tz, top;
 
@@ -2223,13 +2327,8 @@ function moveActors(dt) {
 
     const dx = tx - p.x, dz = tz - p.z;
     const d = Math.hypot(dx, dz);
-    const v = d > 0.3 ? Math.min(top, d * 2.6) : 0;
-    if (v > 0) {
-      p.x += (dx / d) * v * dt;
-      p.z += (dz / d) * v * dt;
-      const want = Math.atan2(dx, dz);
-      p.heading = v >= 3 ? want : turnToward(p.heading, want, dt * 4.5);
-    }
+    let v = d > 0.3 ? Math.min(top, d * 2.6) : 0;
+    if (v > 0) v = moveActorForward(p, tx, tz, v * dt, dt) / Math.max(dt, .001);
     const response = captain && p.rig === squad.striker
       ? 1 - Math.exp(-STRIKER_SPEED_RESPONSE * dt) : Math.min(1, dt * 6);
     p.speed = p.rig === squad.striker ? lerp(p.speed, v, response) : v;
@@ -2296,10 +2395,13 @@ export function clearanceInReach(actor, position) {
 
 function updateAmbient(dt) {
   const a = ambient;
+  a.possessionTime += dt;
 
   // --- ball: a chain of passes ---------------------------------------------
   if (a.t >= 1) {
-    a.wait -= dt;
+    const holder = a.actors[a.holder];
+    const atBall = Math.hypot(holder.x - a.ball.x, holder.z - a.ball.z) < 1.5;
+    if (atBall) a.wait -= dt;
     if (a.wait <= .28 && a.passReceiver < 0) {
       a.passReceiver = pickReceiver();
       const receiver = a.actors[a.passReceiver];
@@ -2328,6 +2430,19 @@ function updateAmbient(dt) {
   objects.ball.rotation.x -= dt * 6;
 
   moveActors(dt);
+  // Close pressure can win possession during accelerated match play.
+  if (matchFrameDt && a.possessionTime > 1.2 && a.ball.y < .6) {
+    const team = a.actors[a.holder].team;
+    for (let i = 0; i < a.actors.length; i++) {
+      const p = a.actors[i];
+      if (p.team === team || p.team === 'ref') continue;
+      if (Math.hypot(p.x - a.ball.x, p.z - a.ball.z) < .8) {
+        a.holder = i; a.passReceiver = -1; a.t = 1; a.wait = .65; a.possessionTime = 0;
+        a.ball.y = BALL_R;
+        break;
+      }
+    }
+  }
 
   // Keeper shuffles his line, watching the ball.
   const kx = clamp(a.ball.x * 0.22, -3.2, 3.2);
@@ -2343,7 +2458,9 @@ function positionHomeKeeper(dt) {
   const previousX = r.root.position.x, previousZ = r.root.position.z;
   r.root.position.x = lerp(r.root.position.x, clamp(bx * .12, -2.5, 2.5), response);
   r.root.position.z = lerp(r.root.position.z, end - clamp((end - bz) * .08, 1.2, 6), response);
-  r.root.rotation.y = Math.atan2(bx - r.root.position.x, bz - r.root.position.z);
+  const moveX = r.root.position.x - previousX, moveZ = r.root.position.z - previousZ;
+  r.root.rotation.y = Math.hypot(moveX, moveZ) > .00001
+    ? Math.atan2(moveX, moveZ) : Math.atan2(bx - r.root.position.x, bz - r.root.position.z);
   if (r.avatar) r.avatar.speed = Math.hypot(r.root.position.x - previousX,
     r.root.position.z - previousZ) / Math.max(dt, .001);
 }
@@ -2389,6 +2506,12 @@ export function startBuildup(origin, duration, blockerCount) {
   buildup.t = 0;
   buildup.dur = Math.max(0.5, duration);
   buildup.camCut = false;
+  if (matchView.mode === 'overhead') {
+    matchView.mode = 'approach';
+    matchView.speed = 1;
+    aimCameraAt(origin);
+    buildup.camCut = true;
+  }
   buildup.passLeg = -1;
   a.passReceiver = -1;
   for (const actor of a.actors) {
@@ -2504,6 +2627,22 @@ export function runBuildup(dt) {
 
 export const buildupActive = () => buildup.active;
 
+/** Turn before translating; forward gait displacement follows the new heading. */
+export function moveActorForward(actor, targetX, targetZ, step, dt) {
+  const dx = targetX - actor.x, dz = targetZ - actor.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance < .000001 || dt <= 0) return 0;
+  const want = Math.atan2(dx, dz);
+  actor.heading = turnToward(actor.heading, want, dt * (step / dt >= 3 ? 8 : 4.5));
+  const alignment = Math.cos(want - actor.heading);
+  // A destination behind the player requires a planted turn first.
+  if (alignment < .5) return 0;
+  const travel = Math.min(step, distance) * alignment;
+  actor.x += Math.sin(actor.heading) * travel;
+  actor.z += Math.cos(actor.heading) * travel;
+  return travel;
+}
+
 /** Shortest-way turn toward a heading, capped at `maxStep` radians. */
 function turnToward(cur, want, maxStep) {
   let d = want - cur;
@@ -2516,7 +2655,7 @@ function turnToward(cur, want, maxStep) {
  * Nearby players follow a loose rebound; everyone else walks with the team
  * shape. The launch itself does not send the whole formation after the ball.
  */
-export function watchBall(dt, live, rebound = false, pursuit = null, strikerReady = false) {
+export function watchBall(dt, live, rebound = false, pursuit = null, strikerReady = false, freePlay = false) {
   const bx = objects.ball.position.x;
   const bz = objects.ball.position.z;
   // Active blockers also participate; their app-driven block pose must not
@@ -2526,27 +2665,31 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
     p.z = p.rig.root.position.z;
     p.previousX = p.x;
     p.previousZ = p.z;
+    if (!live) p.chasing = false;
   }
   selectPressers(bx, bz);
   formation.attacker = null;
   let attackerDistance = pursuit?.attackerRange ?? 18;
   for (const p of ambient.actors) {
-    if (p.team !== 'home' || (p.rig === squad.striker && !strikerReady)
+    if (p.team !== 'home' || (p.rig === squad.striker && (!strikerReady || reactions.shooter?.name || celebration.name))
       || p.rig.avatar?.passTime >= 0) continue;
     const distance = Math.hypot(bx - p.x, bz - p.z);
     if (distance < attackerDistance) { formation.attacker = p; attackerDistance = distance; }
   }
 
   for (const p of ambient.actors) {
+    if (defenderReactions.active && p.rig.avatar?.goalWalk) continue;
     if (p.rig === squad.striker && (celebration.name || reactions.shooter?.name || !strikerReady || p !== formation.attacker)) { p.chasing = false; continue; }
     if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
       if (blockerSets[i].rig === p.rig) { involved = true; break; }
     }
-    if (involved && !(live && p.pressing)) continue;
+    if (involved && !freePlay && !(live && p.pressing)) continue;
 
+    p.heading = p.rig.root.rotation.y;
     const previousHeading = p.heading;
+    let turnedForMovement = false;
     let want = Math.atan2(bx - p.x, bz - p.z);
     formationTarget(p, bx, bz);
     const distance = Math.hypot(bx - p.x, bz - p.z);
@@ -2569,9 +2712,8 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
           : urgent ? (pursuit?.sprintSpeed ?? 7.2) : p.chasing ? 5.4 : lerp(1.45, .65, clamp(distance / 45, 0, 1));
         const step = urgent ? Math.min(d - keepOff, top * dt)
           : Math.min(d - keepOff, top * dt, (d - keepOff) * (1 - Math.exp(-1.6 * dt)));
-        p.x += (dx / d) * step;
-        p.z += (dz / d) * step;
-        p.speed = step / Math.max(dt, .001);
+        p.speed = moveActorForward(p, p.targetX, p.targetZ, step, dt) / Math.max(dt, .001);
+        turnedForMovement = true;
         want = Math.atan2(dx, dz);
       } else {
         p.speed = lerp(p.speed, 0, Math.min(1, dt * 7));
@@ -2579,7 +2721,7 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
     } else {
       p.speed = lerp(p.speed, 0, Math.min(1, dt * 4));
     }
-    p.heading = p.speed >= 3 ? want : turnToward(p.heading, want, dt * 4.5);
+    if (!turnedForMovement) p.heading = turnToward(p.heading, want, dt * 4.5);
     if (p.rig.avatar) {
       p.rig.avatar.passTime = -1;
       p.rig.avatar.turnRate = Math.atan2(Math.sin(p.heading - previousHeading), Math.cos(p.heading - previousHeading)) / Math.max(dt, .001);
@@ -2592,17 +2734,19 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
   separate(dt);
 
   for (const p of ambient.actors) {
+    if (defenderReactions.active && p.rig.avatar?.goalWalk) continue;
     if (p.rig === squad.striker && (celebration.name || reactions.shooter?.name || !strikerReady || p !== formation.attacker)) continue;
     if (p.rig.avatar?.passTime >= 0) continue;
     let involved = false;
     for (let i = 0; i < chance.blockerCount; i++) {
       if (blockerSets[i].rig === p.rig) { involved = true; break; }
     }
-    if (involved && !(live && p.pressing)) continue;
+    if (involved && !freePlay && !(live && p.pressing)) continue;
+    // Spacing nudges also need forward-facing footsteps.
+    p.speed = Math.hypot(p.x - p.previousX, p.z - p.previousZ) / Math.max(dt, .001);
+    if (p.speed > .00001) p.heading = Math.atan2(p.x - p.previousX, p.z - p.previousZ);
     p.rig.root.position.set(p.x, 0, p.z);
     p.rig.root.rotation.y = p.heading;
-    // Spacing nudges also need footsteps, even when the main target is reached.
-    p.speed = Math.hypot(p.x - p.previousX, p.z - p.previousZ) / Math.max(dt, .001);
     poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.17, 1));
     if (p.rig.avatar) p.rig.avatar.speed = p.speed;
     if (p.rig === squad.striker && captain) { captainSpeed = p.speed; kickTime = -1; }
@@ -2677,6 +2821,7 @@ export const chance = {
 
 /** Camera: behind the striker, offset so he never masks the goalmouth. */
 function aimCameraAt(origin) {
+  camera.up.set(0, 1, 0);
   const dx = 0 - origin.x, dz = GOAL.PLANE_Z - origin.z;
   const len = Math.hypot(dx, dz) || 1;
   const dirX = dx / len, dirZ = dz / len;
@@ -2697,6 +2842,8 @@ function aimCameraAt(origin) {
  * appears with no move behind it (a Super Sub injection).
  */
 export function setupChance(origin, blockerCount, soft) {
+  matchView.mode = 'chance';
+  matchView.speed = 1;
   releaseNetPockets();
   formation.pressers[0] = formation.pressers[1] = null;
   formation.attacker = null;
@@ -2772,10 +2919,45 @@ export function setupChance(origin, blockerCount, soft) {
 }
 
 /** Restores the wide broadcast framing used while the match simulates. */
-export function frameAmbient() {
+export function frameAmbient(topDown = false) {
   releaseNetPockets();
+  matchView.mode = topDown ? 'overhead' : 'broadcast';
+  matchView.speed = 1;
+  camera.up.set(0, 1, 0);
   _camHome.set(0, 13.5, 11);
   _camTargetWant.set(0, 0, GOAL.PLANE_Z + 7);
+  if (topDown) {
+    // Rotate the overhead view so the long axis uses a landscape screen's
+    // width. Fitting the 68 m pitch width vertically also lowers the camera.
+    camera.up.set(1, 0, 0);
+    const halfFov = Math.tan(camera.fov * Math.PI / 360);
+    const height = Math.max((PITCH.WIDTH + 12) / (2 * halfFov),
+      (PITCH.LENGTH + 12) / (2 * halfFov * camera.aspect));
+    _camTargetWant.set(0, 0, GOAL.PLANE_Z + PITCH.LENGTH / 2);
+    _camHome.set(0, height, _camTargetWant.z);
+    camera.far = Math.max(300, height + 100);
+    camera.updateProjectionMatrix();
+    camera.position.copy(_camHome);
+    _camTarget.copy(_camTargetWant);
+    camera.lookAt(_camTarget);
+    shakeAmp = 0;
+    // Resume from the live positions left by the shot and its reactions.
+    let nearest = 0, distance = Infinity;
+    ambient.ball.x = clamp(objects.ball.position.x, -32, 32);
+    ambient.ball.z = clamp(objects.ball.position.z, GOAL.PLANE_Z + 2, GOAL.PLANE_Z + PITCH.LENGTH - 2);
+    ambient.ball.y = BALL_R;
+    for (let i = 0; i < ambient.actors.length; i++) {
+      const p = ambient.actors[i];
+      p.x = p.rig.root.position.x; p.z = p.rig.root.position.z;
+      p.heading = p.rig.root.rotation.y;
+      p.script = null;
+      const a = p.rig === squad.striker ? captain : p.rig.avatar;
+      if (a) a.passTime = -1;
+      const d = Math.hypot(p.x - ambient.ball.x, p.z - ambient.ball.z);
+      if (p.team !== 'ref' && d < distance) { distance = d; nearest = i; }
+    }
+    ambient.holder = nearest; ambient.passReceiver = -1; ambient.t = 1; ambient.wait = .65;
+  }
   objects.arrow.visible = objects.guide.visible = objects.elevation.visible = false;
 }
 
@@ -2924,14 +3106,16 @@ function holdPlayerPoses() {
 function tick() {
   // Single delta source: every consumer scales its displacement against this.
   const dt = Math.min(clock.getDelta(), 0.05);
+  matchFrameDt = 0;
   if (frameCb) frameCb(dt);
   if (!animationsPaused) {
     crowdTime.value += dt;
     crowdCheer.value = Math.max(0, crowdCheer.value - dt * .18);
-    positionHomeKeeper(dt);
-    syncPlayerLocomotion(dt);
-    animateCaptain(dt);
-    animateSquad(dt);
+    const playerDt = matchFrameDt || dt;
+    if (!matchFrameDt) positionHomeKeeper(dt);
+    syncPlayerLocomotion(playerDt);
+    animateCaptain(playerDt);
+    animateSquad(playerDt);
     updateNets(dt);
   }
   if (animationsPaused) holdPlayerPoses();
@@ -2947,12 +3131,34 @@ function tick() {
   _camTarget.lerp(_camTargetWant, Math.min(1, dt * 3.2));
   camera.lookAt(_camTarget);
 
+  // Keep the pitch visible above the normal low broadcast camera's fog range.
+  const fogLift = Math.max(0, camera.position.y - 13.5);
+  scene.fog.near = 60 + fogLift;
+  scene.fog.far = 150 + fogLift;
   renderer.render(scene, camera);
 }
 
 export const onFrame = (cb) => { frameCb = cb; };
 export const shake = (amp) => { shakeAmp = Math.max(shakeAmp, amp); };
 export const runAmbient = (dt) => updateAmbient(dt);
+
+/** Small movement steps at accelerated time; sample skeletons once per render. */
+export function runMatchSimulation(dt, speed) {
+  matchFrameDt = dt * speed;
+  matchView.speed = speed;
+  matchView.simulatedSeconds += matchFrameDt;
+  let remaining = matchFrameDt;
+  while (remaining > .000001) {
+    const step = Math.min(1 / 60, remaining);
+    for (const p of ambient.actors) {
+      const a = p.rig === squad.striker ? captain : p.rig.avatar;
+      if (a?.passTime >= 0) passClipTime(a, step);
+    }
+    updateAmbient(step);
+    positionHomeKeeper(step);
+    remaining -= step;
+  }
+}
 
 /** Pan and orbit gently behind a rebound, using the same smoothed camera rig. */
 export function followReboundCamera(dt) {

@@ -42,6 +42,8 @@ try {
   };
 
   await page.getByRole('button', { name: 'Start Career >', exact: true }).click();
+  // Exercise an early fixture without waiting for its scheduled match minute.
+  await page.evaluate(() => { __demo.state.run.schedule[0] = __demo.state.run.clock + 1; });
   await phase('AIM');
   await page.screenshot({ path: `${CAPTURES}/${name}-aim.png` });
   await shoot();

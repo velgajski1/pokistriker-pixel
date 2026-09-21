@@ -13,7 +13,6 @@ try {
     ctx.fillStyle = '#202730'; ctx.fillRect(0, 0, canvas.width, canvas.height);
     const seen = new Set(), looks = [];
     for (const p of d.players) {
-      p.model.traverse(n => { if (n.isMesh) { n.material.side = 2; n.material.needsUpdate = true; } });
       const key = p.look.style + p.look.skin + p.look.hair;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -43,4 +42,3 @@ try {
   assert(!errors.length, errors.join('\n'));
   console.log(JSON.stringify(result.looks));
 } finally { await browser.close(); }
-
