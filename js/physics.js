@@ -11,17 +11,20 @@
  * radii, which cannot be skipped over at any framerate.
  */
 
-// ---- Bounding box collision targets (engineering spec) --------------------
+// ---- Metres: regulation opening, with woodwork axes outside that opening. --
 export const GOAL = {
   PLANE_Z: -20.0,   // goal line plane
-  HALF_W:   4.0,    // X bounds [-4.0, +4.0]
-  HEIGHT:   3.0,    // Y bounds [0.0, 3.0]
-  POST_R:   0.12,   // physical radius of the woodwork
+  HALF_W:   3.66,   // inside faces: 7.32 m opening
+  HEIGHT:   2.44,   // underside of crossbar
+  POST_R:   0.06,   // 12 cm diameter
+  POST_X:   3.72,   // post centre axes
+  BAR_Y:    2.50,   // crossbar centre axis
 };
+export const PITCH = { WIDTH: 68, LENGTH: 105 };
 
 export const GRAVITY   = -9.81;
-export const BALL_R    = 0.22;
-export const GROUND_Y  = 0.25;     // spec turf plane; the 3cm gap is invisible
+export const BALL_R    = 0.11;     // 69.1 cm circumference, size five
+export const GROUND_Y  = BALL_R;   // centre height when resting on the turf
 export const BOUNCE    = 0.4;      // turf rebound coefficient
 export const DRAG      = 0.92;     // horizontal friction on turf contact
 export const POST_RESTITUTION = 0.55;
@@ -37,7 +40,7 @@ export const BASE_VELOCITY = 40.0;
 /**
  * Vertical impulse scalar. The doc specifies `V_y = Power * 4.0`, but at the
  * spec'd 20m goal distance that caps the ball's apex at Vy^2/2g = 0.82m, which
- * puts the upper two thirds of a 3.0m goalmouth out of reach and makes the
+ * puts much of the 2.44m goalmouth out of reach and makes the
  * power phase one-dimensional. 9.0 maps power 0.35->0.92 cleanly across
  * floor -> top corner -> over the bar.
  */
@@ -184,16 +187,16 @@ export function stepBall(pos, vel, dt) {
 /** The three pieces of woodwork, as capsule axes. Built once. */
 export const WOODWORK = [
   { // left post
-    a: { x: -GOAL.HALF_W, y: 0, z: GOAL.PLANE_Z },
-    b: { x: -GOAL.HALF_W, y: GOAL.HEIGHT, z: GOAL.PLANE_Z }, r: GOAL.POST_R,
+    a: { x: -GOAL.POST_X, y: 0, z: GOAL.PLANE_Z },
+    b: { x: -GOAL.POST_X, y: GOAL.BAR_Y, z: GOAL.PLANE_Z }, r: GOAL.POST_R,
   },
   { // right post
-    a: { x: GOAL.HALF_W, y: 0, z: GOAL.PLANE_Z },
-    b: { x: GOAL.HALF_W, y: GOAL.HEIGHT, z: GOAL.PLANE_Z }, r: GOAL.POST_R,
+    a: { x: GOAL.POST_X, y: 0, z: GOAL.PLANE_Z },
+    b: { x: GOAL.POST_X, y: GOAL.BAR_Y, z: GOAL.PLANE_Z }, r: GOAL.POST_R,
   },
   { // crossbar
-    a: { x: -GOAL.HALF_W, y: GOAL.HEIGHT, z: GOAL.PLANE_Z },
-    b: { x:  GOAL.HALF_W, y: GOAL.HEIGHT, z: GOAL.PLANE_Z }, r: GOAL.POST_R,
+    a: { x: -GOAL.POST_X, y: GOAL.BAR_Y, z: GOAL.PLANE_Z },
+    b: { x:  GOAL.POST_X, y: GOAL.BAR_Y, z: GOAL.PLANE_Z }, r: GOAL.POST_R,
   },
 ];
 

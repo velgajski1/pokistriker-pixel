@@ -17,7 +17,7 @@
  * exactly what the save/block test uses.
  */
 import * as THREE from 'three';
-import { GOAL, BALL_START, BALL_R, NET, netPockets } from './physics.js';
+import { GOAL, PITCH, BALL_START, BALL_R, NET, netPockets } from './physics.js';
 
 // ---- File-scope scratch. Never allocate inside the rAF path. --------------
 const _camTarget = new THREE.Vector3(0, 1.35, GOAL.PLANE_Z);
@@ -373,7 +373,8 @@ function buildHumanoid({ kit, shorts, socks, boots, gloves, number, lite }, look
   neckMarker.position.y = 1.50;
   body.add(neckMarker);
 
-  return { root, body, arms, legs, hipMarker, neckMarker, scale: look.height };
+  return { root, body, arms, legs, hipMarker, neckMarker, scale: look.height,
+    look, kit: { kit, shorts, socks, boots, gloves }, avatar: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -384,10 +385,342 @@ const KIT_AWAY = { kit: 0xe23b4e, shorts: 0x1b1f27, socks: 0xe23b4e, boots: 0x0f
 const KIT_REF  = { kit: 0x14181f, shorts: 0x14181f, socks: 0x14181f, boots: 0x0a0c10 };
 const KIT_KEEP = { kit: 0xff8a2b, shorts: 0x14202e, socks: 0x1b2836, boots: 0x0c1017, gloves: 0xe8f0ff };
 
-const squad = { keeper: null, striker: null, mates: [], foes: [], ref: null };
+const squad = { keeper: null, homeKeeper: null, striker: null, mates: [], foes: [], ref: null };
+
+// Speed thresholds in metres/second. Finish the run blend before sprinting.
+const IDLE_SPEED = 0.3;
+const RUN_FULL_SPEED = 3.5;
+const KICK_FADE = 0.15;
+const STRIKER_SPEED_RESPONSE = 18;
+let captain = null;
+export const players = [];
+const GAITS = ['walk', 'quick_walk', 'run', 'run_alt'];
+const ANIMATIONS = ['idle', ...GAITS, 'kick', 'turn_idle_left', 'turn_idle_right',
+  'turn_walk_left', 'turn_walk_right', 'dive_left', 'dive_right'];
+const CAPTAIN_BIND_SCALE = 1.85 / 1.7; // Blender bakes this into mesh bind coordinates.
+const BIPED = { hips: 'Hips', neck: 'Neck', head: 'Head',
+  upperarm_L: 'LeftArm', forearm_L: 'LeftForeArm', hand_L: 'LeftHand',
+  upperarm_R: 'RightArm', forearm_R: 'RightForeArm', hand_R: 'RightHand',
+  thigh_L: 'LeftUpLeg', shin_L: 'LeftLeg', foot_L: 'LeftFoot', toe_L: 'LeftToeBase',
+  thigh_R: 'RightUpLeg', shin_R: 'RightLeg', foot_R: 'RightFoot', toe_R: 'RightToeBase' };
+const bipedBone = (model, name) => model.getObjectByName('mixamorig' + BIPED[name]);
+const _poseQ = new THREE.Quaternion();
+const _parentQ = new THREE.Quaternion();
+const _sourcePoseQ = new THREE.Quaternion();
+const _downQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
+let strikerLoad = null;
+let captainSpeed = 0;
+let kickTime = -1;
+let launchPending = false;
+const _instep = new THREE.Vector3();
+const _toe = new THREE.Vector3();
+export const lastLaunch = { instep: [0, 0, 0], ball: [0, 0, 0] };
+export const striker = {
+  model: 'procedural', mixer: null, root: null,
+  bone: name => captain ? bipedBone(captain.model, name) : null,
+  weights: () => captain ? Object.fromEntries(Object.entries(captain.actions)
+    .map(([name, action]) => [name, action.getEffectiveWeight()])) : {},
+  get speed() { return captainSpeed; },
+};
+
+export function loadStriker() {
+  if (!strikerLoad) strikerLoad = loadCaptain();
+  return strikerLoad;
+}
+
+async function loadCaptain() {
+  let timer;
+  try {
+    const [gltf, data, skeletonUtils] = await Promise.race([
+      Promise.all([import('three/addons/loaders/GLTFLoader.js').then(({ GLTFLoader }) =>
+        new GLTFLoader().loadAsync('assets/squad.glb')),
+        fetch('assets/squad.json').then(response => {
+          if (!response.ok) throw new Error('Striker sidecar unavailable');
+          return response.json();
+        }), import('three/addons/utils/SkeletonUtils.js')]),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Striker load timed out')), 10000); }),
+    ]);
+    const model = gltf.scene;
+    const mixer = new THREE.AnimationMixer(model);
+    const actions = {};
+    for (const name of ANIMATIONS) {
+      const clip = gltf.animations.find(clip => clip.name === name);
+      if (!clip || !data.clips[name]) throw new Error('Missing striker clip: ' + name);
+      actions[name] = mixer.clipAction(clip).play();
+      actions[name].setEffectiveWeight(0);
+      actions[name].paused = true;
+    }
+    const toe = bipedBone(model, 'toe_L');
+    if (!toe || !bipedBone(model, 'foot_R') || !bipedBone(model, 'toe_R')) throw new Error('Missing striker bones');
+    // Measure the same left-toe minimum in both cycles, rather than assuming
+    // frame zero represents the same footfall. Sampling is boot-only.
+    const offsets = {};
+    for (const name of GAITS) {
+      const action = actions[name];
+      action.setEffectiveWeight(1);
+      let lowest = Infinity;
+      for (let i = 0; i < 512; i++) {
+        action.time = i / 512 * action.getClip().duration;
+        mixer.update(0);
+        toe.getWorldPosition(_toe);
+        if (_toe.y < lowest) { lowest = _toe.y; offsets[name] = i / 512; }
+      }
+      action.setEffectiveWeight(0);
+    }
+    const rigs = [squad.keeper, squad.striker, ...squad.mates, ...squad.foes, squad.homeKeeper, squad.ref];
+    const template = skeletonUtils.clone(gltf.scene);
+    // Clone before colouring: each skeleton and material is independent,
+    // while geometry and animation clips are shared by the entire squad.
+    for (const rig of rigs) {
+      const avatarModel = rig === squad.striker ? model : skeletonUtils.clone(template);
+      colourCaptain(avatarModel, rig);
+      if (rig !== squad.striker) attachCaptain(rig, avatarModel, gltf.animations, data, offsets);
+      players.push({ rig, root: rig.root, model: avatarModel, look: rig.look,
+        team: rig === squad.ref ? 'ref' : rig === squad.keeper || squad.foes.includes(rig) ? 'away' : 'home',
+        role: rig === squad.keeper || rig === squad.homeKeeper ? 'keeper'
+          : rig === squad.striker ? 'striker' : rig === squad.ref ? 'referee' : 'outfield' });
+    }
+    squad.striker.body.visible = false;
+    squad.striker.root.scale.setScalar(1);
+    squad.striker.root.add(model);
+    captain = { model, mixer, actions, data, offsets, passTime: -1, turnTime: -1, turnName: '',
+      turnRate: 0, phase: 0, runName: 'run', scale: 1 };
+    striker.model = 'captain';
+    striker.mixer = mixer;
+    keeperSet = makeCapsuleSet(squad.keeper);
+    for (let i = 0; i < blockerSets.length; i++) blockerSets[i] = makeCapsuleSet(squad.foes[i], false);
+  } catch (error) {
+    console.warn('Captain unavailable; using procedural striker.', error);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function colourCaptain(model, rig) {
+  let scalp = null;
+  model.traverse(node => {
+    if (!node.isMesh) return;
+    node.castShadow = true;
+    node.frustumCulled = false;
+    node.material = node.material.clone();
+    const region = node.material.name;
+    node.material.color.setHex(region === 'skin' ? rig.look.skin
+      : region === 'hair' ? (rig.look.style === 'bald' ? rig.look.skin : rig.look.hair)
+        : region === 'gloves' ? rig.kit.gloves || rig.look.skin : rig.kit[region] ?? 0xffffff);
+    if (region === 'hair') {
+      scalp = node;
+      // Only the small hair primitive varies in shape; the body stays shared.
+      node.geometry = node.geometry.clone();
+      const position = node.geometry.attributes.position;
+      const style = rig.look.style;
+      const volume = style === 'afro' ? 1.65 : style === 'curls' ? 1.25
+        : style === 'floppy' ? 1.2 : style === 'buzz' || style === 'bald' ? 0.5 : 1;
+      for (let i = 0; i < position.count; i++) {
+        const y = position.getY(i);
+        const blend = THREE.MathUtils.smoothstep(y, 1.64 * CAPTAIN_BIND_SCALE, 1.70 * CAPTAIN_BIND_SCALE);
+        const width = 1 + (volume - 1) * blend * 0.45;
+        position.setXYZ(i, position.getX(i) * width,
+          y + Math.max(0, y - 1.64 * CAPTAIN_BIND_SCALE) * (volume - 1) * blend,
+          position.getZ(i) * width);
+      }
+      position.needsUpdate = true;
+      node.geometry.computeVertexNormals();
+      node.geometry.computeBoundingSphere();
+    }
+  });
+  if (scalp && ['headband', 'ponytail', 'bun'].includes(rig.look.style)) {
+    const head = bipedBone(model, 'head');
+    const index = scalp.skeleton.bones.indexOf(head);
+    const hair = new THREE.Group();
+    const material = new THREE.MeshStandardMaterial({ color: rig.look.hair, roughness: 0.9 });
+    const bun = rig.look.style === 'bun';
+    const tail = new THREE.Mesh(bun ? new THREE.SphereGeometry(0.05, 10, 8)
+      : new THREE.CapsuleGeometry(0.03, 0.13, 4, 8), material);
+    tail.position.set(0.01, bun ? 1.60 : 1.53, -0.13);
+    tail.rotation.x = -0.35;
+    hair.add(tail);
+    if (rig.look.style === 'headband') {
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.112, 0.011, 6, 24),
+        new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.9 }));
+      band.position.set(0.01, 1.625, 0);
+      band.rotation.x = Math.PI / 2;
+      hair.add(band);
+    }
+    // Accessory vertices are authored in the same bind space as the scalp.
+    hair.scale.setScalar(CAPTAIN_BIND_SCALE);
+    hair.applyMatrix4(scalp.skeleton.boneInverses[index]);
+    head.add(hair);
+  }
+}
+
+function attachCaptain(rig, model, clips, data, offsets) {
+  const mixer = new THREE.AnimationMixer(model);
+  const actions = {};
+  for (const name of ANIMATIONS) {
+    actions[name] = mixer.clipAction(clips.find(clip => clip.name === name)).play();
+    actions[name].setEffectiveWeight(name === 'idle' ? 1 : 0);
+    actions[name].paused = true;
+  }
+  const bindings = [];
+  // The controller's -X side is the character's right side.
+  for (let i = 0; i < 2; i++) {
+    const side = i === 0 ? 'R' : 'L';
+    bindings.push([bipedBone(model, 'upperarm_' + side), rig.arms[i].shoulder],
+      [bipedBone(model, 'forearm_' + side), rig.arms[i].elbow],
+      [bipedBone(model, 'thigh_' + side), rig.legs[i].hip],
+      [bipedBone(model, 'shin_' + side), rig.legs[i].knee]);
+  }
+  rig.body.visible = false;
+  model.scale.x = rig.look.build;
+  rig.root.add(model);
+  rig.avatar = { model, mixer, actions, data, offsets, bindings, procedural: false, phase: Math.random(), speed: 0,
+    passTime: -1, turnTime: -1, turnName: '', turnRate: 0, scale: rig.scale,
+    runName: rig.look.build > 1 ? 'run_alt' : 'run', hipBone: bipedBone(model, 'hips'), hipPosition: bipedBone(model, 'hips').position.clone(),
+    hipQuaternion: bipedBone(model, 'hips').quaternion.clone() };
+  mixer.update(0);
+  rig.avatar.hipPosition.copy(bipedBone(model, 'hips').position);
+  rig.avatar.hipQuaternion.copy(bipedBone(model, 'hips').quaternion);
+}
+
+function sampleLocomotion(a, speed, dt) {
+  const actions = a.actions, clips = a.data.clips;
+  const localSpeed = speed / a.scale;
+  const moving = THREE.MathUtils.smoothstep(localSpeed, IDLE_SPEED, clips.walk.speed);
+  const brisk = THREE.MathUtils.smoothstep(localSpeed, clips.walk.speed, 2.25);
+  const run = THREE.MathUtils.smoothstep(localSpeed, 2.25, RUN_FULL_SPEED);
+  const walkWeight = moving * (1 - brisk);
+  const quickWeight = moving * brisk * (1 - run);
+  const runWeight = moving * run;
+  a.phase = (a.phase + dt * localSpeed * (walkWeight / (clips.walk.speed * clips.walk.duration)
+    + quickWeight / (clips.quick_walk.speed * clips.quick_walk.duration)
+    + runWeight / (clips[a.runName].speed * clips[a.runName].duration))) % 1;
+  for (const name of ANIMATIONS) actions[name].setEffectiveWeight(0);
+  actions.idle.setEffectiveWeight(1 - moving);
+  actions.walk.setEffectiveWeight(walkWeight);
+  actions.quick_walk.setEffectiveWeight(quickWeight);
+  actions[a.runName].setEffectiveWeight(runWeight);
+  for (const name of GAITS) actions[name].time = ((a.phase + a.offsets[name]) % 1) * clips[name].duration;
+  actions.idle.time = (actions.idle.time + dt) % clips.idle.duration;
+
+  // Normalized turn clips supply the planted stepping pose; root heading is
+  // still controlled by the movement code, so turns cannot spin twice.
+  if (localSpeed >= 3) a.turnTime = -1;
+  if (a.turnTime < 0 && Math.abs(a.turnRate) > .8 && localSpeed < 3) {
+    a.turnName = localSpeed < .5 ? (a.turnRate > 0 ? 'turn_idle_left' : 'turn_idle_right')
+      : (a.turnRate > 0 ? 'turn_walk_left' : 'turn_walk_right');
+    a.turnTime = 0;
+  }
+  if (a.turnTime >= 0) {
+    a.turnTime += dt * 2;
+    const duration = clips[a.turnName].duration;
+    const weight = Math.sin(Math.min(1, a.turnTime / duration) * Math.PI) * .65;
+    for (const name of ANIMATIONS) actions[name].setEffectiveWeight(actions[name].getEffectiveWeight() * (1 - weight));
+    actions[a.turnName].setEffectiveWeight(weight);
+    actions[a.turnName].time = Math.min(duration, a.turnTime);
+    if (a.turnTime >= duration) a.turnTime = -1;
+  }
+}
+
+function passClipTime(a, dt) {
+  a.passTime += dt;
+  const elapsed = a.passTime;
+  const contact = a.data.clips.kick.contact;
+  const time = elapsed < .28 ? elapsed / .28 * contact : contact + elapsed - .28;
+  if (time >= a.data.clips.kick.duration + KICK_FADE) a.passTime = -1;
+  return time;
+}
+
+function sampleKick(a, time) {
+  const weight = 1 - THREE.MathUtils.smoothstep(time, a.data.clips.kick.duration, a.data.clips.kick.duration + KICK_FADE);
+  for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(0);
+  a.actions.kick.setEffectiveWeight(weight);
+  a.actions.idle.setEffectiveWeight(1 - weight);
+  a.actions.kick.time = Math.min(time, a.data.clips.kick.duration);
+}
+
+function animateSquad(dt) {
+  for (const player of players) {
+    const rig = player.rig;
+    if (!rig?.avatar || rig.avatar.procedural) continue;
+    const a = rig.avatar;
+    if (a.passTime >= 0) sampleKick(a, passClipTime(a, dt));
+    else sampleLocomotion(a, a.speed, dt);
+    a.mixer.update(dt);
+  }
+}
+
+function poseCaptain(rig, dive = 0, side = 1) {
+  if (!rig.avatar) return;
+  const a = rig.avatar;
+  a.procedural = true;
+  // Reset the imported pose, then orient its real bones from the gameplay pose.
+  for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(name === 'idle' ? 1 - dive : 0);
+  if (dive > 0) {
+    const name = side < 0 ? 'dive_left' : 'dive_right';
+    a.actions[name].setEffectiveWeight(dive);
+    a.actions[name].time = dive * .72;
+  }
+  a.actions.idle.time = 0;
+  a.mixer.update(0);
+  // The simulation supplies the leap, lean and landing. The source supplies
+  // torso/leg articulation, not a second translation or ballistic trajectory.
+  const hips = a.hipBone;
+  hips.position.copy(a.hipPosition);
+  hips.quaternion.copy(a.hipQuaternion);
+  a.model.position.copy(rig.body.position);
+  a.model.quaternion.copy(rig.body.quaternion);
+  rig.root.updateWorldMatrix(true, true);
+  for (const [bone, controller] of a.bindings) {
+    const leg = bone.name === 'mixamorigLeftUpLeg' || bone.name === 'mixamorigLeftLeg'
+      || bone.name === 'mixamorigRightUpLeg' || bone.name === 'mixamorigRightLeg';
+    if (leg && dive >= .35) continue;
+    _sourcePoseQ.copy(bone.quaternion);
+    controller.getWorldQuaternion(_poseQ);
+    _poseQ.multiply(_downQ);
+    bone.parent.getWorldQuaternion(_parentQ).invert();
+    bone.quaternion.copy(_parentQ).multiply(_poseQ);
+    if (leg && dive > 0) {
+      const blend = clamp(dive / .35, 0, 1);
+      bone.quaternion.slerp(_sourcePoseQ, blend * blend * (3 - 2 * blend));
+    }
+    bone.updateWorldMatrix(false, true);
+  }
+}
+
+export function setStrikerKick(windup, flight = -1) {
+  if (!captain) return;
+  kickTime = flight < 0 ? clamp(windup, 0, 1) * captain.data.clips.kick.contact
+    : captain.data.clips.kick.contact + flight;
+}
+
+export function recordStrikerLaunch() {
+  launchPending = true;
+}
+
+function animateCaptain(dt) {
+  if (!captain) return;
+  if (captain.passTime >= 0) sampleKick(captain, passClipTime(captain, dt));
+  else if (kickTime >= 0) sampleKick(captain, kickTime);
+  else sampleLocomotion(captain, captainSpeed, dt);
+  captain.mixer.update(dt);
+}
+
+function captureLaunch() {
+  if (!launchPending) return;
+  launchPending = false;
+  if (captain) {
+    striker.bone('foot_R').getWorldPosition(_instep);
+    striker.bone('toe_R').getWorldPosition(_toe);
+    _instep.add(_toe).multiplyScalar(0.5);
+  } else {
+    squad.striker.legs[1].ankleMarker.getWorldPosition(_instep);
+  }
+  _instep.toArray(lastLaunch.instep);
+  objects.ball.position.toArray(lastLaunch.ball);
+}
 
 function buildSquad() {
-  const looks = dealLooks(10);   // keeper + striker + 3 mates + 4 foes + referee
+  const looks = dealLooks(23);   // two full elevens and the referee
   let n = 0;
 
   // The keeper's height is pinned: his capsules are the save volume, and the
@@ -398,17 +731,22 @@ function buildSquad() {
 
   squad.striker = buildHumanoid({ ...KIT_HOME, number: 9 }, looks[n++]);
   scene.add(squad.striker.root);
+  striker.root = squad.striker.root;
 
-  for (let i = 0; i < 3; i++) {
-    const m = buildHumanoid({ ...KIT_HOME, number: [7, 8, 11][i], lite: true }, looks[n++]);
+  for (let i = 0; i < 9; i++) {
+    const m = buildHumanoid({ ...KIT_HOME, number: [7, 11, 8, 6, 10, 2, 4, 5, 3][i], lite: true }, looks[n++]);
     squad.mates.push(m);
     scene.add(m.root);
   }
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 10; i++) {
     const f = buildHumanoid({ ...KIT_AWAY, number: 2 + i, lite: i > 1 }, looks[n++]);
     squad.foes.push(f);
     scene.add(f.root);
   }
+  squad.homeKeeper = buildHumanoid({ ...KIT_KEEP, kit: 0x429d64, number: 1, lite: true }, looks[n++]);
+  squad.homeKeeper.root.position.set(0, 0, GOAL.PLANE_Z + PITCH.LENGTH - 1.2);
+  squad.homeKeeper.root.rotation.y = Math.PI;
+  scene.add(squad.homeKeeper.root);
   squad.ref = buildHumanoid({ ...KIT_REF, lite: true }, looks[n++]);
   scene.add(squad.ref.root);
 }
@@ -416,7 +754,7 @@ function buildSquad() {
 // ---------------------------------------------------------------------------
 // Collision capsules, read from the live rigs
 // ---------------------------------------------------------------------------
-function makeCapsuleSet(rig) {
+function makeCapsuleSet(rig, useHands = true) {
   const caps = [];
   const src = [];
   const s = rig.scale || 1;
@@ -424,12 +762,34 @@ function makeCapsuleSet(rig) {
     caps.push({ a: { x: 0, y: 0, z: 0 }, b: { x: 0, y: 0, z: 0 }, r: r * s });
     src.push([from, to]);
   };
+  if (rig.avatar) {
+    const model = rig.avatar.model;
+    add(bipedBone(model, 'hips'), bipedBone(model, 'neck'), 0.23);
+    for (const side of ['L', 'R']) {
+      if (useHands) {
+        add(bipedBone(model, 'upperarm_' + side), bipedBone(model, 'forearm_' + side), 0.10);
+        add(bipedBone(model, 'forearm_' + side), bipedBone(model, 'hand_' + side), 0.10);
+        add(bipedBone(model, 'thigh_' + side), bipedBone(model, 'foot_' + side), 0.13);
+      } else {
+        add(bipedBone(model, 'thigh_' + side), bipedBone(model, 'shin_' + side), 0.13);
+        add(bipedBone(model, 'shin_' + side), bipedBone(model, 'foot_' + side), 0.10);
+        add(bipedBone(model, 'foot_' + side), bipedBone(model, 'toe_' + side), 0.09);
+      }
+    }
+    return { rig, caps, src };
+  }
   add(rig.hipMarker, rig.neckMarker, 0.23);          // torso
-  for (const arm of rig.arms) {
+  if (useHands) for (const arm of rig.arms) {
     add(arm.shoulder, arm.elbow, 0.10);              // upper arm
     add(arm.elbow, arm.handMarker, 0.10);            // forearm + hand
   }
-  for (const leg of rig.legs) add(leg.hip, leg.ankleMarker, 0.13);
+  for (const leg of rig.legs) {
+    if (useHands) add(leg.hip, leg.ankleMarker, 0.13);
+    else {
+      add(leg.hip, leg.knee, 0.13);
+      add(leg.knee, leg.ankleMarker, 0.10);
+    }
+  }
   return { rig, caps, src };
 }
 
@@ -507,11 +867,12 @@ function ballTexture() {
 
 function buildField() {
   const field = new THREE.Mesh(
-    new THREE.PlaneGeometry(120, 170),
+    new THREE.PlaneGeometry(120, 145),
     new THREE.MeshStandardMaterial({ map: turfTexture(), roughness: 0.95 })
   );
   field.rotation.x = -Math.PI / 2;
-  field.position.z = -40;
+  field.position.z = GOAL.PLANE_Z + PITCH.LENGTH / 2;
+  field.name = 'pitch-turf';
   field.receiveShadow = true;
   scene.add(field);
 
@@ -526,40 +887,56 @@ function buildField() {
   strip([[-34, GOAL.PLANE_Z], [34, GOAL.PLANE_Z]]);
   strip([[-9.16, GOAL.PLANE_Z], [-9.16, GOAL.PLANE_Z + 5.5], [9.16, GOAL.PLANE_Z + 5.5], [9.16, GOAL.PLANE_Z]]);
   strip([[-20.16, GOAL.PLANE_Z], [-20.16, GOAL.PLANE_Z + 16.5], [20.16, GOAL.PLANE_Z + 16.5], [20.16, GOAL.PLANE_Z]]);
-  strip([[-34, GOAL.PLANE_Z + 52], [34, GOAL.PLANE_Z + 52]]);          // halfway line
-  strip([[-34, GOAL.PLANE_Z], [-34, GOAL.PLANE_Z + 52]]);              // touchlines
-  strip([[34, GOAL.PLANE_Z], [34, GOAL.PLANE_Z + 52]]);
+  const far = GOAL.PLANE_Z + PITCH.LENGTH;
+  const half = GOAL.PLANE_Z + PITCH.LENGTH / 2;
+  strip([[-34, half], [34, half]]);
+  strip([[-34, GOAL.PLANE_Z], [-34, far], [34, far], [34, GOAL.PLANE_Z]]);
+  strip([[-9.16, far], [-9.16, far - 5.5], [9.16, far - 5.5], [9.16, far]]);
+  strip([[-20.16, far], [-20.16, far - 16.5], [20.16, far - 16.5], [20.16, far]]);
 
   const arc = [];
   for (let i = 0; i <= 28; i++) {
-    const a = Math.PI * (0.15 + 0.7 * (i / 28));
+    const end = Math.asin(5.5 / 9.15);
+    const a = end + (Math.PI - 2 * end) * i / 28;
     arc.push([Math.cos(a) * 9.15, GOAL.PLANE_Z + 11 + Math.sin(a) * 9.15]);
   }
   strip(arc);
+  strip(arc.map(p => [p[0], GOAL.PLANE_Z * 2 + PITCH.LENGTH - p[1]]));
 
   const circle = [];
   for (let i = 0; i <= 40; i++) {
     const a = (i / 40) * Math.PI * 2;
-    circle.push([Math.cos(a) * 9.15, GOAL.PLANE_Z + 52 + Math.sin(a) * 9.15]);
+    circle.push([Math.cos(a) * 9.15, half + Math.sin(a) * 9.15]);
   }
   strip(circle);
+  for (const z of [GOAL.PLANE_Z + 11, half, far - 11]) {
+    const spot = new THREE.Mesh(new THREE.CircleGeometry(.06, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    spot.rotation.x = -Math.PI / 2;
+    spot.position.set(0, .022, z);
+    scene.add(spot);
+  }
 }
 
 function buildGoal() {
+  const goalMeshes = [];
   const frame = new THREE.MeshStandardMaterial({ color: 0xf4f7fa, roughness: 0.4 });
-  const postGeo = new THREE.CylinderGeometry(GOAL.POST_R, GOAL.POST_R, GOAL.HEIGHT, 12);
+  const postGeo = new THREE.CylinderGeometry(GOAL.POST_R, GOAL.POST_R, GOAL.BAR_Y, 12);
   for (const sx of [-1, 1]) {
     const p = new THREE.Mesh(postGeo, frame);
-    p.position.set(sx * GOAL.HALF_W, GOAL.HEIGHT / 2, GOAL.PLANE_Z);
+    p.position.set(sx * GOAL.POST_X, GOAL.BAR_Y / 2, GOAL.PLANE_Z);
+    p.name = 'goal-post';
     p.castShadow = true;
     scene.add(p);
+    goalMeshes.push(p);
   }
   const bar = new THREE.Mesh(
-    new THREE.CylinderGeometry(GOAL.POST_R, GOAL.POST_R, GOAL.HALF_W * 2 + GOAL.POST_R * 2, 12), frame);
+    new THREE.CylinderGeometry(GOAL.POST_R, GOAL.POST_R, GOAL.POST_X * 2 + GOAL.POST_R * 2, 12), frame);
   bar.rotation.z = Math.PI / 2;
-  bar.position.set(0, GOAL.HEIGHT, GOAL.PLANE_Z);
+  bar.position.set(0, GOAL.BAR_Y, GOAL.PLANE_Z);
+  bar.name = 'goal-crossbar';
   bar.castShadow = true;
   scene.add(bar);
+  goalMeshes.push(bar);
 
   const net = new THREE.MeshBasicMaterial({
     color: 0xc4d6e8, wireframe: true, transparent: true, opacity: 0.42,
@@ -570,6 +947,7 @@ function buildGoal() {
   const back = new THREE.Mesh(new THREE.PlaneGeometry(GOAL.HALF_W * 2, GOAL.HEIGHT, 22, 9), net);
   back.position.set(0, GOAL.HEIGHT / 2, GOAL.PLANE_Z - depth);
   scene.add(back);
+  goalMeshes.push(back);
   registerNetPanel(back, 0, 0, -1);
 
   let idx = 1;
@@ -578,6 +956,7 @@ function buildGoal() {
     side.rotation.y = Math.PI / 2;
     side.position.set(sx * GOAL.HALF_W, GOAL.HEIGHT / 2, GOAL.PLANE_Z - depth / 2);
     scene.add(side);
+    goalMeshes.push(side);
     registerNetPanel(side, idx++, sx, 0);
   }
 
@@ -586,6 +965,16 @@ function buildGoal() {
   top.position.set(0, GOAL.HEIGHT, GOAL.PLANE_Z - depth / 2);
   scene.add(top);
   registerNetPanel(top, 3, 0, 0, 1);
+  goalMeshes.push(top);
+  // The opposite goal is scenery, built once with separate net geometry.
+  for (const mesh of goalMeshes) {
+    const far = mesh.clone();
+    far.geometry = mesh.geometry.clone();
+    far.position.z = GOAL.PLANE_Z * 2 + PITCH.LENGTH - mesh.position.z;
+    far.rotation.y = -mesh.rotation.y;
+    far.name = 'far-' + (mesh.name || 'goal-net');
+    scene.add(far);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -728,71 +1117,218 @@ function updateNets(dt) {
   }
 }
 
-/** Speckled crowd. Cheap, and it stops the sky reading as a black wall. */
-function crowdTexture() {
-  const c = document.createElement('canvas');
-  c.width = 256; c.height = 128;
-  const g = c.getContext('2d');
-  g.fillStyle = '#0f1520';
-  g.fillRect(0, 0, 256, 128);
-  const tones = ['#212c3b', '#2b374a', '#1b2430'];
-  for (let i = 0; i < 2600; i++) {
-    const x = Math.random() * 256, y = Math.random() * 128;
-    g.fillStyle = i % 23 === 0 ? '#45566d' : tones[i % 3];
-    g.fillRect(x, y, 2.1, 2.1);
+const crowdTime = { value: 0 };
+const crowdCheer = { value: 0 };
+export const crowd = { count: 0, batches: [], get time() { return crowdTime.value; },
+  get excitement() { return crowdCheer.value; } };
+export function cheerCrowd(goal) { crowdCheer.value = goal ? 1 : 0.35; }
+
+// All spectators share a handful of meshes. Their motion happens on the GPU;
+// only two uniforms change per frame, with no per-person JS work or uploads.
+function crowdMaterial() {
+  const material = new THREE.MeshLambertMaterial({ emissive: 0x101318 });
+  material.onBeforeCompile = shader => {
+    shader.uniforms.crowdTime = crowdTime;
+    shader.uniforms.crowdCheer = crowdCheer;
+    shader.vertexShader = 'uniform float crowdTime;\nuniform float crowdCheer;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `
+      #include <begin_vertex>
+      float phase = dot(instanceMatrix[3].xz, vec2(3.17, 5.71));
+      float wave = sin(crowdTime * (2.0 + 0.4 * sin(phase)) + phase);
+      float upper = smoothstep(0.5, 1.9, position.y);
+      transformed.x += wave * (0.035 + crowdCheer * 0.07) * upper;
+      transformed.y += max(0.0, sin(crowdTime * 4.2 + phase)) * (0.025 + crowdCheer * 0.16);
+      transformed.z += sin(crowdTime * 2.7 + phase) * upper * 0.025;
+    `);
+  };
+  material.customProgramCacheKey = () => 'stadium-supporter-v1';
+  return material;
+}
+
+/** Boot-only geometry assembly for the three supporter poses. */
+function joinCrowdParts(parts) {
+  const positions = [], normals = [];
+  for (const part of parts) {
+    const geo = part.index ? part.toNonIndexed() : part;
+    positions.push(...geo.attributes.position.array);
+    normals.push(...geo.attributes.normal.array);
+    if (geo !== part) geo.dispose();
+    part.dispose();
   }
-  // Darken toward the top so the tier falls away into the night.
-  const grad = g.createLinearGradient(0, 0, 0, 128);
-  grad.addColorStop(0, 'rgba(6,9,14,0.92)');
-  grad.addColorStop(1, 'rgba(6,9,14,0.25)');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 256, 128);
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  return t;
+  const result = new THREE.BufferGeometry();
+  result.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  result.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  return result;
+}
+
+function supporterParts(pose) {
+  const box = (w, h, d, x, y, z = 0) => new THREE.BoxGeometry(w, h, d).translate(x, y, z);
+  const oval = (rx, ry, rz, x, y, z = 0) => new THREE.SphereGeometry(1, 8, 6)
+    .scale(rx, ry, rz).translate(x, y, z);
+  const limb = (start, end, bottom, top) => {
+    const a = new THREE.Vector3(...start), b = new THREE.Vector3(...end);
+    const direction = b.clone().sub(a);
+    return new THREE.CylinderGeometry(top, bottom, direction.length(), 8)
+      .applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize()))
+      .translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+  };
+  const arms = [], hands = [], sleeves = [], trousers = [], shoes = [];
+  for (const side of [-1, 1]) {
+    const up = pose === 2 || (pose === 1 && side === 1);
+    const shoulder = [side * .19, 1.31, 0];
+    const elbow = [side * (up ? .39 : .29), up ? 1.61 : 1.04, .025];
+    const hand = [side * (up ? .48 : .27), up ? 1.96 : .81, .055];
+    const cuff = shoulder.map((v, i) => v + (elbow[i] - v) * .48);
+    sleeves.push(oval(.095, .10, .105, ...shoulder), limb(shoulder, cuff, .085, .072));
+    arms.push(limb(cuff, elbow, .057, .045), oval(.045, .046, .045, ...elbow),
+      limb(elbow, hand, .046, .032));
+    hands.push(oval(.043, .069, .032, ...hand));
+    const hip = [side * .10, .79, 0];
+    const knee = [side * .115, .43, pose === 1 ? .035 : .01];
+    const ankle = [side * .125, .105, 0];
+    trousers.push(limb(hip, knee, .098, .071), oval(.072, .082, .075, ...knee),
+      limb(knee, ankle, .073, .051));
+    shoes.push(oval(.066, .061, .125, side * .125, .061, .045));
+  }
+  // A smooth waist/chest/shoulder profile instead of a straight polygonal tube.
+  const torso = new THREE.LatheGeometry([[.16, .78], [.175, .85], [.163, 1.0],
+    [.205, 1.20], [.21, 1.29], [.165, 1.35], [.058, 1.39]]
+    .map(([r, y]) => new THREE.Vector2(r, y)), 10).scale(1, 1, .64);
+  return [joinCrowdParts([torso, ...sleeves]),
+    joinCrowdParts([oval(.108, .148, .113, 0, 1.55),
+      oval(.025, .038, .018, -.108, 1.55), oval(.025, .038, .018, .108, 1.55),
+      oval(.022, .029, .034, 0, 1.55, .103),
+      new THREE.CylinderGeometry(.048, .055, .12, 8).translate(0, 1.39, 0)]),
+    new THREE.SphereGeometry(0.129, 10, 5, 0, Math.PI * 2, 0, Math.PI * .56)
+      .scale(0.88, 1.16, 0.92).translate(0, 1.57, -0.008),
+    joinCrowdParts([oval(.185, .115, .105, 0, .79), ...trousers]),
+    joinCrowdParts(arms.concat(hands)),
+    pose === 2 ? box(1.08, 0.14, 0.025, 0, 2.0, 0.04) : null,
+    pose === 2 ? joinCrowdParts([-0.42, -0.14, 0.14, 0.42].map(x => box(.13, .145, .029, x, 2.0, .04))) : null,
+    joinCrowdParts([...shoes, box(.015, .014, .012, -.035, 1.58, .105), box(.015, .014, .012, .035, 1.58, .105),
+      new THREE.SphereGeometry(.025, 5, 4).scale(.7, pose === 0 ? .45 : 1.3, .35).translate(0, 1.51, .11)])];
 }
 
 function buildStands() {
-  const crowd = crowdTexture();
-  crowd.repeat.set(6, 2);
-  const tier = new THREE.MeshStandardMaterial({ map: crowd, roughness: 1 });
   const wall = new THREE.MeshStandardMaterial({ color: 0x18212d, roughness: 1 });
-
-  // Behind the goal: a low wall, then a raked tier of spectators.
-  const hoard = new THREE.Mesh(new THREE.BoxGeometry(86, 2.2, 2), wall);
-  hoard.position.set(0, 1.1, GOAL.PLANE_Z - 8);
-  scene.add(hoard);
-
-  const back = new THREE.Mesh(new THREE.PlaneGeometry(86, 15), tier);
-  back.position.set(0, 8.4, GOAL.PLANE_Z - 10.5);
-  back.rotation.x = -0.28;
-  scene.add(back);
-
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(86, 1.4, 9), wall);
-  roof.position.set(0, 15.6, GOAL.PLANE_Z - 13.5);
-  scene.add(roof);
-
-  // Along the touchlines.
-  const sideTex = crowdTexture();
-  sideTex.repeat.set(7, 2);
-  const sideMat = new THREE.MeshStandardMaterial({ map: sideTex, roughness: 1 });
-  for (const sx of [-1, 1]) {
-    const w = new THREE.Mesh(new THREE.BoxGeometry(2, 2.2, 74), wall);
-    w.position.set(sx * 37, 1.1, GOAL.PLANE_Z + 24);
-    scene.add(w);
-
-    const s = new THREE.Mesh(new THREE.PlaneGeometry(74, 14), sideMat);
-    s.position.set(sx * 39.5, 8, GOAL.PLANE_Z + 24);
-    s.rotation.y = sx > 0 ? -Math.PI / 2 : Math.PI / 2;
-    s.rotation.x = 0.26 * 0;
-    scene.add(s);
+  const transform = new THREE.Object3D();
+  const tint = new THREE.Color();
+  const rows = 14;
+  const stands = [
+    { x: 0, z: GOAL.PLANE_Z - 9, angle: 0, width: 80, columns: 108 },
+    { x: 0, z: GOAL.PLANE_Z + PITCH.LENGTH + 9, angle: Math.PI, width: 80, columns: 108 },
+    { x: -39, z: GOAL.PLANE_Z + PITCH.LENGTH / 2, angle: Math.PI / 2, width: 114, columns: 152 },
+    { x: 39, z: GOAL.PLANE_Z + PITCH.LENGTH / 2, angle: -Math.PI / 2, width: 114, columns: 152 },
+  ];
+  const supporters = [[], [], []];
+  const tiers = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), wall, rows * stands.length);
+  tiers.name = 'stadium-terraces';
+  let tierIndex = 0;
+  const shirts = [0x2458be, 0x3678e0, 0xb92f39, 0xe8b849, 0x23705d, 0xe6dfce, 0x2d3444];
+  const skins = [0xe9bc96, 0xc78e61, 0x8d5739, 0x573927, 0xf0d0b0];
+  for (const stand of stands) {
+    const cos = Math.cos(stand.angle), sin = Math.sin(stand.angle);
+    for (let row = 0; row < rows; row++) {
+      const depth = row * 0.92, base = 1.4 + row * 0.56;
+      transform.position.set(stand.x - sin * depth, base / 2, stand.z - cos * depth);
+      transform.rotation.set(0, stand.angle, 0);
+      transform.scale.set(stand.width, base, 0.94);
+      transform.updateMatrix();
+      tiers.setMatrixAt(tierIndex++, transform.matrix);
+      for (let col = 0; col < stand.columns; col++) {
+        if (col % 27 < 2 || (row > 9 && Math.random() < .06)) continue; // access aisles
+        const across = (col - (stand.columns - 1) / 2) * .72 + (Math.random() - .5) * .12;
+        const pose = (Math.random() * 3) | 0;
+        supporters[pose].push({ x: stand.x + across * cos - sin * depth,
+          y: base, z: stand.z - across * sin - cos * depth, angle: stand.angle,
+          height: .91 + Math.random() * .15, build: .9 + Math.random() * .2,
+          shirt: shirts[(Math.random() * shirts.length) | 0], skin: skins[(Math.random() * skins.length) | 0],
+          hair: Math.random() < .25 ? 0x79502b : 0x241a15 });
+      }
+    }
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(stand.width + 3, .5, 5), wall);
+    roof.position.set(stand.x - sin * 11, 12.1, stand.z - cos * 11);
+    roof.rotation.y = stand.angle;
+    scene.add(roof);
+    const board = new THREE.Mesh(new THREE.BoxGeometry(stand.width, 1.15, .25),
+      new THREE.MeshLambertMaterial({ color: stand.angle === 0 ? 0x1c4084 : 0x293d59 }));
+    board.position.set(stand.x + sin * 1.1, .575, stand.z + cos * 1.1);
+    board.rotation.y = stand.angle;
+    scene.add(board);
   }
-
+  tiers.instanceMatrix.needsUpdate = true;
+  scene.add(tiers);
+  const material = crowdMaterial();
+  for (let pose = 0; pose < 3; pose++) {
+    const fans = supporters[pose];
+    crowd.count += fans.length;
+    const parts = supporterParts(pose);
+    for (let part = 0; part < parts.length; part++) {
+      if (!parts[part]) continue;
+      const mesh = new THREE.InstancedMesh(parts[part], material, fans.length);
+      mesh.name = 'crowd-' + pose + '-' + part;
+      for (let i = 0; i < fans.length; i++) {
+        const fan = fans[i];
+        transform.position.set(fan.x, fan.y, fan.z);
+        transform.rotation.set(0, fan.angle, 0);
+        transform.scale.set(fan.build, fan.height, fan.build);
+        transform.updateMatrix();
+        mesh.setMatrixAt(i, transform.matrix);
+        tint.setHex(part === 0 ? fan.shirt : part === 1 || part === 4 ? fan.skin
+          : part === 2 ? fan.hair : part === 3 ? 0x252b39 : part === 5 ? 0xcf333e
+            : part === 6 ? 0xf0ca57 : 0x281713);
+        mesh.setColorAt(i, tint);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.instanceColor.needsUpdate = true;
+      mesh.computeBoundingSphere();
+      mesh.boundingSphere.radius += .4; // animated displacement
+      scene.add(mesh);
+      crowd.batches.push(mesh);
+    }
+  }
+  buildSupporterFlags();
   const lamp = new THREE.MeshBasicMaterial({ color: 0xeaf2fb });
   for (const sx of [-1, 1]) {
     const pylon = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.3, 0.4), lamp);
     pylon.position.set(sx * 20, 17.5, GOAL.PLANE_Z - 12);
     scene.add(pylon);
+  }
+}
+
+function buildSupporterFlags() {
+  const cloth = document.createElement('canvas');
+  cloth.width = 128; cloth.height = 64;
+  const paint = cloth.getContext('2d');
+  for (let i = 0; i < 8; i++) {
+    paint.fillStyle = i % 2 ? '#ebc558' : '#ba303b';
+    paint.fillRect(i * 16, 0, 16, 64);
+  }
+  const flagMap = new THREE.CanvasTexture(cloth);
+  flagMap.colorSpace = THREE.SRGBColorSpace;
+  const flagMaterial = new THREE.MeshLambertMaterial({ map: flagMap, side: THREE.DoubleSide });
+  flagMaterial.onBeforeCompile = shader => {
+    shader.uniforms.crowdTime = crowdTime;
+    shader.vertexShader = 'uniform float crowdTime;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `
+      #include <begin_vertex>
+      transformed.z += sin(position.x * 5.0 - crowdTime * 5.5 + modelMatrix[3].x) * uv.x * .18;
+    `);
+  };
+  const flagGeo = new THREE.PlaneGeometry(1.7, 1, 10, 4).translate(.85, 0, 0);
+  const poleGeo = new THREE.CylinderGeometry(.018, .018, 3, 5);
+  const poleMaterial = new THREE.MeshLambertMaterial({ color: 0xc9d1dc });
+  for (let i = 0; i < 8; i++) {
+    const row = i % 2 === 0 ? 3 : 9;
+    const x = -32 + i * 9, y = 1.4 + row * .56;
+    const z = GOAL.PLANE_Z - 9 - row * .92;
+    const pole = new THREE.Mesh(poleGeo, poleMaterial);
+    pole.position.set(x, y + 1.5, z);
+    scene.add(pole);
+    const flag = new THREE.Mesh(flagGeo, flagMaterial);
+    flag.name = 'supporter-flag';
+    flag.position.set(x, y + 2.5, z);
+    scene.add(flag);
   }
 }
 
@@ -839,6 +1375,12 @@ function buildAimRig() {
 // Poses
 // ---------------------------------------------------------------------------
 function poseRun(rig, phase, amp) {
+  if (rig.avatar) {
+    rig.avatar.procedural = false;
+    rig.avatar.speed = amp <= 0.17 ? 0 : amp * 4.5;
+    rig.avatar.model.position.set(0, 0, 0);
+    rig.avatar.model.quaternion.identity();
+  }
   const s = Math.sin(phase), c = Math.cos(phase);
   rig.legs[0].hip.rotation.x = s * 0.72 * amp;
   rig.legs[1].hip.rotation.x = -s * 0.72 * amp;
@@ -870,10 +1412,19 @@ function poseRun(rig, phase, amp) {
  * into the dive parameter. Deriving height from `dive` left him hanging in
  * mid-air for as long as the pose was held.
  */
+let keeperShufflePhase = 0;
 export function setKeeper(x, dive, side, high, airY, ground) {
   const r = squad.keeper;
   const h = high || 0;
   const lean = dive * (1.35 - h * 0.55);
+  const dx = x - r.root.position.x;
+  const ready = 1 - clamp(dive / .35, 0, 1);
+  // Distance-driven side steps stay in sync with line movement at any FPS.
+  // Large changes are chance placement, not a shuffle across the turf.
+  if (Math.abs(dx) < .25) keeperShufflePhase += Math.abs(dx) * Math.PI / .32;
+  else keeperShufflePhase = 0;
+  const shuffle = Math.abs(dx) > .00001 && Math.abs(dx) < .25
+    ? Math.sin(keeperShufflePhase) * Math.sign(dx) * ready : 0;
   r.root.position.x = x;
   // Mid-dive the pivot is the hips, so a horizontal body hangs at hip height.
   // Once he is down that is wrong - it leaves him lying flat in mid-air - so
@@ -882,50 +1433,62 @@ export function setKeeper(x, dive, side, high, airY, ground) {
   // a flat sprawl and a half-propped landing from a leap.
   const lay = (ground || 0) * Math.sin(lean) * dive;
   const hipY = RIG.HIP_Y - (RIG.HIP_Y - 0.25) * lay;
-  r.body.position.y = hipY - RIG.HIP_Y * Math.cos(lean) + (airY || 0);
+  r.body.position.y = hipY - RIG.HIP_Y * Math.cos(lean) + (airY || 0) - ready * .10;
   r.body.rotation.z = -side * lean;
-  r.body.rotation.x = 0;
+  r.body.rotation.x = ready * .06;
 
   for (const arm of r.arms) {
-    arm.shoulder.rotation.z = lerp(arm.sx * 0.34, arm.sx * Math.PI, dive);
-    arm.shoulder.rotation.x = lerp(-0.12, 0, dive);
+    arm.shoulder.rotation.z = lerp(arm.sx * 0.38, arm.sx * Math.PI, dive);
+    arm.shoulder.rotation.x = lerp(-0.22, 0, dive);
     arm.elbow.rotation.z = lerp(arm.sx * -0.25, 0, dive);
-    arm.elbow.rotation.x = 0;
+    arm.elbow.rotation.x = -ready * .20;
   }
   for (const leg of r.legs) {
-    leg.hip.rotation.x = lerp(0.04, 0.42, dive);
-    leg.hip.rotation.z = lerp(leg.sx * 0.03, -side * 0.22, dive);
-    leg.knee.rotation.x = lerp(-0.08, -0.3, dive);
+    const lift = Math.max(0, shuffle * leg.sx) * .10;
+    leg.hip.rotation.x = lerp(.32 + lift, 0.42, dive);
+    leg.hip.rotation.z = lerp(leg.sx * (.28 + shuffle * .07), -side * 0.22, dive);
+    leg.knee.rotation.x = lerp(-.64 - lift, -0.3, dive);
   }
+  poseCaptain(r, dive, side);
 }
 
 /**
- * Defender block. `lunge` 0..1 slides him low across the shot line - the body
- * ends up near horizontal at roughly 0.4m, so a lofted ball clears him and a
- * drilled one does not.
+ * Defender block. Step across the shot line with a leading boot and a bent
+ * supporting knee. Keep the torso upright and hands tucked against the body;
+ * only the torso, legs and boots participate in a defender's block collision.
  */
 export function setBlocker(i, x, lunge, side, airY) {
   const r = blockerSets[i].rig;
-  const lean = lunge * 1.3;
+  const p = formation.pressers[0]?.rig === r ? formation.pressers[0]
+    : formation.pressers[1]?.rig === r ? formation.pressers[1] : null;
+  if (p?.chasing) {
+    // The movement controller owns the approach; use the leg block only when
+    // close enough to challenge, and never snap back to the old shot-line X.
+    x = p.x;
+    if (Math.hypot(objects.ball.position.x - p.x, objects.ball.position.z - p.z) > 3) return r.root.position.x;
+  }
+  const lean = lunge * 0.12;
   r.root.position.x = x;
-  r.body.position.y = RIG.HIP_Y * (1 - Math.cos(lean)) - lunge * 0.58 + (airY || 0);
-  r.body.rotation.z = -side * lean;
-  r.body.rotation.x = 0;
+  r.body.position.y = -lunge * 0.07 + (airY || 0);
+  r.body.rotation.z = side * lean;
+  r.body.rotation.x = lunge * 0.06;
 
   for (const arm of r.arms) {
-    arm.shoulder.rotation.z = lerp(arm.sx * 0.3, arm.sx * 1.1, lunge);
-    arm.shoulder.rotation.x = 0;
-    arm.elbow.rotation.z = 0;
-    arm.elbow.rotation.x = lerp(-0.5, 0, lunge);
+    arm.shoulder.rotation.z = arm.sx * 0.06;
+    arm.shoulder.rotation.x = 0.10;
+    arm.elbow.rotation.z = -arm.sx * 0.12;
+    arm.elbow.rotation.x = -0.35;
   }
   const lead = side > 0 ? r.legs[1] : r.legs[0];
   const trail = side > 0 ? r.legs[0] : r.legs[1];
-  lead.hip.rotation.z = -side * lunge * 0.55;
-  lead.hip.rotation.x = lerp(0.1, -0.15, lunge);
+  lead.hip.rotation.z = side * lunge * 0.52;
+  lead.hip.rotation.x = lerp(0.1, -0.28, lunge);
   lead.knee.rotation.x = lerp(-0.15, -0.05, lunge);
-  trail.hip.rotation.z = -side * lunge * 0.1;
-  trail.hip.rotation.x = lerp(0.1, 0.75, lunge);
-  trail.knee.rotation.x = lerp(-0.15, -1.1, lunge);
+  trail.hip.rotation.z = -side * lunge * 0.12;
+  trail.hip.rotation.x = lerp(0.1, 0.28, lunge);
+  trail.knee.rotation.x = lerp(-0.15, -0.50, lunge);
+  poseCaptain(r);
+  return r.root.position.x;
 }
 
 /**
@@ -933,6 +1496,10 @@ export function setBlocker(i, x, lunge, side, airY) {
  * Contact is at t ~= 0.55, which is when app.js releases the ball.
  */
 export function setStrikerSwing(t) {
+  if (captain) {
+    if (t === 0) { kickTime = -1; captainSpeed = 0; captain.passTime = -1; captain.turnTime = -1; captain.turnRate = 0; }
+    return;
+  }
   const r = squad.striker;
   const draw = Math.min(1, t / 0.3);
   const u = t <= 0.3 ? 0 : (t - 0.3) / 0.7;
@@ -963,10 +1530,14 @@ export function setStrikerSwing(t) {
 // AMBIENT: a match playing out behind the dimmer
 // ---------------------------------------------------------------------------
 const HOME_SPOTS = [
-  { x: -14, z: -4 }, { x: 13, z: -6 }, { x: -3, z: 2 },
+  { x: -20, z: -2 }, { x: 20, z: -2 },
+  { x: -12, z: 17 }, { x: 0, z: 22 }, { x: 12, z: 17 },
+  { x: -24, z: 39 }, { x: -8, z: 44 }, { x: 8, z: 44 }, { x: 24, z: 39 },
 ];
 const FOE_SPOTS = [
-  { x: -11, z: -14 }, { x: -3.5, z: -15.5 }, { x: 4, z: -15 }, { x: 11.5, z: -13 },
+  { x: -7, z: -12 }, { x: 7, z: -12 }, { x: -23, z: -8 }, { x: 23, z: -8 },
+  { x: -13, z: 10 }, { x: 0, z: 14 }, { x: 13, z: 10 },
+  { x: -21, z: 31 }, { x: 0, z: 36 }, { x: 21, z: 31 },
 ];
 
 const ambient = {
@@ -974,12 +1545,37 @@ const ambient = {
   ball: { x: 0, y: BALL_R, z: -6 },
   from: { x: 0, z: -6 },
   to: { x: 0, z: -6 },
-  t: 1, dur: 1, holder: 0, wait: 0,
+  t: 1, dur: 1, holder: 0, wait: 0, passReceiver: -1,
 };
+export const formation = { actors: ambient.actors, pressers: [null, null] };
+
+function selectPressers(bx, bz) {
+  let first = null, second = null, firstD = Infinity, secondD = Infinity;
+  for (const p of ambient.actors) {
+    p.pressing = false;
+    if (p.team !== 'away') continue;
+    const d = (p.x - bx) ** 2 + (p.z - bz) ** 2;
+    if (d < firstD) { second = first; secondD = firstD; first = p; firstD = d; }
+    else if (d < secondD) { second = p; secondD = d; }
+  }
+  formation.pressers[0] = first;
+  formation.pressers[1] = second;
+  if (first) first.pressing = true;
+  if (second) second.pressing = true;
+}
+
+// Each role keeps its own corridor. Ball-side compression is limited to four
+// metres; a fullback on one wing cannot migrate to the opposite touchline.
+function formationTarget(p, bx, bz) {
+  p.targetX = clamp(p.home.x + clamp((bx - p.home.x) * .18, -4, 4),
+    -PITCH.WIDTH / 2 + 2, PITCH.WIDTH / 2 - 2);
+  p.targetZ = clamp(p.home.z + clamp((bz + 6) * .35, -12, 18),
+    GOAL.PLANE_Z + 1.4, GOAL.PLANE_Z + PITCH.LENGTH - 2);
+}
 
 function initAmbient() {
   const add = (rig, home, team) => ambient.actors.push({
-    rig, home, team,
+    rig, home, team, targetX: home.x, targetZ: home.z, chasing: false, pressing: false,
     x: home.x, z: home.z, phase: Math.random() * 6.28, speed: 0, heading: 0,
   });
 
@@ -1006,21 +1602,31 @@ function pickReceiver() {
  */
 function moveActors(dt) {
   const a = ambient;
+  selectPressers(a.ball.x, a.ball.z);
   for (let i = 0; i < a.actors.length; i++) {
     const p = a.actors[i];
+    const animation = p.rig === squad.striker ? captain : p.rig.avatar;
+    if (animation?.passTime >= 0) {
+      p.x = p.rig.root.position.x; p.z = p.rig.root.position.z; p.speed = 0;
+      if (p.rig === squad.striker) captainSpeed = 0;
+      continue;
+    }
+    const previousHeading = p.heading;
     let tx, tz, top;
 
     if (p.script) {
       tx = p.script.x; tz = p.script.z; top = p.script.top;
+    } else if (p.pressing) {
+      tx = clamp(a.ball.x, -32, 32); tz = clamp(a.ball.z, GOAL.PLANE_Z + 1.4, GOAL.PLANE_Z + PITCH.LENGTH - 1.4);
+      top = Math.hypot(tx - p.x, tz - p.z) > 1.8 ? 5.4 : 0;
     } else if (p.team === 'ref') {
       tx = a.ball.x + 7; tz = a.ball.z + 5; top = 3.4;
     } else if (i === a.holder && a.t >= 1) {
       tx = a.ball.x; tz = a.ball.z; top = 5.6;
     } else {
-      const pull = p.team === 'away' ? 0.22 : 0.3;
-      tx = p.home.x + (a.ball.x - p.home.x) * pull;
-      tz = p.home.z + (a.ball.z - p.home.z) * pull;
-      top = 5.6;
+      formationTarget(p, a.ball.x, a.ball.z);
+      tx = p.targetX; tz = p.targetZ;
+      top = 1.45;
     }
 
     const dx = tx - p.x, dz = tz - p.z;
@@ -1029,14 +1635,46 @@ function moveActors(dt) {
     if (v > 0) {
       p.x += (dx / d) * v * dt;
       p.z += (dz / d) * v * dt;
-      p.heading = Math.atan2(dx, dz);
+      const want = Math.atan2(dx, dz);
+      p.heading = v >= 3 ? want : turnToward(p.heading, want, dt * 4.5);
     }
-    p.speed = lerp(p.speed, v, Math.min(1, dt * 6));
+    const response = captain && p.rig === squad.striker
+      ? 1 - Math.exp(-STRIKER_SPEED_RESPONSE * dt) : Math.min(1, dt * 6);
+    p.speed = lerp(p.speed, v, response);
     p.phase += p.speed * dt * 2.1;
 
     p.rig.root.position.set(p.x, 0, p.z);
     p.rig.root.rotation.y = p.heading;
-    poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.12, 1));
+    if (animation) animation.turnRate = Math.atan2(Math.sin(p.heading - previousHeading), Math.cos(p.heading - previousHeading)) / Math.max(dt, .001);
+    if (captain && p.rig === squad.striker) { captainSpeed = p.speed; kickTime = -1; }
+    else {
+      poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.12, 1));
+      if (p.rig.avatar) p.rig.avatar.speed = p.speed;
+    }
+  }
+}
+
+/** Wind up before a scheduled pass, aligning the same instep used for shots. */
+function preparePassKick(actor, ballX, ballZ, targetX, targetZ) {
+  const rig = actor.rig;
+  const animation = rig === squad.striker ? captain : rig.avatar;
+  if (!animation || Math.hypot(actor.x - ballX, actor.z - ballZ) > 1.5) return;
+  const heading = Math.atan2(targetX - ballX, targetZ - ballZ);
+  const foot = animation.data.kickFoot;
+  const height = rig.root.scale.y, width = rig.avatar ? rig.avatar.model.scale.x : 1;
+  const sin = Math.sin(heading), cos = Math.cos(heading);
+  rig.root.rotation.y = actor.heading = heading;
+  rig.root.position.set(ballX - (cos * foot.x * width + sin * foot.z) * height - sin * BALL_R,
+    BALL_R - foot.y * height,
+    ballZ - (-sin * foot.x * width + cos * foot.z) * height - cos * BALL_R);
+  actor.x = rig.root.position.x; actor.z = rig.root.position.z;
+  animation.passTime = 0;
+  animation.turnTime = -1;
+  animation.turnRate = 0;
+  if (rig.avatar) {
+    rig.avatar.procedural = false;
+    rig.avatar.model.position.set(0, 0, 0);
+    rig.avatar.model.quaternion.identity();
   }
 }
 
@@ -1046,8 +1684,14 @@ function updateAmbient(dt) {
   // --- ball: a chain of passes ---------------------------------------------
   if (a.t >= 1) {
     a.wait -= dt;
+    if (a.wait <= .28 && a.passReceiver < 0) {
+      a.passReceiver = pickReceiver();
+      const receiver = a.actors[a.passReceiver];
+      preparePassKick(a.actors[a.holder], a.ball.x, a.ball.z, receiver.x, receiver.z);
+      a.wait = .28;
+    }
     if (a.wait <= 0) {
-      const next = pickReceiver();
+      const next = a.passReceiver;
       const rx = a.actors[next];
       a.from.x = a.ball.x; a.from.z = a.ball.z;
       a.to.x = rx.x; a.to.z = rx.z;
@@ -1055,6 +1699,7 @@ function updateAmbient(dt) {
       a.dur = clamp(dist / 17, 0.25, 1.3);
       a.t = 0;
       a.holder = next;
+      a.passReceiver = -1;
       a.wait = 0.35 + Math.random() * 0.8;
     }
   } else {
@@ -1071,8 +1716,18 @@ function updateAmbient(dt) {
   // Keeper shuffles his line, watching the ball.
   const kx = clamp(a.ball.x * 0.22, -3.2, 3.2);
   setKeeper(kx, 0, 1);
-  squad.keeper.body.position.y = Math.sin(a.t * 7) * 0.015;
   squad.keeper.root.rotation.y = 0;
+}
+
+function positionHomeKeeper(dt) {
+  const r = squad.homeKeeper;
+  const bx = objects.ball.position.x, bz = objects.ball.position.z;
+  const end = GOAL.PLANE_Z + PITCH.LENGTH;
+  const response = 1 - Math.exp(-dt * 1.4);
+  r.root.position.x = lerp(r.root.position.x, clamp(bx * .12, -2.5, 2.5), response);
+  r.root.position.z = lerp(r.root.position.z, end - clamp((end - bz) * .08, 1.2, 6), response);
+  r.root.rotation.y = Math.atan2(bx - r.root.position.x, bz - r.root.position.z);
+  if (r.avatar) r.avatar.speed = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,7 +1744,7 @@ const buildup = {
   leg: 0, legT: 0, legDur: 1, legs: 3,
   from: { x: 0, z: 0 }, to: { x: 0, z: 0 },
   carriers: [],
-  camCut: false,
+  camCut: false, passLeg: -1,
 };
 
 /** Move an actor onto a path he can actually finish in the time available. */
@@ -1116,6 +1771,12 @@ export function startBuildup(origin, duration, blockerCount) {
   buildup.t = 0;
   buildup.dur = Math.max(0.5, duration);
   buildup.camCut = false;
+  buildup.passLeg = -1;
+  a.passReceiver = -1;
+  for (const actor of a.actors) {
+    const animation = actor.rig === squad.striker ? captain : actor.rig.avatar;
+    if (animation) animation.passTime = -1;
+  }
   buildup.origin.x = origin.x;
   buildup.origin.y = origin.y;
   buildup.origin.z = origin.z;
@@ -1139,7 +1800,9 @@ export function startBuildup(origin, duration, blockerCount) {
   ];
   for (let i = 0; i < Math.min(2, mates.length); i++) {
     const c = mates[i];
-    seedRun(c, spots[i].x, spots[i].z, buildup.dur * (0.3 + i * 0.25), 6.6);
+    // Arrive before the ball, leaving time to decelerate and plant for a kick.
+    const arrival = buildup.dur * (i + 1) / (Math.min(2, mates.length) + 1);
+    seedRun(c, spots[i].x, spots[i].z, Math.max(.08, arrival - .78), 6.6);
     buildup.carriers.push(c);
   }
 
@@ -1174,12 +1837,12 @@ export function runBuildup(dt) {
 
   if (buildup.legT >= buildup.legDur && buildup.leg < buildup.legs - 1) {
     buildup.leg++;
-    buildup.legT = 0;
-    buildup.from.x = a.ball.x; buildup.from.z = a.ball.z;
+    buildup.legT -= buildup.legDur;
+    buildup.from.x = buildup.to.x; buildup.from.z = buildup.to.z;
     const next = buildup.carriers[buildup.leg];
     // The final leg always targets the shooting spot itself.
-    buildup.to.x = next ? next.x : buildup.origin.x;
-    buildup.to.z = next ? next.z : buildup.origin.z;
+    buildup.to.x = next ? next.script.x : buildup.origin.x;
+    buildup.to.z = next ? next.script.z : buildup.origin.z;
   }
   if (buildup.leg === buildup.legs - 1) {
     buildup.to.x = buildup.origin.x;      // keep the last pass honest
@@ -1192,6 +1855,14 @@ export function runBuildup(dt) {
   a.ball.y = BALL_R + Math.sin(k * Math.PI) * 0.55;
   objects.ball.position.set(a.ball.x, a.ball.y, a.ball.z);
   objects.ball.rotation.x -= dt * 7;
+
+  if (buildup.leg < buildup.carriers.length && buildup.passLeg !== buildup.leg
+    && buildup.legDur - buildup.legT <= .28) {
+    const next = buildup.carriers[buildup.leg + 1];
+    preparePassKick(buildup.carriers[buildup.leg], buildup.to.x, buildup.to.z,
+      next ? next.script.x : buildup.origin.x, next ? next.script.z : buildup.origin.z);
+    buildup.passLeg = buildup.leg;
+  }
 
   moveActors(dt);
 
@@ -1224,14 +1895,19 @@ function turnToward(cur, want, maxStep) {
 }
 
 /**
- * Everyone not directly involved in the chance tracks the ball: they turn to
- * face it, and once it is live (`chase`) they break toward it the way players
- * follow a shot in for a rebound. Standing frozen and facing nowhere made the
- * whole box look like a diorama.
+ * Nearby players follow a loose rebound; everyone else walks with the team
+ * shape. The launch itself does not send the whole formation after the ball.
  */
-export function watchBall(dt, chase) {
+export function watchBall(dt, live, rebound = false) {
   const bx = objects.ball.position.x;
   const bz = objects.ball.position.z;
+  // Active blockers also participate; their app-driven block pose must not
+  // exclude the nearest defenders from closing down a loose ball.
+  for (const p of ambient.actors) {
+    p.x = p.rig.root.position.x;
+    p.z = p.rig.root.position.z;
+  }
+  selectPressers(bx, bz);
 
   for (const p of ambient.actors) {
     if (p.rig === squad.striker) continue;
@@ -1239,30 +1915,42 @@ export function watchBall(dt, chase) {
     for (let i = 0; i < chance.blockerCount; i++) {
       if (blockerSets[i].rig === p.rig) { involved = true; break; }
     }
-    if (involved) continue;
+    if (involved && !(live && p.pressing)) continue;
 
-    const want = Math.atan2(bx - p.x, bz - p.z);
-    p.heading = turnToward(p.heading, want, dt * 4.5);
-
-    if (chase) {
-      // Break toward the ball, but never past the goal line - they were
-      // jogging straight into the net after it.
-      const tx = bx;
-      const tz = Math.max(bz, GOAL.PLANE_Z + 1.4);
-      const dx = tx - p.x, dz = tz - p.z;
+    const previousHeading = p.heading;
+    let want = Math.atan2(bx - p.x, bz - p.z);
+    formationTarget(p, bx, bz);
+    const distance = Math.hypot(bx - p.x, bz - p.z);
+    const inPlay = Math.abs(bx) < PITCH.WIDTH / 2 && bz > GOAL.PLANE_Z
+      && bz < GOAL.PLANE_Z + PITCH.LENGTH;
+    p.chasing = live && inPlay && (p.pressing || (rebound && p.team !== 'ref'
+      && distance < (p.chasing ? 10 : 7)
+      && Math.hypot(bx - p.targetX, bz - p.targetZ) < 12));
+    if (p.chasing) {
+      p.targetX = bx;
+      p.targetZ = Math.max(bz, GOAL.PLANE_Z + 1.4);
+    }
+    if (live) {
+      const dx = p.targetX - p.x, dz = p.targetZ - p.z;
       const d = Math.hypot(dx, dz);
-      const keepOff = p.team === 'ref' ? 6.5 : 1.8;
+      const keepOff = p.chasing ? 1.8 : .35;
       if (d > keepOff) {
-        const top = p.team === 'ref' ? 3.2 : 5.4;
-        const v = Math.min(top, (d - keepOff) * 1.6);
-        p.x += (dx / d) * v * dt;
-        p.z += (dz / d) * v * dt;
-        p.speed = lerp(p.speed, v, Math.min(1, dt * 7));
+        const top = p.chasing ? 5.4 : lerp(1.45, .65, clamp(distance / 45, 0, 1));
+        const step = Math.min(d - keepOff, top * dt, (d - keepOff) * (1 - Math.exp(-1.6 * dt)));
+        p.x += (dx / d) * step;
+        p.z += (dz / d) * step;
+        p.speed = step / Math.max(dt, .001);
+        want = Math.atan2(dx, dz);
       } else {
         p.speed = lerp(p.speed, 0, Math.min(1, dt * 7));
       }
     } else {
       p.speed = lerp(p.speed, 0, Math.min(1, dt * 4));
+    }
+    p.heading = p.speed >= 3 ? want : turnToward(p.heading, want, dt * 4.5);
+    if (p.rig.avatar) {
+      p.rig.avatar.passTime = -1;
+      p.rig.avatar.turnRate = Math.atan2(Math.sin(p.heading - previousHeading), Math.cos(p.heading - previousHeading)) / Math.max(dt, .001);
     }
 
     // Always tick the run cycle a little so nobody is a statue.
@@ -1277,10 +1965,11 @@ export function watchBall(dt, chase) {
     for (let i = 0; i < chance.blockerCount; i++) {
       if (blockerSets[i].rig === p.rig) { involved = true; break; }
     }
-    if (involved) continue;
+    if (involved && !(live && p.pressing)) continue;
     p.rig.root.position.set(p.x, 0, p.z);
     p.rig.root.rotation.y = p.heading;
     poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.17, 1));
+    if (p.rig.avatar) p.rig.avatar.speed = p.speed;
   }
 }
 
@@ -1372,6 +2061,8 @@ function aimCameraAt(origin) {
  * appears with no move behind it (a Super Sub injection).
  */
 export function setupChance(origin, blockerCount, soft) {
+  formation.pressers[0] = formation.pressers[1] = null;
+  for (const p of ambient.actors) { p.pressing = false; p.chasing = false; }
   chance.origin.x = origin.x;
   chance.origin.y = origin.y;
   chance.origin.z = origin.z;
@@ -1398,19 +2089,17 @@ export function setupChance(origin, blockerCount, soft) {
         origin.z + chance.dirZ * along);
     }
 
-    let spare = 0;
     for (const p of ambient.actors) {
       if (p.rig === squad.striker) continue;
       if (blockerSets.slice(0, chance.blockerCount).some((b) => b.rig === p.rig)) continue;
-      const side = spare % 2 ? 1 : -1;
-      p.x = origin.x + chance.perpX * side * (5 + spare * 1.7) + chance.dirX * (spare * 1.2);
-      p.z = origin.z + chance.perpZ * side * (5 + spare * 1.7) + chance.dirZ * (spare * 1.2 + 1);
-      p.z = clamp(p.z, GOAL.PLANE_Z + 1.5, GOAL.PLANE_Z + 46);
+      formationTarget(p, origin.x, origin.z);
+      p.x = p.targetX;
+      p.z = p.targetZ;
+      p.chasing = false;
       p.speed = 0;
       p.rig.root.position.set(p.x, 0, p.z);
       p.rig.root.rotation.y = Math.atan2(origin.x - p.x, origin.z - p.z);
       poseRun(p.rig, 0, 0.12);
-      spare++;
     }
     setKeeper(0, 0, 1);
   }
@@ -1488,7 +2177,7 @@ export function init(canvas) {
   buildAimRig();
 
   keeperSet = makeCapsuleSet(squad.keeper);
-  for (let i = 0; i < 2; i++) blockerSets.push(makeCapsuleSet(squad.foes[i]));
+  for (let i = 0; i < 2; i++) blockerSets.push(makeCapsuleSet(squad.foes[i], false));
 
   initAmbient();
   frameAmbient();
@@ -1509,7 +2198,13 @@ function resize() {
 function tick() {
   // Single delta source: every consumer scales its displacement against this.
   const dt = Math.min(clock.getDelta(), 0.05);
+  crowdTime.value += dt;
+  crowdCheer.value = Math.max(0, crowdCheer.value - dt * .18);
   if (frameCb) frameCb(dt);
+  positionHomeKeeper(dt);
+  animateCaptain(dt);
+  animateSquad(dt);
+  captureLaunch();
   updateNets(dt);
 
   _camWant.copy(_camHome);
@@ -1529,6 +2224,19 @@ export const onFrame = (cb) => { frameCb = cb; };
 export const shake = (amp) => { shakeAmp = Math.max(shakeAmp, amp); };
 export const runAmbient = (dt) => updateAmbient(dt);
 
+/** Pan and orbit gently behind a rebound, using the same smoothed camera rig. */
+export function followReboundCamera(dt) {
+  const ball = objects.ball.position;
+  const x = clamp(ball.x, -PITCH.WIDTH / 2, PITCH.WIDTH / 2);
+  const z = clamp(ball.z, GOAL.PLANE_Z - 2, GOAL.PLANE_Z + PITCH.LENGTH);
+  const side = clamp((x - chance.origin.x) / 18, -1, 1);
+  const response = 1 - Math.exp(-dt * 2);
+  _camHome.x = lerp(_camHome.x, x - side * 8, response);
+  _camHome.y = lerp(_camHome.y, Math.max(6.5, ball.y + 4), response);
+  _camHome.z = lerp(_camHome.z, z + 15, response);
+  _camTargetWant.set(x, Math.max(1, ball.y), z);
+}
+
 /**
  * Squares the striker up to the shot and stands him so his KICKING BOOT
  * arrives on the ball, rather than swiping past the side of it.
@@ -1547,9 +2255,27 @@ export function placeStrikerForKick(theta) {
 
   const s = squad.striker;
   s.root.rotation.y = face;
+  if (captain) {
+    placeStrikerContact(theta);
+    return;
+  }
   s.root.position.set(
     objects.ball.position.x - rx * FOOT_SIDE - fx * FOOT_FWD, 0,
     objects.ball.position.z - rz * FOOT_SIDE - fz * FOOT_FWD);
+}
+
+/** Align the instep behind the selected shot without changing his facing.
+ * Called only once aiming is over, and again for a launch-angle modifier.
+ */
+export function placeStrikerContact(theta) {
+  if (!captain) return;
+  const root = squad.striker.root;
+  const foot = captain.data.kickFoot;
+  const sin = Math.sin(root.rotation.y), cos = Math.cos(root.rotation.y);
+  root.position.set(
+    objects.ball.position.x - cos * foot.x - sin * foot.z - Math.sin(theta) * BALL_R,
+    objects.ball.position.y - foot.y,
+    objects.ball.position.z + sin * foot.x - cos * foot.z + Math.cos(theta) * BALL_R);
 }
 
 /** Horizontal sweep: project the aim angle onto the goal plane. */
@@ -1582,7 +2308,8 @@ export function spinBall(vx, vz, dt) {
  */
 export function parade(offset, count) {
   frameCb = null;                    // stop the ambient sim fighting the lineup
-  const all = [squad.keeper, squad.striker, ...squad.mates, ...squad.foes, squad.ref];
+  if (captain) setStrikerSwing(0);
+  const all = [squad.keeper, squad.striker, ...squad.mates, ...squad.foes, squad.homeKeeper, squad.ref];
   const from = offset || 0;
   const n = count || all.length;
   const shown = all.slice(from, from + n);
@@ -1592,6 +2319,7 @@ export function parade(offset, count) {
     const x = (i - (shown.length - 1) / 2) * (n > 6 ? 1.75 : 1.15);
     rig.root.position.set(x, 0, GOAL.PLANE_Z + 9);
     rig.root.rotation.y = 0;           // rigs face +Z by default
+    if (rig.avatar) { rig.avatar.passTime = -1; rig.avatar.turnTime = -1; rig.avatar.turnRate = 0; }
     poseRun(rig, 0, 0.1);
   });
 

@@ -1,0 +1,109 @@
+{
+  "clips": {
+    "walk": {
+      "duration": 1.0416666666666667,
+      "speed": 1.5370250291684096
+    },
+    "run": {
+      "duration": 0.6666666666666666,
+      "speed": 4.695715053993114
+    },
+    "kick": {
+      "duration": 1.6666666666666667,
+      "contact": 0.5
+    },
+    "quick_walk": {
+      "duration": 1.0,
+      "speed": 1.437682709985358
+    },
+    "run_alt": {
+      "duration": 0.8333333333333334,
+      "speed": 4.420149608131718
+    },
+    "turn_idle_left": {
+      "duration": 0.9583333333333334
+    },
+    "turn_idle_right": {
+      "duration": 1.1666666666666667
+    },
+    "turn_walk_left": {
+      "duration": 2.0416666666666665
+    },
+    "turn_walk_right": {
+      "duration": 2.2083333333333335
+    },
+    "dive_left": {
+      "duration": 3.0
+    },
+    "dive_right": {
+      "duration": 3.0
+    },
+    "idle": {
+      "duration": 2.0
+    }
+  },
+  "kickFoot": {
+    "x": -0.16986487542881687,
+    "y": 0.12493571836282227,
+    "z": 0.28125720252009
+  },
+  "source": "Meshy_AI_Captain_of_Tomorrow_biped",
+  "audit": {
+    "walk": {
+      "file": "Walking",
+      "sourceDuration": 1.0416666666666667,
+      "sourceFrames": 26
+    },
+    "run": {
+      "file": "Running",
+      "sourceDuration": 0.6666666666666666,
+      "sourceFrames": 17
+    },
+    "kick": {
+      "file": "Kick_a_Soccer_Ball",
+      "sourceDuration": 1.6666666666666667,
+      "sourceFrames": 41
+    },
+    "quick_walk": {
+      "file": "Quick_Walk",
+      "sourceDuration": 3.0416666666666665,
+      "sourceFrames": 74,
+      "cycleFrames": 24
+    },
+    "run_alt": {
+      "file": "Run_03",
+      "sourceDuration": 0.8333333333333334,
+      "sourceFrames": 21
+    },
+    "turn_idle_left": {
+      "file": "Idle_Turn_Left",
+      "sourceDuration": 0.9583333333333334,
+      "sourceFrames": 24
+    },
+    "turn_idle_right": {
+      "file": "Idle_Turn_Right",
+      "sourceDuration": 1.1666666666666667,
+      "sourceFrames": 29
+    },
+    "turn_walk_left": {
+      "file": "Walk_Turn_Left",
+      "sourceDuration": 2.0416666666666665,
+      "sourceFrames": 50
+    },
+    "turn_walk_right": {
+      "file": "Walk_Turn_Right",
+      "sourceDuration": 2.2083333333333335,
+      "sourceFrames": 54
+    },
+    "dive_left": {
+      "file": "01a0c35d-1cd2-72af-bf7d-3d8732d52731",
+      "sourceDuration": 3.0,
+      "sourceFrames": 73
+    },
+    "dive_right": {
+      "file": "01a0c35e-c157-7267-a5a0-278b419c0134",
+      "sourceDuration": 3.0,
+      "sourceFrames": 73
+    }
+  }
+}

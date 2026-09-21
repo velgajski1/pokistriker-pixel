@@ -9,6 +9,7 @@ try {
   const session = await open(report.errors);
   browser = session.browser;
   const { page } = session;
+  assert(await page.evaluate(() => window.__demo.striker.model === 'captain'), 'Captain did not load');
   page.setDefaultTimeout(15000);
   report.gpu = await gpuString(page);
   const phase = wanted => page.waitForFunction(value => window.__demo.state.phase === value, wanted);

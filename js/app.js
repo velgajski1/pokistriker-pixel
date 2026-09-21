@@ -8,7 +8,7 @@ import * as engine from './gameEngine.js';
 import * as ui from './uiManager.js';
 import * as save from './saveSystem.js';
 import {
-  GOAL, GROUND_Y, BALL_R, PHYS_DT, GRAVITY, hit,
+  GOAL, PITCH, GROUND_Y, BALL_R, PHYS_DT, GRAVITY, hit,
   launchVector, stepBall, crossedGoalPlane, planeIntersection,
   classifyAtPlane, hitWoodwork, sweptCapsuleHit, reflect, predictCrossing,
   aimAngleFor, netContact, closestPointOnSegment, GROUND_Y as TURF,
@@ -73,7 +73,8 @@ const SHOT = {
 };
 
 /** Where a chance comes from: range to the goal line and how wide it can be. */
-const SPOT = { MIN_RANGE: 9, MAX_RANGE: 18, MAX_LATERAL: 11 };
+const SPOT = { MIN_RANGE: 9, MAX_RANGE: 16, MAX_LATERAL: 11,
+  LONG_ODDS: .35, LONG_MIN: 18, LONG_MAX: 25 };
 
 /** How long before a scheduled chance the move that creates it kicks off. */
 const BUILDUP_LEAD = 2.4;
@@ -172,7 +173,7 @@ const shot = {
   keeperDelay: 0, keeperSide: 1, diveDepth: 1, keeperHigh: 0,
   aimX: 0, thetaCentre: 0,
   swing: 0, windup: 0, resolved: null, holdTimer: 0, flightTime: 0, acc: 0,
-  touched: null, contactCool: 0, restTimer: 0, entered: false, follow: 0,
+  touched: null, contactCool: 0, restTimer: 0, entered: false, follow: 0, bounced: false,
   keeperAirY: 0, keeperAirV: 0, keeperDown: 0, keeperLaunched: false,
   keeperGround: 0, keeperSpent: false,
 };
@@ -363,12 +364,19 @@ function updateSim(dt) {
  * Chooses where the next chance will fall. Called at the START of the move
  * that creates it, so the build-up has a spot to deliver the ball to.
  */
-function prepareChance() {
-  const range = SPOT.MIN_RANGE + Math.random() * (SPOT.MAX_RANGE - SPOT.MIN_RANGE);
+export function chooseChanceOrigin(target, random = Math.random) {
+  const longShot = random() < SPOT.LONG_ODDS;
+  const range = longShot ? SPOT.LONG_MIN + random() * (SPOT.LONG_MAX - SPOT.LONG_MIN)
+    : SPOT.MIN_RANGE + random() * (SPOT.MAX_RANGE - SPOT.MIN_RANGE);
   const lateral = Math.min(SPOT.MAX_LATERAL, range * 0.85);
-  origin.x = (Math.random() * 2 - 1) * lateral;
-  origin.y = GROUND_Y;
-  origin.z = GOAL.PLANE_Z + range;
+  target.x = (random() * 2 - 1) * lateral;
+  target.y = GROUND_Y;
+  target.z = GOAL.PLANE_Z + range;
+}
+
+function prepareChance() {
+  chooseChanceOrigin(origin);
+  const range = origin.z - GOAL.PLANE_Z;
 
   // Tighter chances draw a crowd; a clean breakaway does not.
   blockerCount = range > 15 ? (Math.random() < 0.55 ? 2 : 1)
@@ -405,6 +413,7 @@ function beginHighlight(soft) {
   shot.resolved = null;
   shot.holdTimer = 0;
   shot.flightTime = 0;
+  shot.bounced = false;
   shot.acc = 0;
   // A real keeper narrows the angle: he shades along his line toward the
   // shooter rather than standing centrally and waiting, so a chance from wide
@@ -427,7 +436,7 @@ function updateChanceIdle(dt) {
   engine.faceKeeper(dt, 0.45);
   engine.setKeeper(
     shot.keeperSetX + Math.sin(state.elapsed * 3.1) * 0.11, 0, 1, 0,
-    Math.abs(Math.sin(state.elapsed * 6.2)) * 0.02);
+    0);
 }
 
 function updateAim(dt) {
@@ -467,6 +476,7 @@ function advance() {
     ui.showPower(false);
     ui.setPrompt('');
     engine.showAimRig(false, false);
+    engine.placeStrikerContact(shot.theta);
     shot.windup = 0;
     state.phase = 'WINDUP';
   }
@@ -489,6 +499,9 @@ function launch() {
 
   ballPos.x = origin.x; ballPos.y = origin.y; ballPos.z = origin.z;
   launchVector(theta, shot.power, speedScale(), ballVel);
+  engine.placeStrikerContact(theta);
+  engine.setStrikerKick(1);
+  engine.recordStrikerLaunch();
 
   // Keeper AI reads the shot, badly, and with a reaction delay. He cannot
   // slide the length of the line either: a dive displaces him KEEPER_MAX_DIVE
@@ -522,7 +535,7 @@ function launch() {
   shot.acc = 0;
 
   // Each defender reads the ball's line across HIS plane, not the goal line,
-  // and throws himself at it. He is low, so a lofted shot clears him.
+  // and steps across it with his body and leading boot.
   for (let i = 0; i < blockerCount; i++) {
     const b = blockers[i];
     predictCrossing(origin, theta, shot.power, speedScale(), prediction, b.z);
@@ -544,6 +557,7 @@ function launch() {
 /** Backswing. The ball does not move until the boot actually reaches it. */
 function updateWindup(dt) {
   shot.windup += dt;
+  engine.setStrikerKick(shot.windup / SHOT.WINDUP);
   engine.watchBall(dt, false);
   engine.faceKeeper(dt, 0.45);
   engine.setStrikerSwing(Math.min(0.55, (shot.windup / SHOT.WINDUP) * 0.55));
@@ -615,6 +629,10 @@ function substep(h) {
   // --- Keeper --------------------------------------------------------------
   if (shot.keeperDelay > 0) {
     shot.keeperDelay -= h;
+    // Short grounded side steps set his feet before committing to the leap.
+    const gap = shot.keeperTarget - shot.keeperX;
+    const step = 1.8 * h;
+    shot.keeperX += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
   } else {
     if (!shot.keeperLaunched) {
       // He leaves the ground as the dive starts: a low sprawl barely gets air,
@@ -668,18 +686,19 @@ function substep(h) {
       b.lunge = Math.min(b.depth, b.lunge + h / SHOT.BLOCK_LUNGE_TIME);
       if (b.lunge >= b.depth) b.spent = true;
     } else {
-      // Slide has run its course: scrub off the last of the momentum and rise.
+      // Hold the block briefly, then recover the standing posture.
       b.down += h;
       if (b.down > SHOT.RECOVER_DELAY) {
         b.lunge = Math.max(0, b.lunge - SHOT.RECOVER_RATE * h);
       }
     }
-    engine.setBlocker(i, b.x, b.lunge, b.side);
+    b.x = engine.setBlocker(i, b.x, b.lunge, b.side);
   }
 
   // --- Ball ----------------------------------------------------------------
   prevPos.x = ballPos.x; prevPos.y = ballPos.y; prevPos.z = ballPos.z;
   stepBall(ballPos, ballVel, h);
+  if (prevPos.y > TURF + 1e-4 && ballPos.y <= TURF) shot.bounced = true;
 
   if (shot.resolved === null) tryResolve();
 
@@ -790,8 +809,9 @@ function tryResolve() {
 }
 
 function updateFlight(dt) {
-  // The ball is live now: everyone turns and breaks toward it.
-  engine.watchBall(dt, true);
+  // Follow only nearby loose rebounds; distant teammates retain their lanes.
+  engine.watchBall(dt, true, shot.resolved === null && (shot.bounced || shot.touched !== null));
+  if (shot.bounced || shot.touched !== null) engine.followReboundCamera(dt);
   engine.faceKeeper(dt, 0);            // square up to dive along the goal line
   if (shot.flightTime > 0.12 && shot.resolved === null && shot.follow < 2.4) {
     const stride = 3.4 * dt;
@@ -813,6 +833,7 @@ function updateFlight(dt) {
     substep(PHYS_DT);
   }
 
+  engine.setStrikerKick(1, shot.flightTime);
   engine.setBall(ballPos);
   engine.spinBall(ballVel.x, ballVel.z, dt);
 
@@ -825,6 +846,7 @@ function updateFlight(dt) {
 function resolve(outcome) {
   const run = state.run;
   shot.resolved = outcome;
+  engine.cheerCrowd(outcome === 'goal');
   shot.holdTimer = 1.7;
   run.chancesLeft = Math.max(0, run.chancesLeft - 1);
 
@@ -994,13 +1016,19 @@ function frame(dt) {
   }
 }
 
-function boot() {
+async function boot() {
   ui.init();
   engine.init(document.getElementById('pitch'));
   window.__demo = {
     renderer: engine.renderer, scene: engine.scene, camera: engine.camera,
     state, shot, ball: engine.objects.ball, ready: false,
+    crowd: engine.crowd, formation: engine.formation,
+    dimensions: { goal: GOAL, pitch: PITCH, ballRadius: BALL_R },
   };
+  await engine.loadStriker();
+  window.__demo.striker = engine.striker;
+  window.__demo.players = engine.players;
+  window.__demo.lastLaunch = engine.lastLaunch;
   const afterRender = engine.scene.onAfterRender;
   engine.scene.onAfterRender = function (...args) {
     afterRender.apply(this, args);
