@@ -1748,8 +1748,9 @@ const screenPreviewSteps = new Array(10).fill(0);
 
 // Local-only sandbox: reload to return to the real saved career. All career
 // writes (including buttons inside previews) stay disabled until then.
-function previewScreen(number) {
+function previewScreen(number, celebrationName = null) {
   if (!upgradeShortcutsEnabled) return;
+  engine.onFrame(frame);
   if (!screenPreviewCareer) {
     checkpointCareer();
     screenPreviewCareer = structuredClone(state.career);
@@ -1757,6 +1758,8 @@ function previewScreen(number) {
   }
   engine.endWalkOff();
   engine.endOpponentGoal();
+  engine.stopCelebration();
+  engine.stopReactions();
   state.benchPresentation = null;
   state.career = structuredClone(screenPreviewCareer);
   state.career.tutorialComplete = true;
@@ -1765,7 +1768,7 @@ function previewScreen(number) {
   delete state.career.activeRun;
   delete state.career.summerBreak;
   state.run = null;
-  const step = screenPreviewSteps[number]++;
+  const step = celebrationName ? 0 : screenPreviewSteps[number]++;
   startRun('career', state.career.characterId || CHARACTERS[0].id);
   if (number === 1) {
     renderMenu();
@@ -1776,6 +1779,16 @@ function previewScreen(number) {
   } else if (number === 3) renderPrematch();
   else if (number === 4) {
     kickOff();
+    if (celebrationName) {
+      beginHighlight(false);
+      state.screen = 'CELEBRATION_PREVIEW';
+      engine.setAnimationsPaused(false);
+      engine.showAimRig(false, false);
+      ui.showHud(false);
+      ui.setPrompt('');
+      engine.startCelebrationReview(celebrationName);
+      return;
+    }
     const variant = step % 5;
     if (variant === 0) beginHighlight(false);
     else if (variant === 2 || variant === 3) {
@@ -1868,6 +1881,11 @@ function previewGameOver() {
 }
 
 function frame(dt) {
+  if (state.screen === 'CELEBRATION_PREVIEW') {
+    // Keep the normal animation/camera loop, but freeze gameplay and rewards.
+    engine.setAnimationsPaused(false);
+    return;
+  }
   if (state.screen === 'MATCH' && state.phase === 'FULL_TIME') {
     fullTimeRemaining = Math.max(0, fullTimeRemaining - dt);
     engine.updateWalkOff(dt);
@@ -1967,6 +1985,14 @@ async function boot() {
   });
   addEventListener('keydown', (e) => {
     if (!window.__demo.ready) return;
+    if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey
+      && ['KeyQ', 'KeyW', 'KeyE'].includes(e.code)) {
+      if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      e.preventDefault();
+      if (!e.repeat) previewScreen(4, e.code === 'KeyQ' ? 'celebrate_victory'
+        : e.code === 'KeyW' ? 'celebrate_jump' : 'celebrate_cheer');
+      return;
+    }
     if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$/.test(e.code)) {
       if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
       e.preventDefault();
@@ -1999,6 +2025,7 @@ async function boot() {
     }
     if (e.code === 'Escape') {
       e.preventDefault();
+      if (state.screen === 'CELEBRATION_PREVIEW') engine.stopCelebration();
       if (state.screen !== 'RESULTS' && (state.screen !== 'GAMEOVER' || state.mode !== 'career')) renderMenu();
       return;
     }

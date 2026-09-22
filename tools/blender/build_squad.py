@@ -6,6 +6,7 @@ No downloaded packages or texture generation required.
 from pathlib import Path
 import json
 import math
+import sys
 import bpy
 import bmesh
 from mathutils import Matrix, Vector
@@ -25,6 +26,10 @@ SOURCES = {'walk': 'Walking', 'run': 'Running', 'kick': 'Kick_a_Soccer_Ball',
 GAITS = ('walk', 'quick_walk', 'run', 'run_alt')
 CELEBRATIONS = {'celebrate_backflip': 'Backflip', 'celebrate_backflip_hooks': 'Backflip_and_Hooks',
                 'celebrate_dance': 'All_Night_Dance', 'celebrate_heart': 'Big_Heart_Gesture'}
+NEW_CELEBRATIONS = {'celebrate_victory': ('Victory_Cheer', 'victory'),
+                    'celebrate_jump': ('happy_jump_m', 'jump'),
+                    'celebrate_cheer': ('Motivational_Cheer', 'cheer')}
+CELEBRATIONS.update({name: value[0] for name, value in NEW_CELEBRATIONS.items()})
 SOURCES.update(CELEBRATIONS)
 REACTIONS = {'react_stomp': 'Angry_Ground_Stomp', 'react_shout': 'Shouting_Angrily',
              'react_confused': 'Confused_Scratch', 'react_walk_sad': '01a0c45c-030d-7043-885d-08f599aadbcf'}
@@ -40,19 +45,78 @@ for name, source in SOURCES.items():
     directory = ROOT / 'references/Meshy_AI_Captain_of_Tomorrow_biped' if name in CELEBRATIONS else SOURCE
     if name in REACTIONS:
         directory = ROOT / 'references'
-    path = ROOT / 'references/walksad.glb' if name == 'react_walk_sad' else next(directory.glob('*_Animation_' + source + '_withSkin.glb'))
+    if name in NEW_CELEBRATIONS:
+        path = ROOT / 'references/celebrations' / (NEW_CELEBRATIONS[name][1] + '.glb')
+    else:
+        path = ROOT / 'references/walksad.glb' if name == 'react_walk_sad' else next(directory.glob('*_Animation_' + source + '_withSkin.glb'))
     bpy.ops.import_scene.gltf(filepath=str(path))
     imported = set(bpy.data.objects) - before
     rig = next(o for o in imported if o.type == 'ARMATURE')
     mesh = next(o for o in imported if o.type == 'MESH' and o.find_armature() == rig)
+    if '--export-rig-source' in sys.argv:
+        # Supply a true rest-pose mesh; the original textured download is posed.
+        rig.data.pose_position = 'REST'
+        bpy.context.view_layer.update()
+        bpy.ops.object.select_all(action='DESELECT')
+        mesh.select_set(True)
+        bpy.context.view_layer.objects.active = mesh
+        bpy.ops.object.convert(target='MESH')
+        decimate = mesh.modifiers.new('Rig upload budget', 'DECIMATE')
+        decimate.ratio = min(1, 30000 / len(mesh.data.polygons))
+        bpy.ops.object.modifier_apply(modifier=decimate.name)
+        for image in bpy.data.images:
+            if image.size[0] > 512:
+                image.scale(512, 512)
+        bpy.ops.export_scene.gltf(filepath=str(ROOT / 'references/celebrations/rig-source.glb'),
+                                 export_format='GLB', use_selection=True, export_animations=False)
+        sys.exit(0)
     # Each file also contains a two-frame .001 setup action. Never use that
     # helper in place of the named performance.
-    action = next(a for a in bpy.data.actions if a.name == source)
+    action = next(a for a in bpy.data.actions if a.name == source or ('|' + source + '|') in a.name)
     rig.animation_data.action = action
     rig.animation_data.action_slot = action.slots[0]
     start, end = action.frame_range
     frames = []
     headings = []
+    if name in NEW_CELEBRATIONS:
+        # Meshy's current API uses a different skeleton from the supplied
+        # Mixamo biped. Transfer world-space rotation deltas from bind pose,
+        # retaining the original player's bone lengths, mesh and skin weights.
+        mapping = {'Spine1': 'Spine01', 'Spine2': 'Spine02', 'Neck': 'neck'}
+        target_world = base_rig.matrix_world.copy()
+        source_world = rig.matrix_world.copy()
+        ordered = sorted(base_rig.pose.bones, key=lambda b: len(b.parent_recursive))
+        for frame in range(round(start), round(end) + 1):
+            bpy.context.scene.frame_set(frame)
+            for bone in ordered:
+                short_name = bone.name.removeprefix('mixamorig:')
+                source_bone = rig.pose.bones.get(mapping.get(short_name, short_name))
+                if source_bone is None:
+                    bone.matrix_basis.identity()
+                    continue
+                rest = source_world @ source_bone.bone.matrix_local
+                posed = source_world @ source_bone.matrix
+                rotation = posed.to_quaternion() @ rest.to_quaternion().inverted()
+                rotation = target_world.to_quaternion().inverted() @ rotation @ (target_world @ bone.bone.matrix_local).to_quaternion()
+                if bone.parent:
+                    relative = bone.parent.bone.matrix_local.inverted() @ bone.bone.matrix_local
+                    position = (bone.parent.matrix @ relative).translation
+                else:
+                    delta = posed.translation - rest.translation
+                    position = bone.bone.matrix_local.translation + target_world.inverted().to_3x3() @ delta
+                bone.matrix = Matrix.LocRotScale(position, rotation, Vector((1, 1, 1)))
+                bpy.context.view_layer.update()
+            frames.append({b.name: b.matrix_basis.copy() for b in base_rig.pose.bones})
+        # The library clips include long neutral bookends. Keep the complete
+        # gesture/jump and landing, with short transition handles, at native speed.
+        trim_start, trim_end = round(.5 * FPS), round(7.0 * FPS)
+        samples[name] = frames[trim_start:trim_end + 1]
+        source_report[name] = {'file': source, 'sourceDuration': (end - start) / FPS,
+                              'sourceFrames': len(frames), 'retargeted': True,
+                              'trimStart': .5, 'trimEnd': 7.0}
+        for o in imported:
+            bpy.data.objects.remove(o, do_unlink=True)
+        continue
     for frame in range(round(start), round(end) + 1):
         bpy.context.scene.frame_set(frame)
         hips = rig.pose.bones['mixamorig:Hips']

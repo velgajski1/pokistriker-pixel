@@ -1,0 +1,15 @@
+{
+  "provider": "Meshy",
+  "creditsSpent": 28,
+  "rigTask": "01a0c937-71b7-759d-99ff-9a504cbdc7b3",
+  "rigSource": "rig-source.glb (neutral rest pose exported from existing Captain biped)",
+  "rejectedFirstRig": "01a0c92d-62ef-71ec-a114-25e25b3256e6",
+  "rejectionReason": "Original textured source was posed; new bind pose distorted retargeting. First batch not shipped.",
+  "animations": {
+    "victory": { "actionId": 59, "taskId": "01a0c938-9736-714b-90d7-81103c979866" },
+    "jump": { "actionId": 61, "taskId": "01a0c938-a3be-7458-8553-e7e5a157f698" },
+    "cheer": { "actionId": 49, "taskId": "01a0c938-afde-7219-b3a1-999416d4b9c8" }
+  },
+  "integration": "Only retargeted animation clips are shipped in assets/squad.glb; existing mesh, skin weights, and original clips are preserved. New clips trimmed to source seconds 0.5–7.0.",
+  "reviewCommand": "node tools/celebration-review.mjs final --live"
+}

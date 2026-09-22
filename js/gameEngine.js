@@ -490,7 +490,8 @@ const STRIKER_SPEED_RESPONSE = 18;
 let captain = null;
 export const players = [];
 const GAITS = ['walk', 'quick_walk', 'run', 'run_alt'];
-export const CELEBRATIONS = ['celebrate_backflip', 'celebrate_backflip_hooks', 'celebrate_dance', 'celebrate_heart'];
+export const CELEBRATIONS = ['celebrate_backflip', 'celebrate_backflip_hooks', 'celebrate_dance', 'celebrate_heart',
+  'celebrate_victory', 'celebrate_jump', 'celebrate_cheer'];
 export const REACTIONS = ['react_stomp', 'react_shout', 'react_confused', 'react_walk_sad'];
 export const reactions = { keeper: null, shooter: null };
 export const defenderReactions = { active: false, tracks: [] };
@@ -754,6 +755,7 @@ function shadeCaptainFace(material, look) {
         vec3 p = faceBind;
         float front = smoothstep(-.035, .065, p.z);
         float hairline = mix(1.505, 1.61, front);
+        if (faceStyle == 10.0) hairline = mix(1.515, 1.601, front);
         hairline -= .024 * smoothstep(.045, .085, abs(p.x)) * front;
         if (faceStyle == 3.0) hairline += .012 * sin(p.x * 28.0) * front;
         if (faceStyle == 4.0 || faceStyle == 5.0) hairline -= .016 * front;
@@ -765,6 +767,11 @@ function shadeCaptainFace(material, look) {
         float grain = sin(p.x * 1700.0) * sin(p.y * 1600.0 + p.z * 900.0);
         grain *= 1.0 - smoothstep(.0005, .003, fwidth(p.y));
         float flow = p.x * 430.0 + p.y * 110.0 + sin(p.z * 32.0) * 3.0;
+        if (faceStyle == 10.0) {
+          // Combed-back strands, not the crosshatched cap texture.
+          flow = p.x * 620.0 + sin(p.z * 18.0 + p.y * 12.0) * 5.0;
+          grain *= .18;
+        }
         if (faceStyle == 4.0 || faceStyle == 3.0) flow += p.y * 260.0;
         float detail = 1.0 - smoothstep(.4, 2.2, fwidth(flow));
         float locks = (.5 + .5 * sin(flow)) * detail;
@@ -811,13 +818,15 @@ function captainHairGeometry(style, headIndex, career = false) {
   const short = style === 'bald' || style === 'buzz';
   const tied = style === 'ponytail' || style === 'bun' || style === 'headband';
   const volume = style === 'afro' ? .033 : style === 'curls' ? (career ? .03 : .016)
-    : style === 'floppy' || style === 'swept' ? (career ? .025 : .014) : style === 'bald' || style === 'buzz' ? 0 : .006;
+    : style === 'floppy' || style === 'swept' ? (career ? .025 : .014)
+      : style === 'ponytail' ? .012 : style === 'bald' || style === 'buzz' ? 0 : .006;
   for (let row = 0; row <= rings; row++) {
     for (let col = 0; col <= segments; col++) {
       const phi = col / segments * Math.PI * 2;
       const facing = Math.cos(phi);
       let edge = career ? 1.575 + facing * (facing > 0 ? .05 : .065)
         : 1.585 + facing * (facing > 0 ? .023 : .065);
+      if (career && style === 'ponytail') edge = 1.562 + facing * (facing > 0 ? .038 : .05);
       if (!short) edge += (tied ? .002 : .004) * Math.sin(phi * 11 + .6) + .002 * Math.sin(phi * 19);
       if (style === 'floppy') edge -= .012 * Math.max(0, facing) * (.5 + .5 * Math.sin(phi * 5));
       const height = career ? .105 : .108;
@@ -884,6 +893,45 @@ function buildCaptainAccessory(model, scalp, look) {
   const hair = new THREE.Group();
   hair.name = 'captain-hair-accessory';
   const material = new THREE.MeshStandardMaterial({ color: look.hair, roughness: .9 });
+  if (look.style === 'ponytail') {
+    // Separate tapered locks follow a curved, gravity-hanging tail. All are
+    // built once in bind space and follow the head without per-frame work.
+    for (let lock = 0; lock < 9; lock++) {
+      const angle = lock / 9 * Math.PI * 2;
+      const x = Math.sin(angle) * .014, z = Math.cos(angle) * .010;
+      const curve = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(x * .4, 1.616, -.096 + z * .4),
+        new THREE.Vector3(x, 1.59, -.139 + z),
+        new THREE.Vector3(x + .009, 1.52, -.158 + z),
+        new THREE.Vector3(x * .7 + .020, 1.445 + lock % 3 * .006, -.144 + z * .6),
+      ]);
+      const geometry = new THREE.TubeGeometry(curve, 20, .009, 7, false);
+      const pos = geometry.attributes.position;
+      for (let row = 0; row <= 20; row++) {
+        const t = row / 20, center = curve.getPointAt(t);
+        const taper = 1 - .94 * Math.pow(t, 1.7);
+        for (let col = 0; col <= 7; col++) {
+          const i = row * 8 + col;
+          pos.setXYZ(i, center.x + (pos.getX(i) - center.x) * taper,
+            center.y + (pos.getY(i) - center.y) * taper,
+            center.z + (pos.getZ(i) - center.z) * taper);
+        }
+      }
+      geometry.computeVertexNormals();
+      const shade = material.clone();
+      shade.color.multiplyScalar(.88 + (lock % 3) * .09);
+      hair.add(new THREE.Mesh(geometry, shade));
+    }
+    const tie = new THREE.Mesh(new THREE.TorusGeometry(.017, .003, 6, 16),
+      new THREE.MeshStandardMaterial({ color: 0x292b30, roughness: 1 }));
+    tie.position.set(0, 1.592, -.135);
+    tie.rotation.x = -.6;
+    hair.add(tie);
+    hair.scale.setScalar(CAPTAIN_BIND_SCALE);
+    hair.applyMatrix4(scalp.skeleton.boneInverses[index]);
+    head.add(hair);
+    return hair;
+  }
   const bun = look.style === 'bun';
   const tail = new THREE.Mesh(bun ? new THREE.SphereGeometry(.045, 20, 14)
     : new THREE.CapsuleGeometry(.025, .12, 8, 24), material);
@@ -953,6 +1001,22 @@ export function prepareStrikerAppearances(characters) {
         const pos = geometry.attributes.position;
         for (let i = 0; i < pos.count; i++) {
           const y = pos.getY(i) / CAPTAIN_BIND_SCALE;
+          if (look.style === 'ponytail' && region === 'skin' && y > 1.51) {
+            // Remove the source scan's jagged fringe beneath Lars's new hair.
+            const x = pos.getX(i) / CAPTAIN_BIND_SCALE;
+            const z = pos.getZ(i) / CAPTAIN_BIND_SCALE;
+            const nx = x / .093, ny = (y - 1.575) / .105, nz = (z + .005) / .1;
+            const radius = Math.hypot(nx, ny, nz);
+            const weight = Math.max(THREE.MathUtils.smoothstep(y, 1.59, 1.615),
+              THREE.MathUtils.smoothstep(y, 1.51, 1.57)
+                * (1 - THREE.MathUtils.smoothstep(z, .035, .075)));
+            if (radius > 1) {
+              const scale = lerp(1, .995 / radius, weight);
+              pos.setXYZ(i, x * scale * CAPTAIN_BIND_SCALE,
+                (1.575 + (y - 1.575) * scale) * CAPTAIN_BIND_SCALE,
+                (-.005 + (z + .005) * scale) * CAPTAIN_BIND_SCALE);
+            }
+          }
           const chest = THREE.MathUtils.smoothstep(y, .85, 1.15)
             * (1 - THREE.MathUtils.smoothstep(y, 1.38, 1.46));
           pos.setX(i, pos.getX(i) * (1 + (look.build - 1) * chest));
@@ -1281,7 +1345,38 @@ export function startCelebration(name) {
   return CELEBRATION_SECONDS;
 }
 
+let celebrationReview = null;
+
+/** Isolated local review: the full player stays framed and the clip loops. */
+export function startCelebrationReview(name) {
+  stopCelebration();
+  stopReactions();
+  if (!captain || !CELEBRATIONS.includes(name)) return false;
+  const visibility = players.map(player => ({ root: player.root, visible: player.root.visible }));
+  celebrationReview = { visibility, ballVisible: objects.ball.visible };
+  for (const player of players) player.root.visible = player.rig === squad.striker;
+  objects.ball.visible = false;
+  squad.striker.root.position.set(0, 0, 0);
+  squad.striker.root.rotation.set(0, 0, 0);
+  captain.model.position.set(0, 0, 0);
+  captain.model.quaternion.identity();
+  setAnimationsPaused(false);
+  showAimRig(false, false);
+  startCelebration(name);
+  celebration.phase = 'perform';
+  frameCelebration();
+  camera.position.copy(_camHome);
+  _camTarget.copy(_camTargetWant);
+  camera.lookAt(_camTarget);
+  return true;
+}
+
 export function stopCelebration() {
+  if (celebrationReview) {
+    for (const entry of celebrationReview.visibility) entry.root.visible = entry.visible;
+    objects.ball.visible = celebrationReview.ballVisible;
+    celebrationReview = null;
+  }
   celebration.name = null; celebration.phase = null;
   for (const rig of squad.mates) if (rig.avatar) {
     rig.avatar.teamCelebration = null;
@@ -1401,6 +1496,13 @@ function sampleReaction(track, dt) {
 
 function frameCelebration() {
   const root = squad.striker.root;
+  if (celebrationReview) {
+    // A fixed three-quarter view makes hands, shoulders and planted feet easy
+    // to compare without the match camera orbiting away from the motion.
+    _camHome.set(root.position.x + 1.4, 1.55, root.position.z + 4.8);
+    _camTargetWant.set(root.position.x, 1.15, root.position.z);
+    return;
+  }
   const side = celebration.targetX >= celebration.startX ? 1 : -1;
   // Begin at the run-in camera angle, then orbit gently during the performance.
   const angle = Math.atan2(side * 5, 1.5) + side * celebration.time * .18;
@@ -1435,6 +1537,10 @@ function animateCaptain(dt) {
     }
     frameCelebration();
     celebration.time += dt;
+    if (celebrationReview && celebration.time >= celebration.duration + .7) {
+      celebration.time = 0;
+      for (let i = 0; i < captain.moveBones.length; i++) captain.movePose[i].copy(captain.moveBones[i].quaternion);
+    }
     for (const name of ANIMATIONS) captain.actions[name].setEffectiveWeight(0);
     const endBlend = THREE.MathUtils.smoothstep(celebration.time, celebration.duration - .3, celebration.duration);
     captain.actions[celebration.name].setEffectiveWeight(1 - endBlend);

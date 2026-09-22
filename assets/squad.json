@@ -62,6 +62,15 @@
     "celebrate_heart": {
       "duration": 6.208333333333333
     },
+    "celebrate_victory": {
+      "duration": 6.5
+    },
+    "celebrate_jump": {
+      "duration": 6.5
+    },
+    "celebrate_cheer": {
+      "duration": 6.5
+    },
     "react_stomp": {
       "duration": 1.4166666666666667
     },
@@ -180,6 +189,30 @@
       "file": "Big_Heart_Gesture",
       "sourceDuration": 6.208333333333333,
       "sourceFrames": 150
+    },
+    "celebrate_victory": {
+      "file": "Victory_Cheer",
+      "sourceDuration": 9.333333457509676,
+      "sourceFrames": 225,
+      "retargeted": true,
+      "trimStart": 0.5,
+      "trimEnd": 7.0
+    },
+    "celebrate_jump": {
+      "file": "happy_jump_m",
+      "sourceDuration": 9.833333457509676,
+      "sourceFrames": 237,
+      "retargeted": true,
+      "trimStart": 0.5,
+      "trimEnd": 7.0
+    },
+    "celebrate_cheer": {
+      "file": "Motivational_Cheer",
+      "sourceDuration": 9.00000075995922,
+      "sourceFrames": 217,
+      "retargeted": true,
+      "trimStart": 0.5,
+      "trimEnd": 7.0
     },
     "react_stomp": {
       "file": "Angry_Ground_Stomp",
