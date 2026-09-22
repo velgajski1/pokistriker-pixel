@@ -452,6 +452,10 @@ const squad = { keeper: null, homeKeeper: null, striker: null, mates: [], foes: 
 
 // Speed thresholds in metres/second. Finish the run blend before sprinting.
 const RUN_FULL_SPEED = 3.5;
+const MIN_GAIT_SPEED = 0.02;
+const INSTANT_TURN_ANGLE = Math.PI / 9;
+const TURN_RATE = Math.PI / 0.25;
+const MOVE_ALIGNMENT = Math.cos(INSTANT_TURN_ANGLE);
 const KICK_FADE = 0.15;
 const STRIKER_SPEED_RESPONSE = 18;
 let captain = null;
@@ -886,6 +890,7 @@ function attachCaptain(rig, model, clips, data, offsets) {
     saveLegs: ['L', 'R'].map(side => [bipedBone(model, 'shin_' + side),
       bipedBone(model, 'thigh_' + side), bipedBone(model, 'foot_' + side)]),
     passTime: -1, turnTime: -1, turnName: '', turnRate: 0, scale: rig.scale,
+    motionMode: 'locomotion',
     runName: rig.look.build > 1 ? 'run_alt' : 'run', hipBone: bipedBone(model, 'hips'), hipPosition: bipedBone(model, 'hips').position.clone(),
     hipQuaternion: bipedBone(model, 'hips').quaternion.clone() };
   mixer.update(0);
@@ -898,7 +903,7 @@ function sampleLocomotion(a, speed, dt) {
   const localSpeed = speed / a.scale;
   // Small adjustments slow the walking cycle instead of fading its footfalls
   // into idle (which used to suppress both stride and phase advancement).
-  const moving = localSpeed > 0.00001 ? 1 : 0;
+  const moving = localSpeed >= MIN_GAIT_SPEED ? 1 : 0;
   const brisk = THREE.MathUtils.smoothstep(localSpeed, clips.walk.speed, 2.25);
   const run = THREE.MathUtils.smoothstep(localSpeed, 2.25, RUN_FULL_SPEED);
   const walkWeight = moving * (1 - brisk);
@@ -919,7 +924,9 @@ function sampleLocomotion(a, speed, dt) {
 
   // Normalized turn clips supply the planted stepping pose; root heading is
   // still controlled by the movement code, so turns cannot spin twice.
-  if (localSpeed >= 3 || (moving && a.turnName?.startsWith('turn_idle'))) a.turnTime = -1;
+  const turnPoseMismatch = (moving && a.turnName?.startsWith('turn_idle'))
+    || (!moving && a.turnName?.startsWith('turn_walk'));
+  if (localSpeed >= 3 || turnPoseMismatch) a.turnTime = -1;
   if (a.turnTime < 0 && Math.abs(a.turnRate) > .8 && localSpeed < 3) {
     a.turnName = !moving ? (a.turnRate > 0 ? 'turn_idle_left' : 'turn_idle_right')
       : (a.turnRate > 0 ? 'turn_walk_left' : 'turn_walk_right');
@@ -972,11 +979,23 @@ function animateSquad(dt) {
 function syncPlayerLocomotion(dt) {
   for (const player of players) {
     const r = player.rig, a = r === squad.striker ? captain : r.avatar;
-    const distance = Math.hypot(r.root.position.x - player.motionX, r.root.position.z - player.motionZ);
+    const motionX = r.root.position.x - player.motionX;
+    const motionZ = r.root.position.z - player.motionZ;
+    const distance = Math.hypot(motionX, motionZ);
     player.motionX = r.root.position.x;
     player.motionZ = r.root.position.z;
-    if (!a || distance > 2) continue;
-    const speed = distance / Math.max(dt, .001);
+    if (!a) continue;
+    // Scene placement is not locomotion. Clear the previous gait immediately
+    // so a teleported player cannot take one stale walking step in place.
+    if (distance > 2) {
+      a.speed = 0;
+      a.turnRate = 0;
+      a.turnTime = -1;
+      if (r === squad.striker) captainSpeed = 0;
+      continue;
+    }
+    const measuredSpeed = distance / Math.max(dt, .001);
+    const speed = measuredSpeed >= MIN_GAIT_SPEED ? measuredSpeed : 0;
     // Keep real action clips while active, but never let their idle recovery
     // override translation. Include the striker and both keepers in this pass.
     const kickEnd = a.data.clips.kick.duration;
@@ -984,14 +1003,15 @@ function syncPlayerLocomotion(dt) {
     const shooting = r === squad.striker && kickTime >= 0 && kickTime < kickEnd;
     const action = passing || shooting || (r === squad.striker && (celebration.name || reactions.shooter?.name))
       || (r === squad.keeper && reactions.keeper?.name) || (defenderReactions.active && a.goalWalk) || a.saveActive
+      || a.motionMode && a.motionMode !== 'locomotion'
       || a.actions.slide_left.getEffectiveWeight() > .1 || a.actions.slide_right.getEffectiveWeight() > .1
       || a.actions.dive_left.getEffectiveWeight() > .35 || a.actions.dive_right.getEffectiveWeight() > .35;
     if (action) continue;
-    if (speed > .00001) {
+    if (speed > 0) {
       a.passTime = -1;
       if (r === squad.striker) kickTime = -1;
     }
-    if (a.procedural && speed > .00001) {
+    if (a.procedural && speed > 0) {
       a.turnTime = -1;
       a.turnRate = 0;
       poseRun(r, a.phase, speed / 4.5);
@@ -1140,7 +1160,7 @@ function animateDefenderReaction(track, dt) {
     || (root.position.z > GOAL.PLANE_Z + PITCH.LENGTH - 3 && dz > 0)) {
     track.heading = Math.atan2(-root.position.x, GOAL.PLANE_Z + PITCH.LENGTH / 2 - root.position.z);
   }
-  root.rotation.y = turnToward(root.rotation.y, track.heading, dt * 1.8);
+  setHeading(root, track.heading, dt);
   root.position.x += Math.sin(root.rotation.y) * track.speed * dt;
   root.position.z += Math.cos(root.rotation.y) * track.speed * dt;
   root.position.y = 0;
@@ -1201,8 +1221,7 @@ function animateCaptain(dt) {
       // Give the scorer time to turn toward the crowd before the run starts.
       const t = Math.max(0, (celebration.runTime - .3) / (celebration.runDuration - .3));
       root.position.x = lerp(celebration.startX, celebration.targetX, t * t * (3 - 2 * t));
-      root.rotation.y = turnToward(root.rotation.y,
-        celebration.targetX >= celebration.startX ? Math.PI / 2 : -Math.PI / 2, dt * 12);
+      setHeading(root, celebration.targetX >= celebration.startX ? Math.PI / 2 : -Math.PI / 2, dt);
       captainSpeed = dt > 0 ? Math.abs(root.position.x - previousX) / dt : 0;
       sampleLocomotion(captain, captainSpeed, dt);
       captain.mixer.update(0);
@@ -1285,7 +1304,7 @@ function buildSquad() {
   }
   squad.homeKeeper = buildHumanoid({ ...KIT_KEEP, kit: 0x429d64, number: 1, lite: true }, looks[n++]);
   squad.homeKeeper.root.position.set(0, 0, GOAL.PLANE_Z + PITCH.LENGTH - 1.2);
-  squad.homeKeeper.root.rotation.y = Math.PI;
+  setHeading(squad.homeKeeper.root, Math.PI);
   scene.add(squad.homeKeeper.root);
   squad.ref = buildHumanoid({ ...KIT_REF, lite: true }, looks[n++]);
   scene.add(squad.ref.root);
@@ -2081,6 +2100,7 @@ function buildAimRig() {
 function poseRun(rig, phase, amp) {
   if (rig.avatar) {
     rig.avatar.procedural = false;
+    rig.avatar.motionMode = 'locomotion';
     rig.avatar.speed = amp <= 0.17 ? 0 : amp * 4.5;
     rig.avatar.model.position.set(0, 0, 0);
     rig.avatar.model.quaternion.identity();
@@ -2163,7 +2183,12 @@ function reachKeeperChain(chain) {
 export function setKeeper(x, dive, side, high, airY, ground, target = null) {
   const r = squad.keeper;
   if (reactions.keeper?.name) return;
-  if (r.avatar) r.avatar.saveActive = !!target || dive > .05 || airY > .01;
+  if (r.avatar) {
+    r.avatar.saveActive = !!target || dive > .05 || airY > .01;
+    // A keeper moving across the line is shuffling while staying square to
+    // play, not running forward in the direction of root displacement.
+    r.avatar.motionMode = 'keeper-shuffle';
+  }
   const h = high || 0;
   const lean = dive * (1.35 - h * 0.55);
   const dx = x - r.root.position.x;
@@ -2232,6 +2257,7 @@ export function setBlocker(i, x, lunge, side, airY, slideTime = -1) {
   if (r.avatar && (slideTime >= 0 || lunge < .05)) {
     const a = r.avatar;
     a.procedural = true;
+    a.motionMode = 'block';
     r.root.position.x = x;
     a.model.position.set(0, 0, 0);
     a.model.quaternion.identity();
@@ -2249,6 +2275,7 @@ export function setBlocker(i, x, lunge, side, airY, slideTime = -1) {
     return x;
   }
   const lean = lunge * 0.12;
+  if (r.avatar) r.avatar.motionMode = 'block';
   r.root.position.x = x;
   r.body.position.y = -lunge * 0.07 + (airY || 0);
   r.body.rotation.z = side * lean;
@@ -2370,7 +2397,7 @@ function initAmbient() {
   const add = (rig, home, team) => ambient.actors.push({
     rig, home, team, targetX: home.x, targetZ: home.z, chasing: false, pressing: false,
     x: home.x, z: home.z, previousX: home.x, previousZ: home.z,
-    phase: Math.random() * 6.28, speed: 0, heading: 0,
+    phase: Math.random() * 6.28, speed: 0, heading: 0, frameHeading: 0,
   });
 
   add(squad.striker, { x: 0, z: -9 }, 'home');
@@ -2442,14 +2469,14 @@ function moveActors(dt) {
     const response = captain && p.rig === squad.striker
       ? 1 - Math.exp(-STRIKER_SPEED_RESPONSE * dt) : Math.min(1, dt * 6);
     p.speed = p.rig === squad.striker ? lerp(p.speed, v, response) : v;
-    p.phase += p.speed * dt * 2.1;
+    if (p.speed >= MIN_GAIT_SPEED) p.phase += p.speed * dt * 2.1;
 
     p.rig.root.position.set(p.x, 0, p.z);
-    p.rig.root.rotation.y = p.heading;
+    setHeading(p.rig.root, p.heading);
     if (animation) animation.turnRate = Math.atan2(Math.sin(p.heading - previousHeading), Math.cos(p.heading - previousHeading)) / Math.max(dt, .001);
     if (captain && p.rig === squad.striker) { captainSpeed = p.speed; kickTime = -1; }
     else {
-      poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.12, 1));
+      poseRun(p.rig, p.phase, p.speed >= MIN_GAIT_SPEED ? clamp(p.speed / 4.5, 0, 1) : 0);
       if (p.rig.avatar) p.rig.avatar.speed = p.speed;
     }
   }
@@ -2464,7 +2491,8 @@ function preparePassKick(actor, ballX, ballZ, targetX, targetZ) {
   const foot = animation.data.kickFoot;
   const height = rig.root.scale.y, width = rig.avatar ? rig.avatar.model.scale.x : 1;
   const sin = Math.sin(heading), cos = Math.cos(heading);
-  rig.root.rotation.y = actor.heading = heading;
+  actor.heading = heading;
+  setHeading(rig.root, heading);
   rig.root.position.set(ballX - (cos * foot.x * width + sin * foot.z) * height - sin * BALL_R,
     BALL_R - foot.y * height,
     ballZ - (-sin * foot.x * width + cos * foot.z) * height - cos * BALL_R);
@@ -2557,7 +2585,7 @@ function updateAmbient(dt) {
   // Keeper shuffles his line, watching the ball.
   const kx = clamp(a.ball.x * 0.22, -3.2, 3.2);
   setKeeper(kx, 0, 1);
-  squad.keeper.root.rotation.y = 0;
+  setHeading(squad.keeper.root, 0, dt);
 }
 
 function positionHomeKeeper(dt) {
@@ -2569,8 +2597,8 @@ function positionHomeKeeper(dt) {
   r.root.position.x = lerp(r.root.position.x, clamp(bx * .12, -2.5, 2.5), response);
   r.root.position.z = lerp(r.root.position.z, end - clamp((end - bz) * .08, 1.2, 6), response);
   const moveX = r.root.position.x - previousX, moveZ = r.root.position.z - previousZ;
-  r.root.rotation.y = Math.hypot(moveX, moveZ) > .00001
-    ? Math.atan2(moveX, moveZ) : Math.atan2(bx - r.root.position.x, bz - r.root.position.z);
+  setHeading(r.root, Math.hypot(moveX, moveZ) > .00001
+    ? Math.atan2(moveX, moveZ) : Math.atan2(bx - r.root.position.x, bz - r.root.position.z), dt);
   if (r.avatar) r.avatar.speed = Math.hypot(r.root.position.x - previousX,
     r.root.position.z - previousZ) / Math.max(dt, .001);
 }
@@ -2743,22 +2771,31 @@ export function moveActorForward(actor, targetX, targetZ, step, dt) {
   const distance = Math.hypot(dx, dz);
   if (distance < .000001 || dt <= 0) return 0;
   const want = Math.atan2(dx, dz);
-  actor.heading = turnToward(actor.heading, want, dt * (step / dt >= 3 ? 8 : 4.5));
+  actor.heading = tweenHeading(actor.heading, want, dt);
   const alignment = Math.cos(want - actor.heading);
-  // A destination behind the player requires a planted turn first.
-  if (alignment < .5) return 0;
+  // A large change is a planted turn. Translation starts only after the
+  // rotation tween reaches the instant-correction range.
+  if (alignment < MOVE_ALIGNMENT) return 0;
   const travel = Math.min(step, distance) * alignment;
   actor.x += Math.sin(actor.heading) * travel;
   actor.z += Math.cos(actor.heading) * travel;
   return travel;
 }
 
-/** Shortest-way turn toward a heading, capped at `maxStep` radians. */
-function turnToward(cur, want, maxStep) {
-  let d = want - cur;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return cur + (d > maxStep ? maxStep : d < -maxStep ? -maxStep : d);
+/** Small corrections snap into place. Larger turns rotate linearly, with a
+ * complete half-turn taking no more than a quarter-second. */
+function tweenHeading(current, wanted, dt) {
+  const delta = Math.atan2(Math.sin(wanted - current), Math.cos(wanted - current));
+  if (Math.abs(delta) <= INSTANT_TURN_ANGLE || dt <= 0) return wanted;
+  const step = TURN_RATE * dt;
+  return current + clamp(delta, -step, step);
+}
+
+/** Player roots are yaw-only. Assigning just Euler.y after a quaternion copy
+ * can retain Three's equivalent X/Z = PI representation and reverse the
+ * rendered body while the numeric heading still appears correct. */
+function setHeading(root, heading, dt = 0) {
+  root.rotation.set(0, tweenHeading(root.rotation.y, heading, dt), 0);
 }
 
 /**
@@ -2798,6 +2835,7 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
     if (involved && !freePlay && !(live && p.pressing)) continue;
 
     p.heading = p.rig.root.rotation.y;
+    p.frameHeading = p.heading;
     const previousHeading = p.heading;
     let turnedForMovement = false;
     let want = Math.atan2(bx - p.x, bz - p.z);
@@ -2831,14 +2869,15 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
     } else {
       p.speed = lerp(p.speed, 0, Math.min(1, dt * 4));
     }
-    if (!turnedForMovement) p.heading = turnToward(p.heading, want, dt * 4.5);
+    if (!turnedForMovement) p.heading = tweenHeading(p.heading, want, dt);
     if (p.rig.avatar) {
       p.rig.avatar.passTime = -1;
       p.rig.avatar.turnRate = Math.atan2(Math.sin(p.heading - previousHeading), Math.cos(p.heading - previousHeading)) / Math.max(dt, .001);
     }
 
-    // Always tick the run cycle a little so nobody is a statue.
-    p.phase += Math.max(p.speed, 0.8) * dt * 2.1;
+    // A stationary player must hold an idle pose. Advancing a minimum gait
+    // phase made the procedural fallback visibly walk on the spot.
+    if (p.speed >= MIN_GAIT_SPEED) p.phase += p.speed * dt * 2.1;
   }
 
   separate(dt);
@@ -2854,10 +2893,13 @@ export function watchBall(dt, live, rebound = false, pursuit = null, strikerRead
     if (involved && !freePlay && !(live && p.pressing)) continue;
     // Spacing nudges also need forward-facing footsteps.
     p.speed = Math.hypot(p.x - p.previousX, p.z - p.previousZ) / Math.max(dt, .001);
-    if (p.speed > .00001) p.heading = Math.atan2(p.x - p.previousX, p.z - p.previousZ);
+    if (p.speed > .00001) {
+      const motionHeading = Math.atan2(p.x - p.previousX, p.z - p.previousZ);
+      p.heading = tweenHeading(p.frameHeading, motionHeading, dt);
+    }
     p.rig.root.position.set(p.x, 0, p.z);
-    p.rig.root.rotation.y = p.heading;
-    poseRun(p.rig, p.phase, clamp(p.speed / 4.5, 0.17, 1));
+    setHeading(p.rig.root, p.heading);
+    poseRun(p.rig, p.phase, p.speed >= MIN_GAIT_SPEED ? clamp(p.speed / 4.5, 0, 1) : 0);
     if (p.rig.avatar) p.rig.avatar.speed = p.speed;
     if (p.rig === squad.striker && captain) { captainSpeed = p.speed; kickTime = -1; }
   }
@@ -2907,7 +2949,7 @@ export function faceKeeper(dt, blend) {
   const want = Math.atan2(
     objects.ball.position.x - k.root.position.x,
     objects.ball.position.z - k.root.position.z) * blend;
-  k.root.rotation.y = turnToward(k.root.rotation.y, want, dt * 5);
+  setHeading(k.root, want, dt);
 }
 
 /** The striker follows his shot in, rather than admiring it from the spot. */
@@ -2993,7 +3035,7 @@ export function setupChance(origin, blockerCount, soft) {
       p.chasing = false;
       p.speed = 0;
       p.rig.root.position.set(p.x, 0, p.z);
-      p.rig.root.rotation.y = Math.atan2(origin.x - p.x, origin.z - p.z);
+      setHeading(p.rig.root, Math.atan2(origin.x - p.x, origin.z - p.z));
       poseRun(p.rig, 0, 0.12);
     }
     setKeeper(0, 0, 1);
@@ -3011,7 +3053,7 @@ export function setupChance(origin, blockerCount, soft) {
   // Blockers hold wherever they ended up; their live spot is the marking spot.
   for (let i = 0; i < chance.blockerCount; i++) {
     const rig = blockerSets[i].rig;
-    rig.root.rotation.y = Math.atan2(-chance.dirX, -chance.dirZ);
+    setHeading(rig.root, Math.atan2(-chance.dirX, -chance.dirZ));
     chance.blockers.push({ z: rig.root.position.z, baseX: rig.root.position.x, side: 1 });
     setBlocker(i, rig.root.position.x, 0, 1);
 
@@ -3200,6 +3242,10 @@ export function setAnimationsPaused(paused) {
 
 function holdPlayerPoses() {
   for (const pose of pausePoses) {
+    // Roots do not move during AIM/POWER. Re-copying a yaw quaternion rewrites
+    // its Euler form near a half-turn to X/Z = PI; a later Y-only update then
+    // makes a forward gait face backward.
+    if (pose.root) continue;
     if (!pauseCaptured) {
       pose.position.copy(pose.node.position);
       pose.quaternion.copy(pose.node.quaternion);
@@ -3300,7 +3346,7 @@ export function placeStrikerForKick(theta) {
   const rx = Math.cos(face), rz = -Math.sin(face);    // his right, in world
 
   const s = squad.striker;
-  s.root.rotation.y = face;
+  setHeading(s.root, face);
   if (captain) {
     placeStrikerContact(theta);
     return;
@@ -3364,7 +3410,7 @@ export function parade(offset, count) {
   shown.forEach((rig, i) => {
     const x = (i - (shown.length - 1) / 2) * (n > 6 ? 1.75 : 1.15);
     rig.root.position.set(x, 0, GOAL.PLANE_Z + 9);
-    rig.root.rotation.y = 0;           // rigs face +Z by default
+    setHeading(rig.root, 0);           // rigs face +Z by default
     if (rig.avatar) { rig.avatar.passTime = -1; rig.avatar.turnTime = -1; rig.avatar.turnRate = 0; }
     poseRun(rig, 0, 0.1);
   });
