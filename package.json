@@ -1,8 +1,8 @@
 {
-  "name": "benched",
+  "name": "striker-streak",
   "version": "1.0.0",
   "private": true,
-  "description": "Benched: A Striker's Roguelite",
+  "description": "Striker Streak: Free Online Soccer Game",
   "type": "module",
   "scripts": {
     "start": "npx --yes serve -l 5173 .",

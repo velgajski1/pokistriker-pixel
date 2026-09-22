@@ -21,6 +21,17 @@ html,body{
 /* The single utility visibility flag. */
 .hidden{display:none !important}
 
+/* Present in the initial HTML, covering scene construction and asset loading. */
+body.loading>:not(#preloader){visibility:hidden}
+#preloader{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:24px;background:#070f1d;color:#f2f6ff;text-align:center}
+.preloader-brand{font:italic 900 clamp(28px,6vw,52px)/1.1 'Trebuchet MS',Arial,sans-serif;letter-spacing:-.04em;text-shadow:0 3px 0 #203f60}
+#preloader-message{font:12px/1.5 Arial,sans-serif;letter-spacing:.08em;color:#a8bdd3}
+.preloader-track{width:min(220px,65vw);height:4px;overflow:hidden;background:#1d3249;border-radius:4px}
+.preloader-track span{display:block;width:40%;height:100%;background:#8ee4ff;border-radius:4px;animation:preloader-slide 1.1s ease-in-out infinite alternate}
+@keyframes preloader-slide{from{transform:translateX(-100%)}to{transform:translateX(250%)}}
+#preloader.failed .preloader-track{display:none}
+@media(prefers-reduced-motion:reduce){.preloader-track span{animation:none;width:100%;opacity:.65}}
+
 #pitch{position:fixed;inset:0;width:100%;height:100%;display:block}
 
 #dim{
@@ -73,7 +84,9 @@ html,body{
 /* ---------------- Overlay screens ---------------- */
 #overlay{
   display:flex;align-items:center;justify-content:center;
-  background:rgba(4,6,9,.9);overflow-y:auto;
+  background:linear-gradient(#07132199,#07132199),url('assets/ui/bg/shooting-goal.webp') center / cover no-repeat #172c43;
+  background-blend-mode:normal,luminosity;
+  overflow-y:auto;
 }
 
 .panel{width:min(880px,94vw);padding:28px 22px;margin:auto}
@@ -113,3 +126,283 @@ button.accent:hover:not(:disabled){background:var(--accent);color:#000}
 button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
 
 .foot{margin-top:20px;display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}
+
+.match-exit{position:absolute;top:60px;right:20px;pointer-events:auto;background:#102438e6;border-color:#58caff;border-radius:7px;color:#e5f5ff}
+.main-menu.upgrade-panel{width:min(680px,94vw);margin:auto;padding:38px}
+.menu-brand{padding:12px 0 30px;text-align:center}
+.mode-list{display:grid;gap:14px}
+.main-menu .mode-card{display:grid;grid-template-columns:42px 1fr;gap:7px 14px;text-align:left;padding:22px;border:1px solid #49657e;background:linear-gradient(120deg,#294661,#142536);box-shadow:inset 0 1px #ffffff18,0 5px 12px #0003}
+.main-menu .mode-card:hover{background:linear-gradient(120deg,#32668f,#1b3b59);color:#fff;border-color:#58caff}
+.mode-index{grid-row:1 / 3;align-self:center;color:#6ecfff;font-size:18px;font-style:italic}
+.mode-card strong{font-size:20px;letter-spacing:.04em}
+.mode-card small{font-size:12px;color:#b2c8db;text-transform:none;font-weight:400;letter-spacing:.015em;line-height:1.5}
+.upgrade-panel .reset-progress{border-color:#945364;color:#f7b0bd;background:#351e2b}
+.compact-panel.upgrade-panel{width:min(600px,94vw);margin:auto}
+.compact-panel h1{font-size:30px}
+.result-score{font-size:48px;color:#81d6ff;font-weight:800;padding:32px 0}
+@media(max-width:480px){.main-menu.upgrade-panel{padding:22px;margin:20px auto}.main-menu .mode-card{padding:18px 14px}.mode-card strong{font-size:17px}.match-exit{top:54px}}
+
+/* Career identities use the same portraits in selection and on the HUD. */
+.career-identity{position:absolute;top:58px;left:20px;display:flex;align-items:center;gap:10px;max-width:calc(100vw - 175px);padding:5px 12px 5px 5px;background:#0b182ce6;border:1px solid #395777;border-radius:8px;font:700 12px Arial,sans-serif}
+.career-identity img{width:40px;height:40px;object-fit:cover;border-radius:5px}
+.career-identity span{overflow-wrap:anywhere}
+.character-panel.upgrade-panel{width:min(1020px,94vw)}
+.character-panel h1{font-size:clamp(25px,4vw,40px)}
+.character-intro{margin:18px 0}
+.character-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
+.character-panel button.character-card{position:relative;display:flex;flex-direction:column;align-items:stretch;min-width:0;margin:0;padding:0;overflow:hidden;text-align:left;background:#0c1a2b;border:2px solid #38516a;color:#eaf3ff;box-shadow:0 5px 14px #0004;transition:border-color .15s,transform .15s}
+.character-card img{display:block;width:100%;height:auto;aspect-ratio:1;object-fit:cover}
+.character-card strong{display:flex;align-items:center;min-height:48px;padding:10px 12px;font-size:14px;line-height:1.3;letter-spacing:0;text-transform:none}
+.character-card .character-mark{display:none;position:absolute;top:8px;right:8px;background:#b5f47a;color:#142313;padding:5px 7px;border-radius:4px;font-size:9px;letter-spacing:.08em}
+.character-panel .character-card[aria-pressed="true"]{border-color:#b5f47a;box-shadow:0 0 0 1px #b5f47a,0 6px 18px #0005}
+.character-card[aria-pressed="true"] .character-mark{display:block}
+.character-panel .character-card:hover{border-color:#58caff;transform:translateY(-2px)}
+.character-panel button:focus-visible{outline:3px solid #fff;outline-offset:3px}
+.character-selection{min-height:40px;margin-top:20px;color:#b5f47a;font-size:14px;line-height:1.5}
+.character-note{font-size:12px;line-height:1.6}
+.character-panel .foot{justify-content:space-between;margin-top:18px}
+@media(max-width:650px){.character-panel.upgrade-panel{padding:18px;margin:16px auto}.character-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.character-card strong{font-size:12px;padding:9px 8px}.career-identity{left:10px;top:55px;gap:6px;font-size:10px;padding-right:8px}.career-identity img{width:30px;height:30px}}
+
+/* Upgrade screens: blue-lit metal frame with individual attribute cards. */
+#overlay:has(.upgrade-panel){align-items:flex-start}
+.upgrade-panel{
+  --accent:#58caff;--dim:#a7bbcf;--rule:#304960;
+  width:min(1060px,94vw);padding:28px;margin:28px auto;
+  font-family:Arial,Helvetica,sans-serif;
+  background:linear-gradient(145deg,#20364b 0%,#101d2c 42%,#0a1421 100%);
+  border:1px solid #65849c;border-radius:22px;
+  box-shadow:0 0 0 5px #101e2de6,0 0 0 6px #36516b,0 24px 80px #000b,inset 0 1px #b7defd55;
+}
+.upgrade-panel>.center{padding:10px 0 14px}
+.upgrade-panel h1{font-size:clamp(28px,5vw,46px);letter-spacing:.045em;font-style:italic;text-shadow:0 3px 0 #0005}
+.upgrade-panel h1 small{font-size:11px;letter-spacing:.24em;font-style:normal;color:#8db9d9}
+.upgrade-panel h2{margin:22px 0 14px;font-size:12px;letter-spacing:.18em}
+.upgrade-panel>.row{padding:14px 18px;background:#081522;border:1px solid #344f68;border-radius:10px}
+.upgrade-panel .bank{line-height:1.8;letter-spacing:.04em}
+.upgrade-panel .bank b{color:#a4ed73;font-size:16px}
+.upgrade-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:16px 0}
+.upgrade-card{
+  display:flex;flex-direction:column;align-items:stretch;gap:10px;position:relative;
+  padding:20px;border:1px solid #49657e;border-radius:14px;
+  background:linear-gradient(155deg,#2b4258 0%,#18293b 45%,#101d2b 100%);
+  box-shadow:0 6px 12px #0005,inset 0 1px #b3d9f533;
+  transition:border-color .16s,transform .16s;
+}
+.upgrade-card:focus-within,.upgrade-card:hover{border-color:#58caff;transform:translateY(-2px)}
+.upgrade-icon{
+  display:grid;place-items:center;align-self:flex-start;width:56px;height:56px;
+  border-radius:14px;border:1px solid #4b91bd;background:linear-gradient(135deg,#204768,#0c1b2c);
+  color:#a8dfff;font-size:30px;text-shadow:0 0 16px #3ca9ff80;box-shadow:inset 0 0 15px #369de922;
+}
+.upgrade-card .nm{min-width:0;font-size:15px;line-height:1.3;font-weight:800;letter-spacing:.035em}
+.upgrade-card .fx{flex:1;min-height:34px;font-size:13px;line-height:1.5}
+.upgrade-level{font-size:11px;font-weight:700;letter-spacing:.1em;color:#81d6ff;margin-top:3px}
+.upgrade-card .pips{display:flex;gap:4px;height:9px}
+.upgrade-card .pips i{flex:1;border:1px solid #395067;border-radius:2px;background:#07121e;box-shadow:inset 0 1px 3px #0008}
+.upgrade-card .pips i.filled{background:linear-gradient(#b1f77c,#55b939);border-color:#92e35f;box-shadow:0 0 7px #83d45133}
+.upgrade-panel button{border-radius:7px;font-size:11px;font-weight:700;letter-spacing:.05em;min-height:42px;white-space:normal}
+.upgrade-card button{align-self:stretch;margin:8px 0 0;padding:11px 8px;background:linear-gradient(#217aca,#144b87);border-color:#51baff;box-shadow:inset 0 1px #c5e9ff44,0 3px 6px #0005;color:#effaff}
+.upgrade-card button:hover:not(:disabled),.upgrade-panel button.accent:hover:not(:disabled){background:linear-gradient(#42a3ed,#2269b4);color:white}
+.upgrade-panel button:disabled{opacity:1;color:#8196ac;border-color:#35495d;background:#142234;box-shadow:none}
+.upgrade-card.maxed .upgrade-level{color:#a4ed73}
+.upgrade-panel button.accent{background:linear-gradient(#278be0,#175298);border:1px solid #68caff;color:white;box-shadow:0 0 16px #208edf22,inset 0 1px #c5e9ff55}
+.upgrade-panel button:focus-visible{outline:3px solid #b1e6ff;outline-offset:4px}
+.upgrade-panel .foot{align-items:center;justify-content:flex-end;margin-top:20px}
+.training-panel h1{font-size:28px;letter-spacing:.08em}
+.training-panel .upgrade-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.training-panel .foot{justify-content:flex-end}
+.upgrade-panel .conf{padding:16px 0;gap:8px 20px}
+.upgrade-panel .conf .pips{font-family:var(--mono);font-size:clamp(9px,2.5vw,13px);letter-spacing:0}
+.charm-card{padding:16px;background:linear-gradient(110deg,#30263e,#182639);border:1px solid #665271;border-radius:10px}
+.charm-card .nm{font-weight:700;font-size:13px}
+@media(max-width:800px){
+  .upgrade-grid,.training-panel .upgrade-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .upgrade-panel{padding:22px}
+}
+@media(max-width:480px){
+  .upgrade-panel{padding:16px;margin:16px auto;border-radius:14px}
+  .upgrade-grid,.training-panel .upgrade-grid{grid-template-columns:1fr;gap:12px}
+  .upgrade-card{display:grid;grid-template-columns:48px minmax(0,1fr);gap:8px 14px;padding:16px}
+  .upgrade-icon{grid-column:1;grid-row:1 / 3;width:48px;height:48px;font-size:26px}
+  .upgrade-card .nm,.upgrade-card .fx{grid-column:2;min-height:0}
+  .upgrade-level,.upgrade-card .pips,.upgrade-card button{grid-column:1 / -1}
+  .upgrade-panel .foot button{flex:1}
+}
+@media(prefers-reduced-motion:reduce){.upgrade-card{transition:none}.upgrade-card:hover,.upgrade-card:focus-within{transform:none}}
+
+/* Theme previews share layout and interactions, but use distinct art directions. */
+.theme-switcher{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:22px;padding-top:16px;border-top:1px solid var(--rule)}
+.theme-switcher button{min-width:44px;font-size:20px;line-height:1;padding:8px}
+.theme-name{min-width:150px;text-align:center;font-size:12px;letter-spacing:.08em;color:var(--dim)}
+.shortcut-guide{margin-top:22px;color:var(--dim);font-size:11px;line-height:1.8;text-align:center}
+
+#overlay[data-theme="daylight"]{background:linear-gradient(#dbeaf3dd,#f7f4ead9),url('assets/ui/bg/shooting-goal.webp') center/cover;background-blend-mode:normal}
+#overlay[data-theme="daylight"] .upgrade-panel{--ink:#18354a;--dim:#526878;--accent:#126f83;--rule:#c2d3d9;color:var(--ink);background:#f9fcfd;border:0;border-radius:28px;box-shadow:0 24px 80px #1c41552b;font-family:Arial,sans-serif}
+#overlay[data-theme="daylight"] h1{text-shadow:none;font-style:normal;font-weight:900;letter-spacing:-.04em}
+#overlay[data-theme="daylight"] :is(.mode-card,.upgrade-card,.charm-card,.row){background:#eaf2f4;border:1px solid #c4d9df;box-shadow:none;color:#18354a;border-radius:18px}
+#overlay[data-theme="daylight"] :is(button,.upgrade-card button){background:#fff;border-color:#abc5cc;color:#245368;box-shadow:none;border-radius:24px}
+#overlay[data-theme="daylight"] button.accent{background:#146d80;color:white}
+#overlay[data-theme="daylight"] button:hover:not(:disabled){background:#d5e9ed;color:#123d4a}
+#overlay[data-theme="daylight"] :is(.mode-index,.upgrade-level,.bank b){color:#117b70}
+#overlay[data-theme="daylight"] :is(h1 small,.mode-card small){color:#526878}
+#overlay[data-theme="daylight"] .upgrade-icon{background:#daedf0;border-color:#bdd5dd;color:#167184;text-shadow:none;box-shadow:none}
+
+#overlay[data-theme="matchday"]{background:linear-gradient(#0b0b0be0,#0b0b0be0),url('assets/ui/bg/shooting-goal.webp') center/cover;background-blend-mode:normal,luminosity}
+#overlay[data-theme="matchday"] .upgrade-panel{--accent:#e3ff32;--dim:#b9bdb2;--rule:#55594c;background:#191c16;border:2px solid #e3ff32;border-radius:0;box-shadow:12px 12px 0 #e3ff3226}
+#overlay[data-theme="matchday"] h1{font-size:clamp(28px,5vw,58px);letter-spacing:-.06em;font-style:italic;color:#e3ff32;text-shadow:none}
+#overlay[data-theme="matchday"] :is(.mode-card,.upgrade-card,.charm-card,.row){background:#22261d;border:1px solid #55594c;border-radius:0;box-shadow:none}
+#overlay[data-theme="matchday"] .mode-card{border-left:6px solid #e3ff32}
+#overlay[data-theme="matchday"] :is(button,.upgrade-card button){border-radius:0;background:#313725;border-color:#809345;color:#e3ff32;box-shadow:none}
+#overlay[data-theme="matchday"] button.accent,#overlay[data-theme="matchday"] button:hover:not(:disabled){background:#e3ff32;color:#161b09}
+#overlay[data-theme="matchday"] :is(.mode-index,.upgrade-level,.bank b,h1 small){color:#e3ff32}
+#overlay[data-theme="matchday"] .mode-card small{color:#c1c7b7}
+#overlay[data-theme="matchday"] .upgrade-icon{background:#343c20;border-radius:0;border-color:#859344;color:#e3ff32;box-shadow:none}
+
+#overlay[data-theme="clubhouse"]{background:linear-gradient(#1b221fe8,#1b221fe8),url('assets/ui/bg/shooting-goal.webp') center/cover;background-blend-mode:normal}
+#overlay[data-theme="clubhouse"] .upgrade-panel{--accent:#dfbd77;--dim:#bdb8a5;--rule:#625e47;background:#1c302a;border:1px solid #9e895b;border-radius:4px;box-shadow:0 0 0 7px #142720,0 0 0 8px #625537,0 24px 80px #0007}
+#overlay[data-theme="clubhouse"] h1{font-family:Georgia,serif;font-weight:400;font-style:normal;letter-spacing:.03em;color:#f1dfb4;text-shadow:none}
+#overlay[data-theme="clubhouse"] :is(.mode-card,.upgrade-card,.charm-card,.row){background:#253b32;border:1px solid #64705a;border-radius:3px;box-shadow:none}
+#overlay[data-theme="clubhouse"] .mode-card strong{font-family:Georgia,serif;font-weight:400}
+#overlay[data-theme="clubhouse"] :is(button,.upgrade-card button){background:#24382e;border-color:#9b8658;color:#ead4a5;border-radius:3px;box-shadow:none}
+#overlay[data-theme="clubhouse"] button.accent,#overlay[data-theme="clubhouse"] button:hover:not(:disabled){background:#d8bc80;color:#182920}
+#overlay[data-theme="clubhouse"] :is(.mode-index,.upgrade-level,.bank b,h1 small){color:#dfbd77}
+#overlay[data-theme="clubhouse"] .mode-card small{color:#c4c8b4}
+#overlay[data-theme="clubhouse"] .upgrade-icon{background:#364737;border-color:#9b8658;color:#dfbd77;text-shadow:none;box-shadow:none;border-radius:50%}
+
+#overlay[data-theme="arcade"]{background:linear-gradient(135deg,#24114eea,#092f4ce0),url('assets/ui/bg/shooting-goal.webp') center/cover;background-blend-mode:normal}
+#overlay[data-theme="arcade"] .upgrade-panel{--accent:#64f5ed;--dim:#c7b3e6;--rule:#694fa2;background:#24183c;border:2px solid #a17bf5;border-radius:26px;box-shadow:0 12px 0 #110d24,0 0 60px #a03eff26}
+#overlay[data-theme="arcade"] h1{color:#fff;letter-spacing:-.03em;text-shadow:3px 3px #8e40cc;font-style:normal}
+#overlay[data-theme="arcade"] :is(.mode-card,.upgrade-card,.charm-card,.row){background:linear-gradient(120deg,#48316d,#30204f);border:2px solid #8263b1;border-radius:18px;box-shadow:0 5px 0 #150d27}
+#overlay[data-theme="arcade"] :is(button,.upgrade-card button){background:#56327f;border:2px solid #ac7bde;border-radius:12px;box-shadow:0 4px 0 #150d27;color:#fff}
+#overlay[data-theme="arcade"] button.accent,#overlay[data-theme="arcade"] button:hover:not(:disabled){background:#64f5ed;color:#182342;border-color:#a2fffa}
+#overlay[data-theme="arcade"] :is(.mode-index,.upgrade-level,.bank b,h1 small){color:#64f5ed}
+#overlay[data-theme="arcade"] .mode-card small{color:#d5c6ed}
+#overlay[data-theme="arcade"] .upgrade-icon{background:#53317d;border-color:#a984dd;color:#64f5ed;box-shadow:none}
+#overlay[data-theme]:not([data-theme="stadium"]) button:disabled{opacity:.5;cursor:not-allowed}
+#overlay[data-theme="daylight"] .reset-progress{color:#9f3249}
+
+/* Main menu stays a simple arcade text menu in every theme. */
+#overlay[data-theme] .main-menu{
+  width:min(780px,94vw);margin:auto;padding:36px 20px;
+  background:none;border:0;border-radius:0;box-shadow:none;
+}
+#overlay[data-theme] .main-menu .menu-brand{padding:0 0 58px}
+#overlay[data-theme] .main-menu h1{font-size:clamp(32px,6vw,72px);transform:translateY(-12px)}
+#overlay[data-theme] .main-menu .mode-list{gap:14px;justify-items:center}
+#overlay[data-theme] .main-menu button{
+  background:none;border:0;border-radius:0;box-shadow:none;color:var(--ink);
+}
+#overlay[data-theme] .main-menu .menu-option{
+  font-size:clamp(20px,2.8vw,29px);font-weight:700;letter-spacing:.08em;
+  padding:14px 28px;min-height:54px;text-shadow:0 2px 12px #0006;
+}
+#overlay[data-theme] .main-menu .menu-option.reset-progress{font-size:13px;color:var(--dim);margin-top:18px}
+#overlay[data-theme] .main-menu button:hover{background:none;color:var(--accent);box-shadow:none}
+#overlay[data-theme] .main-menu button:focus-visible{outline:2px solid var(--accent);outline-offset:3px;color:var(--accent)}
+#overlay[data-theme] .main-menu .theme-switcher{border:0;margin-top:36px;padding:0;gap:8px}
+#overlay[data-theme] .main-menu .theme-name{min-width:100px;font-size:11px}
+#overlay[data-theme="daylight"] .main-menu .menu-option{text-shadow:none}
+
+/* Compact cards retain visual identity; secondary effects stay on demand. */
+#overlay[data-theme] .clean-upgrades h1{font-size:clamp(24px,4vw,34px)}
+#overlay[data-theme] .clean-upgrades>.rule{display:none}
+#overlay[data-theme] .clean-upgrades .upgrade-card{padding:18px;gap:8px}
+#overlay[data-theme] .clean-upgrades .upgrade-card:has(.upgrade-details:hover),
+#overlay[data-theme] .clean-upgrades .upgrade-card:focus-within,
+#overlay[data-theme] .clean-upgrades .upgrade-card:has(details[open]){z-index:4}
+#overlay[data-theme] .clean-upgrades .upgrade-icon{width:44px;height:44px;font-size:25px}
+#overlay[data-theme] .clean-upgrades .upgrade-level{margin-top:auto;padding-top:8px;font-size:10px;letter-spacing:.04em}
+#overlay[data-theme] .clean-upgrades .upgrade-card button{font-size:11px;min-height:44px}
+#overlay[data-theme] .clean-upgrades .charm-card{justify-content:space-between;padding:12px 16px}
+#overlay[data-theme] .clean-upgrades .conf{padding:8px 0;font-size:12px;justify-content:space-between}
+#overlay[data-theme] .clean-upgrades .foot{justify-content:space-between;margin-top:22px}
+.upgrade-details{position:relative;min-width:0}
+.upgrade-details summary{cursor:pointer;list-style:none;font-size:13px;font-weight:700;letter-spacing:.03em;line-height:1.5;padding:6px 0}
+.upgrade-details summary::-webkit-details-marker{display:none}
+.upgrade-details summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.upgrade-tip{display:none;position:absolute;left:0;top:100%;z-index:3;width:100%;min-width:160px;max-width:75vw;padding:12px 14px;background:#101c28;color:#e4edf5;border:1px solid #53687b;font-size:12px;font-weight:400;line-height:1.6;box-shadow:0 8px 20px #0005}
+.upgrade-details[open] .upgrade-tip,.upgrade-details:focus-within .upgrade-tip{display:block}
+@media(hover:hover){.upgrade-details:hover .upgrade-tip{display:block}}
+@media(max-width:480px){
+  #overlay[data-theme] .clean-upgrades{padding:24px 16px}
+  #overlay[data-theme] .clean-upgrades .upgrade-card{grid-template-columns:48px minmax(0,1fr);gap:8px 14px;padding:16px}
+  #overlay[data-theme] .clean-upgrades .upgrade-details{grid-column:2}
+  #overlay[data-theme] .clean-upgrades .upgrade-level{grid-column:2;padding:0}
+  .upgrade-details summary{font-size:12px}
+}
+
+/* Collectible upgrade cards: title, emblem, explicit tiers, price. */
+#overlay[data-theme] .clean-upgrades .upgrade-card{
+  display:flex;flex-direction:column;align-items:stretch;gap:12px;padding:20px;
+  border:2px solid #48b9de;border-radius:18px;
+  background:linear-gradient(145deg,#124a86,#075772 65%,#087e82);
+  box-shadow:inset 0 2px 0 #b2efff50,0 8px 20px #0005;color:#f2faff;
+}
+.upgrade-title{min-height:42px;display:grid;place-items:center;text-align:center;font-size:17px;line-height:1.25;letter-spacing:.025em;padding:0 0 12px;border-bottom:1px solid #78d9ed66}
+#overlay[data-theme] .clean-upgrades .upgrade-card .upgrade-icon{
+  align-self:center;display:grid;place-items:center;width:90px;height:100px;margin:8px 0;
+  font-size:48px;background:linear-gradient(135deg,#82dbf9,#187ca8 45%,#103e68);
+  border:3px solid #c4e7f4;border-radius:18px 18px 42px 42px;
+  box-shadow:0 5px 0 #062f4a,0 0 25px #49dfe344,inset 0 0 0 3px #185677;color:white;
+}
+#overlay[data-theme] .clean-upgrades .upgrade-card .upgrade-level{margin-top:auto;padding:0;color:#d6f6ff;text-align:center;font-size:12px;font-weight:800;letter-spacing:.08em}
+#overlay[data-theme] .clean-upgrades .upgrade-card .pips{height:14px;gap:5px}
+#overlay[data-theme] .clean-upgrades .upgrade-card .pips i{border-color:#3988aa;background:#043652;border-radius:4px}
+#overlay[data-theme] .clean-upgrades .upgrade-card .pips i.filled{background:linear-gradient(#adfff0,#31cbe4);border-color:#b7fff3;box-shadow:0 0 8px #60f9e950}
+#overlay[data-theme] .clean-upgrades .upgrade-card button{margin-top:8px;min-height:46px;font-size:18px;font-weight:800;letter-spacing:.03em;border:1px solid #e5ff87;border-radius:9px;color:#153b24;background:linear-gradient(#edff85,#b7ea36);box-shadow:0 3px 0 #377851,0 0 16px #b9f94333}
+#overlay[data-theme] .clean-upgrades .upgrade-card button:hover:not(:disabled){background:linear-gradient(#f5ffb0,#d0fa60);color:#153b24}
+#overlay[data-theme] .clean-upgrades .upgrade-card button:disabled{opacity:1;background:#244c61;color:#8eafbc;border-color:#4c7181;box-shadow:none;cursor:not-allowed}
+#overlay[data-theme] .clean-upgrades .upgrade-help{position:absolute;right:12px;top:86px;width:30px;z-index:5}
+.upgrade-help summary{display:grid;place-items:center;width:30px;height:30px;padding:0;border-radius:50%;background:#d6f3fa;color:#145370;font-size:20px;font-weight:800;box-shadow:0 2px 3px #0004}
+.upgrade-help .upgrade-tip{left:auto;right:0;width:220px;text-align:left;letter-spacing:0}
+@media(max-width:480px){
+  #overlay[data-theme] .clean-upgrades .upgrade-card{padding:18px}
+  #overlay[data-theme] .clean-upgrades .upgrade-card .upgrade-icon{width:76px;height:84px;font-size:40px;margin:0}
+}
+
+/* upgradesimple reference: soft white cards, blue accents, standalone art. */
+.upgrade-screen{width:min(1060px,94vw);margin:28px auto;font-family:Arial,Helvetica,sans-serif}
+.upgrade-status{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 20px;margin-bottom:18px;color:#e8f3ff;background:#0b1b2bd9;border:1px solid #6484a066;border-radius:10px}
+.upgrade-status .bank{color:#c5d6e8;font-size:12px}
+.upgrade-status .bank b{color:#fff;font-size:19px;margin-left:8px}
+.upgrade-status .conf{padding:0;font-size:12px;gap:12px}
+.upgrade-status .conf .nm{min-width:0}
+.upgrade-status .conf .pips{font-family:Arial,sans-serif;font-weight:700;font-size:19px;letter-spacing:0}
+#overlay[data-theme] .upgrade-screen .clean-upgrades{--ink:#245593;--dim:#647f9e;--accent:#226cca;--rule:#b8cde5;width:100%;margin:0;padding:24px;background:linear-gradient(145deg,#e7f3ff,#cbdef5);border:2px solid #a8d6fa;border-radius:22px;box-shadow:inset 0 2px 0 #fff,0 18px 50px #0004;color:#245593}
+#overlay[data-theme] .upgrade-screen .clean-upgrades h1{color:#245593;font-style:normal;text-shadow:none;font-family:Arial,sans-serif;font-weight:800;letter-spacing:.03em}
+#overlay[data-theme] .upgrade-screen .upgrade-card{background:linear-gradient(145deg,#fff,#f7faff);border:1px solid #fff;border-radius:16px;box-shadow:0 7px 16px #254c8133;color:#285b99}
+.upgrade-screen .upgrade-title{border:0;font-size:15px;min-height:42px;padding:0 10px}
+#overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card .upgrade-icon{width:110px;height:110px;object-fit:contain;align-self:center;margin:8px 0;border:0;border-radius:0;background:none;box-shadow:none}
+#overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card .upgrade-level{color:#3267a9;text-align:right;font-size:12px}
+#overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card .pips i{background:#dbe8f8;border-color:#c1d4ed;box-shadow:inset 0 1px 2px #7c9dc133}
+#overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card .pips i.filled{background:linear-gradient(#5ba0f1,#306ac0);border-color:#4c89d7;box-shadow:none}
+#overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card button{color:#fff;background:linear-gradient(#4a94eb,#2861bb);border:1px solid #387dd2;border-radius:22px;box-shadow:0 4px 8px #2b5b9b33}
+#overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card button:hover:not(:disabled){background:linear-gradient(#65aaff,#3478d2);color:white}
+#overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card button:disabled{background:#e1e9f2;color:#8b9eb4;border-color:#d1dce9;box-shadow:none;opacity:1}
+#overlay[data-theme] .upgrade-screen .upgrade-help{top:65px;right:10px}
+.upgrade-screen .upgrade-help summary{background:#e1edfc;color:#3670b9;box-shadow:none;width:26px;height:26px;font-size:16px}
+.upgrade-screen .charm-icon{width:48px;height:48px;object-fit:contain}
+#overlay[data-theme] .upgrade-screen .charm-card{background:#f6faff;border-color:#b7cfec;color:#245593}
+#overlay[data-theme] .upgrade-screen .charm-card .upgrade-details{flex:1}
+#overlay[data-theme] .upgrade-screen .foot button{color:#285b99;border-color:#749ccb;background:none;box-shadow:none}
+#overlay[data-theme] .upgrade-screen .foot button.accent{background:#306fc3;color:white}
+@media(max-width:480px){.upgrade-screen{margin:16px auto}.upgrade-status{padding:12px;gap:12px}#overlay[data-theme] .upgrade-screen .clean-upgrades{padding:16px}}
+
+/* Additional menu typography variants use installed fonts; no font downloads. */
+#overlay[data-theme] .main-menu .theme-switcher{flex-wrap:wrap;justify-content:center;max-width:320px;margin:28px auto 0}
+#overlay[data-theme] .main-menu .theme-switcher button{min-width:44px;min-height:44px;padding:8px;font:22px Arial,sans-serif}
+.theme-hint{flex-basis:100%;font:11px Arial,sans-serif;letter-spacing:.08em;color:var(--dim);text-align:center}
+.career-resume{margin:20px auto 0;max-width:90%;text-align:center;font:13px/1.5 Arial,sans-serif;color:var(--accent)}
+#overlay[data-theme="varsity"]{background:linear-gradient(#071831dd,#071831ee),url('assets/ui/bg/shooting-goal.webp') center/cover}
+#overlay[data-theme="varsity"] .main-menu{--accent:#ffd875;--dim:#becde1}
+#overlay[data-theme="varsity"] .main-menu h1{font-family:Impact,'Arial Narrow',sans-serif;font-weight:400;font-style:normal;letter-spacing:.06em;color:#fff4d4;-webkit-text-stroke:1px #ffd875;text-shadow:4px 4px 0 #244d76,7px 7px 0 #020b18}
+#overlay[data-theme="varsity"] .main-menu .menu-option{font-family:Impact,'Arial Narrow',sans-serif;font-weight:400;letter-spacing:.12em}
+#overlay[data-theme="editorial"]{background:linear-gradient(#eae3d3ed,#d8cebce8),url('assets/ui/bg/shooting-goal.webp') center/cover;background-blend-mode:normal,luminosity}
+#overlay[data-theme="editorial"] .main-menu{--ink:#202f2c;--accent:#98502e;--dim:#5b645c;color:var(--ink)}
+#overlay[data-theme="editorial"] .main-menu h1{font-family:'Palatino Linotype','Book Antiqua',Georgia,serif;font-weight:700;font-style:italic;letter-spacing:-.05em;color:#20362c;text-shadow:0 2px #fff8}
+#overlay[data-theme="editorial"] .main-menu .menu-option{font-family:Georgia,serif;font-style:italic;font-weight:400;letter-spacing:.015em;text-shadow:none;text-transform:none}
+#overlay[data-theme="neon"]{background:radial-gradient(ellipse at 50% 20%,#442d6666,transparent 60%),linear-gradient(#0b0e26ee,#071324f2),url('assets/ui/bg/shooting-goal.webp') center/cover}
+#overlay[data-theme="neon"] .main-menu{--accent:#82fff0;--dim:#bec2e6}
+#overlay[data-theme="neon"] .main-menu h1{font-family:'Trebuchet MS',Arial,sans-serif;font-style:italic;font-weight:900;letter-spacing:-.045em;color:#e8ffff;text-shadow:0 0 4px #fff,0 0 18px #44eee799,4px 4px 0 #883ba9}
+#overlay[data-theme="neon"] .main-menu .menu-option{font-family:'Trebuchet MS',Arial,sans-serif;font-style:italic;letter-spacing:.16em;text-shadow:0 0 12px #67e3ef66}
+@media(max-width:480px){#overlay[data-theme] .main-menu .menu-brand{padding-bottom:28px}#overlay[data-theme="varsity"] .main-menu h1{letter-spacing:.025em}}

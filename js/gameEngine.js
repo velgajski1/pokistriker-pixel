@@ -225,6 +225,12 @@ function buildFace(body, look, matHair) {
     beard.scale.z = 1.1;
     body.add(beard);
   }
+  if (look.moustache) {
+    const moustache = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.075, 4, 8), matHair);
+    moustache.rotation.z = Math.PI / 2;
+    moustache.position.set(0, y - 0.034, 0.121);
+    body.add(moustache);
+  }
 }
 
 const numberCache = new Map();
@@ -306,8 +312,10 @@ function buildHumanoid({ kit, shorts, socks, boots, gloves, number, lite }, look
   head.scale.z = 1.1;
   body.add(head);
 
-  buildHair(look.style, matHair, body);
-  if (!lite) buildFace(body, look, matHair);   // only the players seen close up
+  const face = new THREE.Group();
+  body.add(face);
+  buildHair(look.style, matHair, face);
+  if (!lite) buildFace(face, look, matHair);   // only the players seen close up
 
   // --- arms ----------------------------------------------------------------
   const arms = [];
@@ -384,6 +392,7 @@ function buildHumanoid({ kit, shorts, socks, boots, gloves, number, lite }, look
 
   return { root, body, arms, legs, hipMarker, neckMarker, scale: look.height,
     number,
+    appearance: { face, torso, shoulders, skin: matSkin, hand: matHand },
     kitMaterials: { kit: matKit, shorts: matShorts, socks: matSocks },
     look, kit: { kit, shorts, socks, boots, gloves }, avatar: null };
 }
@@ -622,18 +631,19 @@ function addShirtNumber(model, number) {
 // Both imported head primitives use the same continuous hairline and colours.
 function shadeCaptainFace(material, look) {
   material.roughness = .86;
-  material.customProgramCacheKey = () => 'captain-face-v1';
+  material.customProgramCacheKey = () => 'captain-face-v2';
   material.onBeforeCompile = shader => {
     shader.uniforms.faceSkin = { value: new THREE.Color(look.skin) };
     shader.uniforms.faceHair = { value: new THREE.Color(look.hair) };
     shader.uniforms.faceStyle = { value: ['bald', 'buzz', 'crew', 'sidepart', 'swept', 'floppy', 'headband'].indexOf(look.style) };
     shader.uniforms.faceBeard = { value: look.beard >= .4 ? Math.min(.48, look.beard * .55) : 0 };
+    shader.uniforms.faceMoustache = { value: look.moustache || 0 };
     shader.vertexShader = 'varying vec3 faceBind;\n' + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
       '#include <begin_vertex>\nfaceBind = position / ' + CAPTAIN_BIND_SCALE.toFixed(8) + ';');
     shader.fragmentShader = `varying vec3 faceBind;
       uniform vec3 faceSkin, faceHair;
-      uniform float faceStyle, faceBeard;
+      uniform float faceStyle, faceBeard, faceMoustache;
       ` + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
       if (faceBind.y > 1.405 && abs(faceBind.x) < .14) {
@@ -658,6 +668,9 @@ function shadeCaptainFace(material, look) {
         float beard = jaw * smoothstep(.005, .05, p.z) * faceBeard;
         vec3 skinColour = mix(faceSkin, faceHair, beard * (.88 + grain * .12));
         diffuseColor.rgb = mix(skinColour, hairColour, hair);
+        float moustache = (1.0 - smoothstep(.035, .047, abs(p.x)))
+          * (1.0 - smoothstep(.005, .011, abs(p.y - 1.535 + abs(p.x) * .12))) * front;
+        diffuseColor.rgb = mix(diffuseColor.rgb, faceHair, moustache * faceMoustache);
         float eyeX = abs(p.x) - .033;
         float eye = 1.0 - smoothstep(.8, 1.2, length(vec2(eyeX / .012, (p.y - 1.576) / .0035)));
         eye *= smoothstep(.065, .08, p.z);
@@ -675,27 +688,29 @@ function shadeCaptainFace(material, look) {
 }
 
 const captainHairShapes = new Map();
-function captainHairGeometry(style, headIndex) {
-  const key = style + ':' + headIndex;
+function captainHairGeometry(style, headIndex, career = false) {
+  const key = style + ':' + headIndex + ':' + career;
   if (captainHairShapes.has(key)) return captainHairShapes.get(key);
   const positions = [], indices = [], joints = [], weights = [];
   const rings = 20, segments = 40;
-  const volume = style === 'afro' ? .033 : style === 'curls' ? .016
-    : style === 'floppy' || style === 'swept' ? .014 : style === 'bald' || style === 'buzz' ? 0 : .006;
+  const volume = style === 'afro' ? .033 : style === 'curls' ? (career ? .03 : .016)
+    : style === 'floppy' || style === 'swept' ? (career ? .025 : .014) : style === 'bald' || style === 'buzz' ? 0 : .006;
   for (let row = 0; row <= rings; row++) {
     for (let col = 0; col <= segments; col++) {
       const phi = col / segments * Math.PI * 2;
       const facing = Math.cos(phi);
-      const edge = 1.585 + facing * (facing > 0 ? .023 : .065);
-      const theta = row / rings * Math.acos((edge - 1.575) / .108);
+      const edge = career ? 1.575 + facing * (facing > 0 ? .05 : .065)
+        : 1.585 + facing * (facing > 0 ? .023 : .065);
+      const height = career ? .105 : .108;
+      const theta = row / rings * Math.acos((edge - 1.575) / height);
       const top = Math.max(0, Math.cos(theta));
       const curls = style === 'afro' || style === 'curls'
-        ? .003 * Math.sin(phi * 12) * Math.sin(theta * 18) * Math.sin(theta) : 0;
+        ? (career ? .006 : .003) * Math.sin(phi * 12) * Math.sin(theta * 18) * Math.sin(theta) : 0;
       const radius = volume * top + curls;
       const sweep = style === 'sidepart' || style === 'swept' ? .012 * top * top : 0;
-      positions.push((Math.sin(phi) * Math.sin(theta) * (.096 + radius) + sweep) * CAPTAIN_BIND_SCALE,
-        (1.575 + Math.cos(theta) * .108 + volume * top * top + curls) * CAPTAIN_BIND_SCALE,
-        (Math.cos(phi) * Math.sin(theta) * (.104 + radius)) * CAPTAIN_BIND_SCALE);
+      positions.push((Math.sin(phi) * Math.sin(theta) * ((career ? .093 : .096) + radius) + sweep) * CAPTAIN_BIND_SCALE,
+        (1.575 + Math.cos(theta) * height + volume * top * top + curls) * CAPTAIN_BIND_SCALE,
+        (Math.cos(phi) * Math.sin(theta) * ((career ? .1 : .104) + radius) - (career ? .005 : 0)) * CAPTAIN_BIND_SCALE);
       joints.push(headIndex, 0, 0, 0); weights.push(1, 0, 0, 0);
       if (row < rings && col < segments) {
         const a = row * (segments + 1) + col, b = a + segments + 1;
@@ -733,21 +748,116 @@ function colourCaptain(model, rig) {
     }
   });
   if (scalp && ['headband', 'ponytail', 'bun'].includes(rig.look.style)) {
-    const head = bipedBone(model, 'head');
-    const index = scalp.skeleton.bones.indexOf(head);
-    const hair = new THREE.Group();
-    const material = new THREE.MeshStandardMaterial({ color: rig.look.hair, roughness: 0.9 });
-    const bun = rig.look.style === 'bun';
-    const tail = new THREE.Mesh(bun ? new THREE.SphereGeometry(0.05, 10, 8)
-      : new THREE.CapsuleGeometry(0.03, 0.13, 4, 8), material);
-    tail.position.set(0.01, bun ? 1.60 : 1.53, -0.13);
-    tail.rotation.x = -0.35;
-    hair.add(tail);
-    // Accessory vertices are authored in the same bind space as the scalp.
-    hair.scale.setScalar(CAPTAIN_BIND_SCALE);
-    hair.applyMatrix4(scalp.skeleton.boneInverses[index]);
-    head.add(hair);
+    buildCaptainAccessory(model, scalp, rig.look);
   }
+}
+
+function buildCaptainAccessory(model, scalp, look) {
+  const head = bipedBone(model, 'head');
+  const index = scalp.skeleton.bones.indexOf(head);
+  const hair = new THREE.Group();
+  hair.name = 'captain-hair-accessory';
+  const material = new THREE.MeshStandardMaterial({ color: look.hair, roughness: .9 });
+  const bun = look.style === 'bun';
+  const tail = new THREE.Mesh(bun ? new THREE.SphereGeometry(.05, 10, 8)
+    : new THREE.CapsuleGeometry(.03, .13, 4, 8), material);
+  tail.position.set(.01, bun ? 1.60 : 1.53, -.13);
+  tail.rotation.x = -.35;
+  hair.add(tail);
+  // Accessory vertices are authored in the same bind space as the scalp.
+  hair.scale.setScalar(CAPTAIN_BIND_SCALE);
+  hair.applyMatrix4(scalp.skeleton.boneInverses[index]);
+  head.add(hair);
+  return hair;
+}
+
+const strikerAppearances = new Map();
+let defaultStrikerLook = null;
+
+/** Boot-only variants: reuse the same skeleton, animations and foot positions. */
+export function prepareStrikerAppearances(characters) {
+  if (strikerAppearances.size) return;
+  const rig = squad.striker;
+  defaultStrikerLook = rig.look;
+  const meshes = [];
+  let scalp = null;
+  const accessories = [];
+  if (captain) captain.model.traverse(node => {
+    if (node.name === 'captain-hair-accessory') accessories.push(node);
+    if (!node.isMesh) return;
+    if (node.material.name === 'hair') scalp = node;
+    if (['skin', 'hair', 'gloves', 'kit', 'shirt-number'].includes(node.material.name)) meshes.push(node);
+  });
+  strikerAppearances.set(null, { look: rig.look, face: rig.appearance.face,
+    meshes: meshes.map(mesh => ({ mesh, material: mesh.material, geometry: mesh.geometry })), accessories });
+  for (const character of characters) {
+    const look = character.look;
+    const face = new THREE.Group();
+    const material = new THREE.MeshStandardMaterial({ color: look.hair, roughness: .9 });
+    buildHair(look.style, material, face);
+    buildFace(face, look, material);
+    face.visible = false;
+    rig.body.add(face);
+    const variant = { look, face, meshes: [], accessories: [] };
+    for (const mesh of meshes) {
+      const region = mesh.material.name;
+      const mat = mesh.material.clone();
+      let geometry = mesh.geometry;
+      if (region === 'skin' || region === 'hair') shadeCaptainFace(mat, look);
+      if (['skin', 'hair', 'gloves'].includes(region)) {
+        mat.color.setHex(region === 'hair' && look.style !== 'bald' ? look.hair : look.skin);
+      }
+      if (region === 'hair') {
+        geometry = captainHairGeometry(look.style,
+          mesh.skeleton.bones.indexOf(bipedBone(captain.model, 'head')), true);
+      } else {
+        // Apply the same deformation to cloth, skin and shirt printing so
+        // shared garment seams stay closed. Legs and foot positions stay fixed.
+        geometry = mesh.geometry.clone();
+        const pos = geometry.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+          const y = pos.getY(i) / CAPTAIN_BIND_SCALE;
+          const chest = THREE.MathUtils.smoothstep(y, .85, 1.15)
+            * (1 - THREE.MathUtils.smoothstep(y, 1.38, 1.46));
+          pos.setX(i, pos.getX(i) * (1 + (look.build - 1) * chest));
+        }
+        // Preserve the imported seam normals across the split material regions.
+        geometry.computeBoundingSphere();
+      }
+      variant.meshes.push({ mesh, material: mat, geometry });
+    }
+    if (scalp && ['headband', 'ponytail', 'bun'].includes(look.style)) {
+      const accessory = buildCaptainAccessory(captain.model, scalp, look);
+      accessory.visible = false;
+      variant.accessories.push(accessory);
+    }
+    strikerAppearances.set(character.id, variant);
+  }
+}
+
+/** Selection-time swap only; no new scene objects or changes to shot mechanics. */
+export function setStrikerAppearance(id = null) {
+  const variant = strikerAppearances.get(id) || strikerAppearances.get(null);
+  if (!variant) return;
+  for (const entry of strikerAppearances.values()) {
+    entry.face.visible = entry === variant;
+    for (const accessory of entry.accessories) accessory.visible = entry === variant;
+  }
+  for (const entry of variant.meshes) {
+    entry.mesh.material = entry.material;
+    entry.mesh.geometry = entry.geometry;
+  }
+  const rig = squad.striker;
+  rig.look = variant.look;
+  rig.appearance.skin.color.setHex(variant.look.skin);
+  rig.appearance.hand.color.setHex(variant.look.skin);
+  rig.appearance.torso.scale.set(variant.look.build, 1, .72 * variant.look.build);
+  rig.appearance.shoulders.scale.y = variant.look.build;
+  // Keep the original height and foot placement, including the procedural fallback.
+  rig.scale = defaultStrikerLook.height;
+  const player = players.find(player => player.role === 'striker');
+  if (player) player.look = variant.look;
+  striker.characterId = strikerAppearances.has(id) ? id : null;
 }
 
 function attachCaptain(rig, model, clips, data, offsets) {

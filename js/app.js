@@ -19,6 +19,42 @@ import {
 // ===========================================================================
 const MAX_LEVEL = 5;
 
+// Portraits and on-pitch looks describe the same eight career identities.
+const CHARACTERS = [
+  { id: 'barry', name: 'Barry Benchwarmer', portrait: 'assets/portraits/barry.webp',
+    tagline: 'Warming benches. Chilling keepers.',
+    look: { skin: 0xeac3a0, hair: 0x9d4b1f, style: 'crop',
+      build: 1.08, height: 1, beard: 0, moustache: 1, brow: 1 } },
+  { id: 'lars', name: 'Lars Offsidesen', portrait: 'assets/portraits/lars.webp',
+    tagline: 'Always ahead of his time.',
+    look: { skin: 0xf1d0b4, hair: 0xcaa75f, style: 'ponytail',
+      build: 0.94, height: 1, beard: 0, moustache: 0, brow: 1 } },
+  { id: 'nico', name: 'Nico Nearlyaldo', portrait: 'assets/portraits/nico.webp',
+    tagline: 'Almost a living legend.',
+    look: { skin: 0xcf9a70, hair: 0x2b1b11, style: 'curls',
+      build: 1.03, height: 1, beard: 0.7, moustache: 0, brow: 1 } },
+  { id: 'ravi', name: 'Ravi Rocketboots', portrait: 'assets/portraits/ravi.webp',
+    tagline: 'No brakes. Questionable steering.',
+    look: { skin: 0x96603a, hair: 0x131010, style: 'swept',
+      build: 0.97, height: 1, beard: 0.65, moustache: 0, brow: 1 } },
+  { id: 'milo', name: 'Milo Misfire', portrait: 'assets/portraits/milo.webp',
+    tagline: 'Aiming for greatness. Eventually.',
+    look: { skin: 0xa8734e, hair: 0x2b1b11, style: 'floppy',
+      build: 1, height: 1, beard: 0, moustache: 0, brow: 1 } },
+  { id: 'felix', name: 'Felix Fumble', portrait: 'assets/portraits/felix.webp',
+    tagline: 'Trips over the ball. Calls it skill.',
+    look: { skin: 0x6d4527, hair: 0x131010, style: 'curls',
+      build: 0.96, height: 1, beard: 0, moustache: 0, brow: 1 } },
+  { id: 'theo', name: 'Theo Thunderthighs', portrait: 'assets/portraits/theo.webp',
+    tagline: 'Leg day is every day.',
+    look: { skin: 0x4e3119, hair: 0x131010, style: 'bald',
+      build: 1.12, height: 1, beard: 0, moustache: 0, brow: 1 } },
+  { id: 'kai', name: 'Kai Crossbar', portrait: 'assets/portraits/kai.webp',
+    tagline: 'Has unfinished business with the woodwork.',
+    look: { skin: 0xe0b089, hair: 0x131010, style: 'swept',
+      build: 0.94, height: 1, beard: 0, moustache: 0, brow: 1 } },
+];
+
 const CLOCK = {
   MINUTES_PER_SECOND: 200 / 60, // 200x clock: 90 match minutes in 27 real seconds.
   FULL_TIME: 90,
@@ -91,7 +127,7 @@ const TRAINING = [
 ];
 
 const META = [
-  { key: 'star',   name: 'STAR PLAYER STATUS', base: 40, fx: 'L5: every match opens with 4 chances' },
+  { key: 'star',   name: 'STAR PLAYER STATUS', base: 40, fx: 'More chances; L5 guarantees 5 per match' },
   { key: 'subnet', name: 'SUPER SUB',          base: 40, fx: 'Below 30% confidence, chance of a bonus chance' },
   { key: 'talent', name: 'NATURAL TALENT',     base: 30, fx: '+5% baseline shot velocity per level' },
   { key: 'veins',  name: 'ICE IN THE VEINS',   base: 30, fx: '-5% baseline arrow sweep per level' },
@@ -148,9 +184,11 @@ const CHANCE_CALLS = [
 
 // ---- Application state ----------------------------------------------------
 const state = {
-  screen: 'MENU',      // MENU | MATCH | TRAINING | GAMEOVER
+  screen: 'MENU',      // MENU | CHARACTER | MATCH | TRAINING | GAMEOVER
   phase: 'SIM',        // SIM | AIM | POWER | FLIGHT | RESULT
+  mode: 'career',      // career | single | practice
   career: save.load(),
+  characterSelection: null,
   run: null,
   elapsed: 0,
 };
@@ -173,25 +211,34 @@ const blockers = [
 let blockerCount = 0;
 
 export const KEEPER_PROGRESS = { distanceScale: 30, perGoal: .24, perMatch: .14 };
+const OPENING_KEEPER = {
+  fullStrengthMatch: 4, pressureScale: .5,
+  reactionDelay: .12, speedReduction: .3, readError: .35,
+  heightError: .12, setSpread: .15, diveDelay: .08,
+  catchReduction: 3, parryReduction: .15,
+};
 
 /** Continuous, bounded progression; evaluated once per chance, never mid-shot. */
-export function keeperAbility(distance, goals = 0, match = 1) {
-  const pressure = Math.max(0, distance - 10) / KEEPER_PROGRESS.distanceScale
+export function keeperAbility(distance, goals = 0, match = 1, career = true) {
+  const openingEase = career ? Math.max(0, Math.min(1,
+    (OPENING_KEEPER.fullStrengthMatch - match) / (OPENING_KEEPER.fullStrengthMatch - 1))) : 0;
+  const pressure = (Math.max(0, distance - 10) / KEEPER_PROGRESS.distanceScale
     + Math.max(0, goals) * KEEPER_PROGRESS.perGoal
-    + Math.max(0, match - 1) * KEEPER_PROGRESS.perMatch;
+    + Math.max(0, match - 1) * KEEPER_PROGRESS.perMatch)
+    * (1 - openingEase * (1 - OPENING_KEEPER.pressureScale));
   const skill = 1 - Math.exp(-pressure);
   const blend = (base, elite) => base + (elite - base) * skill;
   return {
-    skill, distance, goals, match,
-    reaction: blend(SHOT.KEEPER_REACTION, .065),
-    diveSpeed: blend(SHOT.KEEPER_SPEED, 10),
-    setSpeed: blend(SHOT.KEEPER_SET_SPEED, 5.5),
-    readError: blend(SHOT.KEEPER_READ_ERROR, .06),
-    heightError: blend(SHOT.KEEPER_READ_ERROR_Y, .045),
-    setSpread: blend(SHOT.KEEPER_SET_SPREAD, .10),
-    diveTime: blend(SHOT.KEEPER_DIVE_TIME, .18),
-    catchSpeed: blend(SHOT.KEEPER_CATCH_SPEED, 18),
-    parryBias: blend(SHOT.KEEPER_PARRY_BIAS, .82),
+    skill, distance, goals, match, openingEase,
+    reaction: blend(SHOT.KEEPER_REACTION + OPENING_KEEPER.reactionDelay * openingEase, .065),
+    diveSpeed: blend(SHOT.KEEPER_SPEED * (1 - OPENING_KEEPER.speedReduction * openingEase), 10),
+    setSpeed: blend(SHOT.KEEPER_SET_SPEED * (1 - OPENING_KEEPER.speedReduction * openingEase), 5.5),
+    readError: blend(SHOT.KEEPER_READ_ERROR + OPENING_KEEPER.readError * openingEase, .06),
+    heightError: blend(SHOT.KEEPER_READ_ERROR_Y + OPENING_KEEPER.heightError * openingEase, .045),
+    setSpread: blend(SHOT.KEEPER_SET_SPREAD + OPENING_KEEPER.setSpread * openingEase, .10),
+    diveTime: blend(SHOT.KEEPER_DIVE_TIME + OPENING_KEEPER.diveDelay * openingEase, .18),
+    catchSpeed: blend(SHOT.KEEPER_CATCH_SPEED - OPENING_KEEPER.catchReduction * openingEase, 18),
+    parryBias: blend(SHOT.KEEPER_PARRY_BIAS - OPENING_KEEPER.parryReduction * openingEase, .82),
   };
 }
 
@@ -213,7 +260,7 @@ const shot = {
 // ===========================================================================
 // Derived stats
 // ===========================================================================
-const meta = (k) => state.career.meta[k] || 0;
+const meta = (k) => state.mode === 'career' ? state.career.meta[k] || 0 : 0;
 const train = (k) => state.run.training[k] || 0;
 
 const confidenceMax = () => MORALE.BASE_MAX * (1 + 0.05 * meta('pet'));
@@ -231,23 +278,110 @@ const magnetMargin = () => 0.18 * train('icebath');
 
 /** Poacher's Instinct + Star Player Status decide the opportunity count. */
 function rollChances() {
-  let base = 3;
-  if (meta('star') >= MAX_LEVEL) base = 4;
-
-  const poach = train('poacher');
-  if (poach >= MAX_LEVEL) return 4;
-  if (base >= 4) return 4;
-
-  let p = poach >= 2 ? 0.25 * (poach - 1) : 0;   // L2 25%, L3 50%, L4 75%
-  p += 0.1 * Math.min(meta('star'), 4);          // Star L1-4 chips in
-  return Math.random() < p ? 4 : base;
+  const extraChance = Math.min(1, .5 + .1 * train('poacher') + .1 * meta('star'));
+  return Math.random() < extraChance ? 5 : 4;
 }
 
 // ===========================================================================
 // Run lifecycle
 // ===========================================================================
-function startRun() {
+/** Save at lifecycle boundaries / navigation, never on every frame. */
+function checkpointCareer() {
+  if (state.mode !== 'career' || !state.run || !['MATCH', 'TRAINING'].includes(state.screen)) return;
+  const pending = state.screen === 'MATCH' && ['AIM', 'POWER', 'WINDUP', 'FLIGHT'].includes(state.phase)
+    && shot.resolved === null;
+  state.career.activeRun = {
+    version: 1, screen: state.screen,
+    run: { ...state.run, training: { ...state.run.training }, schedule: state.run.schedule.slice(), building: false },
+    pending: pending ? { x: origin.x, y: origin.y, z: origin.z, blockerCount } : null,
+    resolved: state.screen === 'MATCH' && state.phase === 'FLIGHT' && shot.resolved !== null,
+  };
+  save.save(state.career);
+}
+
+function careerCheckpoint() {
+  const checkpoint = state.career.activeRun;
+  const run = checkpoint?.run;
+  if (checkpoint?.version !== 1 || !['MATCH', 'TRAINING'].includes(checkpoint.screen) || !run
+    || !CHARACTERS.some(character => character.id === run.characterId)) return null;
+  if (!['match', 'cash', 'goals', 'matchGoals', 'chancesLeft'].every(key => Number.isSafeInteger(run[key]) && run[key] >= 0)
+    || run.match < 1 || run.matchGoals > run.goals || run.chancesLeft > 10
+    || !Number.isFinite(run.confidence) || run.confidence < 0 || run.confidence > 125
+    || !Number.isFinite(run.clock) || run.clock < 0 || run.clock > 90
+    || !Array.isArray(run.schedule) || run.schedule.length > 10
+    || !run.schedule.every((minute, i) => Number.isFinite(minute) && minute >= 0 && minute <= 90
+      && (i === 0 || minute >= run.schedule[i - 1]))
+    || !run.training || !TRAINING.every(({ key }) => Number.isInteger(run.training[key])
+      && run.training[key] >= 0 && run.training[key] <= MAX_LEVEL)
+    || !Number.isInteger(run.pitchSurface) || !engine.PITCH_SURFACES[run.pitchSurface]
+    || !Number.isInteger(run.opponentColors) || !OPPONENT_COLORS[run.opponentColors]
+    || !Number.isSafeInteger(run.crowdColorSeed) || run.crowdColorSeed < 0 || run.crowdColorSeed > 0xffffffff) return null;
+  const pending = checkpoint.pending;
+  if (pending && (checkpoint.screen !== 'MATCH' || ![pending.x, pending.y, pending.z].every(Number.isFinite)
+    || Math.abs(pending.x) > SPOT.MAX_LATERAL || pending.y !== GROUND_Y
+    || pending.z < GOAL.PLANE_Z + SPOT.MIN_RANGE || pending.z > GOAL.PLANE_Z + SPOT.LONG_MAX
+    || !Number.isInteger(pending.blockerCount) || pending.blockerCount < 0 || pending.blockerCount > 2)) return null;
+  return checkpoint;
+}
+
+function enterCareer() {
+  const checkpoint = careerCheckpoint();
+  if (!checkpoint) { renderCharacterSelection(); return; }
+  state.mode = 'career';
+  state.run = { ...checkpoint.run, training: { ...checkpoint.run.training },
+    schedule: checkpoint.run.schedule.slice(), building: false, simTime: 0, tickerAt: 0 };
+  const character = CHARACTERS.find(player => player.id === state.run.characterId);
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.setAnimationsPaused(false);
+  engine.setStrikerAppearance(character.id);
+  engine.setPitchSurface(state.run.pitchSurface);
+  engine.setMatchColors(OPPONENT_COLORS[state.run.opponentColors], state.run.crowdColorSeed);
+  ui.setCareerIdentity(character);
+  state.screen = checkpoint.screen;
+  state.phase = 'SIM';
+  blockerCount = 0;
+  engine.frameAmbient(true);
+  ui.showPower(false);
+  ui.setPrompt('');
+  if (state.run.confidence <= 0) { benched(); return; }
+  if (state.screen === 'TRAINING') {
+    ui.showHud(false);
+    ui.setDimmed(true);
+    renderTraining();
+    return;
+  }
+  ui.hideOverlay();
+  ui.showHud(true);
+  ui.setDimmed(false);
+  pushHud();
+  ui.setTicker(Math.floor(state.run.clock), 'Back on the pitch. Your career continues.');
+  if (checkpoint.pending) {
+    origin.x = checkpoint.pending.x;
+    origin.y = checkpoint.pending.y;
+    origin.z = checkpoint.pending.z;
+    blockerCount = checkpoint.pending.blockerCount;
+    beginHighlight(false, true);
+  } else if (checkpoint.resolved) {
+    finishChance();
+  }
+}
+
+function startRun(mode = 'career', characterId = null) {
+  const character = mode === 'career' ? CHARACTERS.find(player => player.id === characterId) : null;
+  if (mode === 'career' && !character) { enterCareer(); return; }
+  state.mode = mode;
+  engine.setStrikerAppearance(character?.id || null);
+  ui.setCareerIdentity(character);
+  if (character) {
+    state.career.characterId = character.id;
+    save.save(state.career);
+  }
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.setAnimationsPaused(false);
   state.run = {
+    characterId: character?.id || null,
     match: 1,
     cash: 0,
     confidence: confidenceMaxForNewRun(),
@@ -263,11 +397,12 @@ function startRun() {
     buildLine: '',
   };
   startMatch();
+  if (mode === 'practice') beginHighlight(false);
 }
 
 function confidenceMaxForNewRun() {
   // Career starts at full confidence, ceiling included.
-  return MORALE.BASE_MAX * (1 + 0.05 * (state.career.meta.pet || 0));
+  return MORALE.BASE_MAX * (1 + 0.05 * meta('pet'));
 }
 
 export const OPPONENT_COLORS = [
@@ -322,10 +457,12 @@ function startMatch() {
   engine.frameAmbient(true);
   pushHud();
   ui.setTicker(0, 'Kick-off. You are on the shoulder of the last defender.');
+  checkpointCareer();
 }
 
 function endMatch() {
   const run = state.run;
+  if (state.mode === 'single') return finishSingleMatch();
   if (run.matchGoals === 0) adjustConfidence(MORALE.ON_BLANK_MATCH);
 
   if (run.confidence <= 0) return benched();
@@ -337,6 +474,7 @@ function endMatch() {
 }
 
 function benched() {
+  if (state.mode !== 'career') return finishSingleMatch();
   const run = state.run;
   const earned = run.goals * ECONOMY.LEGACY_PER_GOAL;
   const matches = run.match;
@@ -346,6 +484,7 @@ function benched() {
   state.career.lifetimeGoals += run.goals;
   state.career.runs += 1;
   state.career.bestRun = Math.max(state.career.bestRun, run.match);
+  delete state.career.activeRun;
   save.save(state.career);
 
   state.screen = 'GAMEOVER';
@@ -354,17 +493,19 @@ function benched() {
   ui.showGameOver({
     matches, goals: run.goals, rate: ECONOMY.LEGACY_PER_GOAL, earned, isBest,
     onMenu: renderMenu,
+    onUpgrades: () => renderMeta(),
   });
 }
 
 function adjustConfidence(delta) {
+  if (state.mode !== 'career') return;
   const run = state.run;
   run.confidence = Math.max(0, Math.min(confidenceMax(), run.confidence + delta));
 }
 
 function pushHud() {
   const run = state.run;
-  ui.setScore(run.match, Math.floor(run.clock), run.goals, run.chancesLeft);
+  ui.setScore(run.match, Math.floor(run.clock), run.goals, state.mode);
 }
 
 // ===========================================================================
@@ -446,14 +587,14 @@ function prepareChance() {
                 : Math.random() < 0.5 ? 1 : 0;
 }
 
-function beginHighlight(soft) {
+function beginHighlight(soft, restored = false) {
   const run = state.run;
   engine.captureSelectionPoses();
   // Clock freezes and the arena brightens instantly.
   ui.setDimmed(false);
   ui.setTicker(Math.floor(run.clock), CHANCE_CALLS[(Math.random() * CHANCE_CALLS.length) | 0]);
 
-  if (!soft) prepareChance();
+  if (!soft && !restored) prepareChance();
   engine.setupChance(origin, blockerCount, soft);
   for (let i = 0; i < blockerCount; i++) {
     const src = engine.chance.blockers[i];
@@ -484,7 +625,8 @@ function beginHighlight(soft) {
   // shooter rather than standing centrally and waiting, so a chance from wide
   // gives you far less of the goal to aim at than the raw geometry suggests.
   const narrow = Math.max(-2.6, Math.min(2.6, origin.x * SHOT.KEEPER_ANGLE_NARROW));
-  shot.keeperAbility = keeperAbility(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z), run.matchGoals, run.match);
+  shot.keeperAbility = keeperAbility(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z),
+    run.matchGoals, run.match, state.mode === 'career');
   shot.keeperSetX = narrow + (Math.random() * 2 - 1) * shot.keeperAbility.setSpread;
   shot.keeperX = shot.keeperSetX;
   shot.keeperDive = 0;
@@ -496,6 +638,7 @@ function beginHighlight(soft) {
 
   state.phase = 'AIM';
   ui.setPrompt('Tap / Space to lock aim');
+  queueMicrotask(checkpointCareer);
 }
 
 /** Keeps the arena alive while the clock is frozen and you are aiming. */
@@ -1028,11 +1171,11 @@ function resolve(outcome) {
     shot.holdTimer = Math.max(shot.holdTimer, engine.startCelebration(engine.CELEBRATIONS[celebrationIndex]));
     run.goals += 1;
     run.matchGoals += 1;
-    run.cash += goalPayout();
+    if (state.mode === 'career') run.cash += goalPayout();
     adjustConfidence(MORALE.ON_GOAL);
     engine.shake(0.5);
     ui.flashVerdict(shot.touched ? 'IN OFF!' : 'GOAL', 'goal');
-    ui.setTicker(Math.floor(run.clock), `${GOAL_CALLS[shot.touched] || GOAL_CALLS.clean} <b>+$${goalPayout()}</b>.`);
+    ui.setTicker(Math.floor(run.clock), `${GOAL_CALLS[shot.touched] || GOAL_CALLS.clean}${state.mode === 'career' ? ` <b>+$${goalPayout()}</b>.` : ''}`);
   } else if (outcome === 'save') {
     adjustConfidence(MORALE.ON_SAVE);
     engine.shake(0.25);
@@ -1059,12 +1202,19 @@ function resolve(outcome) {
     ui.setTicker(Math.floor(run.clock), 'Dragged wide. The manager turns away.');
   }
   pushHud();
+  queueMicrotask(checkpointCareer);
 }
 
 function finishChance() {
   const run = state.run;
   engine.stopCelebration();
   engine.stopReactions();
+
+  if (state.mode === 'practice') {
+    ui.showPower(false);
+    beginHighlight(false);
+    return;
+  }
 
   if (run.confidence <= 0) { benched(); return; }
 
@@ -1080,6 +1230,7 @@ function finishChance() {
   ui.setPrompt('');
   run.tickerAt = 0;
   pushHud();
+  queueMicrotask(checkpointCareer);
 }
 
 /** Super Sub / Safety Net: a survival roll once morale is critical. */
@@ -1102,9 +1253,72 @@ function trySuperSub() {
 // ===========================================================================
 // Screens
 // ===========================================================================
+function renderCharacterSelection() {
+  state.screen = 'CHARACTER';
+  state.run = null;
+  state.mode = 'career';
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.setAnimationsPaused(false);
+  engine.frameAmbient();
+  ui.showHud(false);
+  ui.setDimmed(true);
+  const selected = CHARACTERS.find(player => player.id === state.career.characterId) || CHARACTERS[0];
+  state.characterSelection = selected.id;
+  engine.setStrikerAppearance(selected.id);
+  ui.showCharacterSelection({
+    characters: CHARACTERS, selectedId: selected.id,
+    onSelect: id => {
+      state.characterSelection = id;
+      engine.setStrikerAppearance(id);
+    },
+    onStart: () => startRun('career', state.characterSelection),
+    onBack: renderMenu,
+  });
+}
+
 function renderMenu() {
+  checkpointCareer();
   state.screen = 'MENU';
   state.run = null;
+  state.mode = 'career';
+  state.characterSelection = null;
+  engine.setStrikerAppearance();
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.setAnimationsPaused(false);
+  engine.frameAmbient();
+  ui.showHud(false);
+  ui.setDimmed(true);
+  const checkpoint = careerCheckpoint();
+  const character = checkpoint && CHARACTERS.find(player => player.id === checkpoint.run.characterId);
+  ui.showMainMenu({
+    onCareer: enterCareer,
+    resume: checkpoint ? `${character.name} · Match ${checkpoint.run.match}` : null,
+    hasProgress: !!checkpoint || !!state.career.characterId
+      || state.career.legacy > 0 || state.career.runs > 0
+      || state.career.bestRun > 0 || state.career.lifetimeGoals > 0
+      || META.some(({ key }) => state.career.meta[key] > 0),
+    onSingle: () => startRun('single'),
+    onPractice: () => startRun('practice'),
+    onReset: () => ui.showConfirmation('RESET PROGRESS?',
+      'Permanently erase your legacy points, upgrades, and career records?',
+      () => { state.career = save.wipe(); renderMenu(); }, renderMenu),
+  });
+}
+
+function finishSingleMatch() {
+  state.screen = 'GAMEOVER';
+  ui.showHud(false);
+  ui.setDimmed(true);
+  ui.showSingleResult({ goals: state.run.matchGoals,
+    onReplay: () => startRun('single'), onMenu: renderMenu });
+}
+
+function renderMeta(preserveRun = false) {
+  checkpointCareer();
+  state.screen = 'MENU';
+  if (!preserveRun) state.run = null;
   ui.showHud(false);
   ui.setDimmed(true);
   blockerCount = 0;
@@ -1126,7 +1340,7 @@ function renderMenu() {
           state.career.legacy -= c;
           state.career.meta[def.key] = lvl + 1;
           save.save(state.career);
-          renderMenu();
+          renderMeta(true);
         },
       };
     }),
@@ -1134,13 +1348,16 @@ function renderMenu() {
       state.career = save.wipe();
       renderMenu();
     },
-    onStart: startRun,
+    onStart: () => startRun('career'),
+    onMenu: renderMenu,
   });
 }
 
 function renderTraining() {
+  checkpointCareer();
   const run = state.run;
   ui.showTraining({
+    onMenu: renderMenu,
     match: run.match,
     matchGoals: run.matchGoals,
     cash: run.cash,
@@ -1179,6 +1396,21 @@ function renderTraining() {
 // ===========================================================================
 // Boot
 // ===========================================================================
+const upgradeShortcutsEnabled = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+
+function showUpgradeScreen(screen) {
+  if (!upgradeShortcutsEnabled || (screen !== 'meta' && screen !== 'training')) return;
+  if (screen === 'meta') {
+    renderMeta(true);
+  } else {
+    if (!state.run) startRun('career', CHARACTERS[0].id);
+    state.screen = 'TRAINING';
+    ui.showHud(false);
+    ui.setDimmed(true);
+    renderTraining();
+  }
+}
+
 function frame(dt) {
   state.elapsed += dt;
   engine.setAnimationsPaused(state.screen === 'MATCH' && (state.phase === 'AIM' || state.phase === 'POWER'));
@@ -1198,6 +1430,8 @@ function frame(dt) {
 
 async function boot() {
   ui.init();
+  // Let the static loading screen paint before synchronous scene construction.
+  await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
   engine.init(document.getElementById('pitch'));
   window.__demo = {
     renderer: engine.renderer, scene: engine.scene, camera: engine.camera,
@@ -1206,28 +1440,69 @@ async function boot() {
     crowd: engine.crowd, formation: engine.formation,
     matchView: engine.matchView,
     dimensions: { goal: GOAL, pitch: PITCH, ballRadius: BALL_R },
+    showUpgradeScreen, characters: CHARACTERS,
   };
-  await Promise.all([engine.loadStriker(), engine.loadBall()]);
+  await Promise.all([engine.loadStriker(), engine.loadBall(),
+    ui.preloadMenuAssets(CHARACTERS.map(character => character.portrait))]);
+  engine.prepareStrikerAppearances(CHARACTERS);
   window.__demo.striker = engine.striker;
   window.__demo.players = engine.players;
   window.__demo.lastLaunch = engine.lastLaunch;
-  const afterRender = engine.scene.onAfterRender;
-  engine.scene.onAfterRender = function (...args) {
-    afterRender.apply(this, args);
-    window.__demo.ready = true;
-    engine.scene.onAfterRender = afterRender;
-  };
   engine.onFrame(frame);
+  addEventListener('pagehide', checkpointCareer);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') checkpointCareer();
+  });
 
   addEventListener('pointerdown', (e) => {
+    if (!window.__demo.ready) return;
     if (e.target.closest('button')) return;   // overlay buttons own their clicks
     advance();
   });
   addEventListener('keydown', (e) => {
+    if (!window.__demo.ready) return;
+    if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (!e.altKey && !e.ctrlKey && !e.metaKey && !e.repeat && state.screen !== 'MATCH') {
+      if (e.code === 'ArrowLeft' || e.code === 'ArrowRight'
+        || (ui.isMainMenu() && (e.code === 'ArrowUp' || e.code === 'ArrowDown'))) {
+        e.preventDefault();
+        ui.cycleMenuTheme(e.code === 'ArrowLeft' || e.code === 'ArrowUp' ? -1 : 1);
+        return;
+      }
+      if (ui.isMainMenu()) {
+        if (['Digit1', 'Digit2', 'Digit3'].includes(e.code)) {
+          e.preventDefault();
+          startRun(e.code === 'Digit1' ? 'career' : e.code === 'Digit2' ? 'single' : 'practice');
+          return;
+        }
+      }
+    }
+    if (e.code === 'Escape') { e.preventDefault(); renderMenu(); return; }
+    if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey
+      && (e.code === 'Digit1' || e.code === 'Digit2')) {
+      e.preventDefault();
+      if (!e.repeat) showUpgradeScreen(e.code === 'Digit1' ? 'meta' : 'training');
+      return;
+    }
+    if (e.target.closest('button, input, textarea, select')) return;
     if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); advance(); }
   });
 
   renderMenu();
+  ui.setMatchExit(renderMenu);
+  await new Promise(resolve => {
+    const afterRender = engine.scene.onAfterRender;
+    engine.scene.onAfterRender = function (...args) {
+      afterRender.apply(this, args);
+      engine.scene.onAfterRender = afterRender;
+      resolve();
+    };
+  });
+  await ui.finishLoading();
+  window.__demo.ready = true;
 }
 
-boot();
+boot().catch(error => {
+  console.error('Game startup failed:', error);
+  ui.showLoadingError();
+});

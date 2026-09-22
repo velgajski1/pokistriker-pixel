@@ -1,4 +1,4 @@
-# BENCHED — A Striker's Roguelite
+# Striker Streak — Free Online Soccer Game
 
 A turn-based attacking-football roguelite in Three.js. Matches simulate at
 **200 match seconds per real second** (27 seconds of clock progression for
@@ -24,6 +24,21 @@ python -m http.server 5173
 Three.js is pulled from a CDN via the import map in `index.html`.
 
 ## Controls
+
+The main menu offers Career Mode, Single Match, and Training Mode. Career starts
+with match one and opens Match Upgrades between matches. Meta Upgrades are available
+from the main menu. Single Match ends at a full-time results screen; Training repeats
+shots indefinitely. Both standalone modes use baseline stats and do not change saved
+career progress. Reset Progress asks for confirmation before erasing the career save.
+
+Use Main Menu or Escape to leave a mode (the current match/run is discarded).
+From the main menu: 1 starts Career, 2 starts Single Match, 3 starts Training,
+and U opens Meta Upgrades. Left/right arrows or the visible style buttons cycle
+Stadium, Daylight, Matchday, Clubhouse, and Arcade on overlay screens. The selected
+style carries between screens for the current session; reloading resets it.
+On localhost, Alt+1 opens Meta Upgrades and Alt+2 opens Match Upgrades for inspection.
+`node tools/game-modes.mjs` checks mode routing, repeating practice shots, save
+isolation, reset confirmation, and mobile layout.
 
 Click / tap / <kbd>Space</kbd>, three times per chance: **lock aim → set power → shoot.**
 Power sets both shot speed and elevation: ~0.4 is along the floor, ~0.85 finds

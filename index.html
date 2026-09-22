@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>BENCHED &mdash; A Striker's Roguelite</title>
+<title>Striker Streak — Free Online Soccer Game</title>
+<meta name="description" content="Play Striker Streak, a free football shooting game in your browser. Beat the keeper, upgrade your striker, and keep your career alive. No download required." />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%23d6ff3f'/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="style.css" />
 <script type="importmap">
@@ -15,7 +16,13 @@
 }
 </script>
 </head>
-<body>
+<body class="loading">
+  <div id="preloader" role="status" aria-live="polite" aria-label="Loading Striker Streak">
+    <div class="preloader-brand">STRIKER STREAK</div>
+    <div class="preloader-track" aria-hidden="true"><span></span></div>
+    <p id="preloader-message">Getting the pitch ready…</p>
+    <button id="preloader-retry" class="hidden" type="button">Try again</button>
+  </div>
   <!-- WebGL rendering zone -->
   <canvas id="pitch"></canvas>
 
@@ -23,7 +30,7 @@
   <div id="dim"></div>
 
   <!-- In-match HUD -->
-  <div id="hud" class="hidden">
+  <div id="hud" class="hidden" inert>
     <div class="hud-bar hud-top">
       <span id="hud-left">MATCH 1 | CLOCK: 0'</span>
       <span id="hud-right">GOALS: 0 | CHANCES LEFT: 3</span>
@@ -41,7 +48,7 @@
   </div>
 
   <!-- Overlay screens: main menu, training room, benched -->
-  <div id="overlay" class="hidden"></div>
+  <div id="overlay" class="hidden" inert></div>
 
   <script type="module" src="js/app.js"></script>
 </body>
