@@ -290,34 +290,20 @@ export function showMainMenu(vm) {
   }
   if (vm.hasProgress) modes.append(action('Reset Progress', vm.onReset, 'menu-option reset-progress'));
   p.append(brand, modes);
-  if (vm.resume) {
-    const resume = document.createElement('p');
-    resume.className = 'career-resume';
-    resume.textContent = `Continue ${vm.resume}`;
-    p.append(resume);
-  }
   mount(p);
 }
 
 export function showCharacterSelection(vm) {
   const p = panel();
   p.classList.add('upgrade-panel', 'character-panel');
-  const intro = document.createElement('p');
-  intro.className = 'sub character-intro';
-  intro.textContent = 'Eight hopefuls. One shirt. Who are you taking off the bench?';
   const grid = document.createElement('div');
   grid.className = 'character-grid';
   grid.setAttribute('role', 'group');
   grid.setAttribute('aria-label', 'Choose your career striker');
-  const selection = document.createElement('p');
-  selection.className = 'character-selection';
-  selection.setAttribute('aria-live', 'polite');
-  const start = action('Start Career >', vm.onStart, 'accent big');
+  const start = action('Play', vm.onStart, 'accent big');
   const cards = [];
   const select = id => {
-    const character = vm.characters.find(player => player.id === id);
     for (const card of cards) card.setAttribute('aria-pressed', String(card.dataset.character === id));
-    selection.textContent = `${character.name} · ${character.tagline}`;
     vm.onSelect(id);
   };
   for (const character of vm.characters) {
@@ -340,13 +326,10 @@ export function showCharacterSelection(vm) {
     grid.append(card);
     cards.push(card);
   }
-  const note = document.createElement('p');
-  note.className = 'sub character-note';
-  note.textContent = 'Your portrait and on-pitch appearance stay with you all career. Same starting stats. Your story to write.';
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.append(action('Back', vm.onBack), start);
-  p.append(header('CHOOSE YOUR STRIKER', 'YOUR CAREER STARTS HERE'), intro, grid, selection, note, foot);
+  p.append(header('CHOOSE YOUR STRIKER'), grid, foot);
   mount(p);
   select(vm.selectedId);
   cards.find(card => card.dataset.character === vm.selectedId).focus({ preventScroll: true });

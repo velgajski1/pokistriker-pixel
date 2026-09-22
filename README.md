@@ -21,7 +21,25 @@ npm start                  # http://localhost:5173
 python -m http.server 5173
 ```
 
-Three.js is pulled from a CDN via the import map in `index.html`.
+Three.js 0.169.0 and the required loaders are served locally from `vendor/three/`
+via the import map in `index.html`. No runtime CDN download is required.
+
+## Release packaging
+
+On Windows, run `npm run package:release` (PowerShell 5.1 or newer). This creates
+a uniquely named folder and matching ZIP in `dist/`, without replacing earlier
+releases. The ZIP has `index.html` at its root and can be extracted and served
+by any static server; opening it directly with `file://` is not supported.
+
+The explicit file list in `tools/package-release.ps1` includes the five game
+modules, stylesheet, runtime WebP images, squad and ball assets, and the pinned
+Three.js dependency files and MIT license. Source PNGs, unused models, tools,
+captures, references and npm dependencies are excluded. Update that list when
+adding runtime assets or Three.js addons. Packaging does not run browser tests,
+minify code, or change the `window.__demo` test contract.
+
+This is a local release artifact, not a Poki submission: Poki SDK integration
+and device/iframe validation are still required before submission.
 
 ## Controls
 

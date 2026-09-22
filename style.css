@@ -148,7 +148,6 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
 .career-identity span{overflow-wrap:anywhere}
 .character-panel.upgrade-panel{width:min(1020px,94vw)}
 .character-panel h1{font-size:clamp(25px,4vw,40px)}
-.character-intro{margin:18px 0}
 .character-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
 .character-panel button.character-card{position:relative;display:flex;flex-direction:column;align-items:stretch;min-width:0;margin:0;padding:0;overflow:hidden;text-align:left;background:#0c1a2b;border:2px solid #38516a;color:#eaf3ff;box-shadow:0 5px 14px #0004;transition:border-color .15s,transform .15s}
 .character-card img{display:block;width:100%;height:auto;aspect-ratio:1;object-fit:cover}
@@ -158,9 +157,8 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
 .character-card[aria-pressed="true"] .character-mark{display:block}
 .character-panel .character-card:hover{border-color:#58caff;transform:translateY(-2px)}
 .character-panel button:focus-visible{outline:3px solid #fff;outline-offset:3px}
-.character-selection{min-height:40px;margin-top:20px;color:#b5f47a;font-size:14px;line-height:1.5}
-.character-note{font-size:12px;line-height:1.6}
 .character-panel .foot{justify-content:space-between;margin-top:18px}
+.character-panel .foot button.accent{min-width:min(240px,55vw);min-height:50px;padding:6px 30px;font-size:30px;line-height:1;letter-spacing:.1em}
 @media(max-width:650px){.character-panel.upgrade-panel{padding:18px;margin:16px auto}.character-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.character-card strong{font-size:12px;padding:9px 8px}.career-identity{left:10px;top:55px;gap:6px;font-size:10px;padding-right:8px}.career-identity img{width:30px;height:30px}}
 
 /* Upgrade screens: blue-lit metal frame with individual attribute cards. */
@@ -293,8 +291,8 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
   background:none;border:0;border-radius:0;box-shadow:none;color:var(--ink);
 }
 #overlay[data-theme] .main-menu .menu-option{
-  font-size:clamp(20px,2.8vw,29px);font-weight:700;letter-spacing:.08em;
-  padding:14px 28px;min-height:54px;text-shadow:0 2px 12px #0006;
+  font-size:clamp(22px,3vw,32px);font-weight:700;letter-spacing:.08em;
+  padding:14px 28px;min-height:54px;text-align:center;text-shadow:0 2px 12px #0006;
 }
 #overlay[data-theme] .main-menu .menu-option.reset-progress{font-size:13px;color:var(--dim);margin-top:18px}
 #overlay[data-theme] .main-menu button:hover{background:none;color:var(--accent);box-shadow:none}
@@ -406,3 +404,161 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
 #overlay[data-theme="neon"] .main-menu h1{font-family:'Trebuchet MS',Arial,sans-serif;font-style:italic;font-weight:900;letter-spacing:-.045em;color:#e8ffff;text-shadow:0 0 4px #fff,0 0 18px #44eee799,4px 4px 0 #883ba9}
 #overlay[data-theme="neon"] .main-menu .menu-option{font-family:'Trebuchet MS',Arial,sans-serif;font-style:italic;letter-spacing:.16em;text-shadow:0 0 12px #67e3ef66}
 @media(max-width:480px){#overlay[data-theme] .main-menu .menu-brand{padding-bottom:28px}#overlay[data-theme="varsity"] .main-menu h1{letter-spacing:.025em}}
+
+/* Small character screens sit directly on a darkened stadium backdrop. */
+@media(max-width:849px){
+  #overlay:has(.character-panel){
+    background:linear-gradient(#000b,#000b),url('assets/ui/bg/shooting-goal.webp') center/cover no-repeat #070b10;
+    background-blend-mode:normal;
+  }
+  #overlay[data-theme] .character-panel.upgrade-panel{
+    background:transparent;border:0;border-radius:0;box-shadow:none;
+  }
+}
+
+/* Poki's three 16:9 review viewports use deliberate compact layouts. */
+@media(min-width:600px) and (max-height:580px){
+  .hud-bar{padding:10px 14px}
+  .hud-bottom{padding:10px 14px 14px}
+  .powerwrap{margin-top:7px}
+  .powerbar{height:11px}
+  .match-exit{top:48px;right:12px;min-height:36px;padding:7px 11px}
+  .career-identity{top:47px;left:12px}
+  .phase-prompt{top:68%}
+
+  #overlay[data-theme] .main-menu{padding:18px 20px}
+  #overlay[data-theme] .main-menu .menu-brand{padding-bottom:28px}
+  #overlay[data-theme] .main-menu h1{transform:none}
+  #overlay[data-theme] .main-menu .mode-list{gap:7px}
+  #overlay[data-theme] .main-menu .menu-option{min-height:42px;padding:7px 24px}
+  #overlay[data-theme] .main-menu .menu-option.reset-progress{margin-top:7px}
+
+  .character-panel.upgrade-panel{margin:8px auto;padding:14px}
+  .character-panel h1 small{margin-top:5px}
+  .character-grid{gap:8px}
+  .character-card img{height:150px;aspect-ratio:auto;object-position:center 24%}
+  .character-card strong{min-height:34px;padding:5px 8px}
+  .character-panel .foot{margin-top:7px}
+
+  .upgrade-screen{width:min(1060px,97vw);margin:7px auto}
+  .upgrade-status{padding:7px 12px;margin-bottom:7px}
+  .upgrade-status .bank,.upgrade-status .conf{font-size:10px}
+  .upgrade-status .bank b,.upgrade-status .conf .pips{font-size:15px}
+  #overlay[data-theme] .upgrade-screen .clean-upgrades{padding:12px}
+  #overlay[data-theme] .clean-upgrades>.center{padding:2px 0 5px}
+  #overlay[data-theme] .clean-upgrades h1{font-size:24px}
+  .upgrade-grid,#overlay[data-theme] .training-panel .upgrade-grid{gap:8px;margin:7px 0}
+  #overlay[data-theme] .clean-upgrades .upgrade-card{gap:5px;padding:9px}
+  .upgrade-screen .upgrade-title{min-height:28px;padding:0 5px;font-size:12px}
+  #overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card .upgrade-icon{width:76px;height:76px;margin:2px 0}
+  #overlay[data-theme] .clean-upgrades .upgrade-card .upgrade-level{font-size:9px}
+  #overlay[data-theme] .clean-upgrades .upgrade-card .pips{height:9px}
+  #overlay[data-theme] .clean-upgrades .upgrade-card button{min-height:34px;margin-top:3px;font-size:14px;padding:6px}
+  #overlay[data-theme] .upgrade-screen .upgrade-help{top:38px;right:6px}
+  #overlay[data-theme] .clean-upgrades .charm-card{min-height:38px;padding:5px 10px}
+  .upgrade-screen .charm-icon{width:32px;height:32px}
+  #overlay[data-theme] .clean-upgrades .foot{margin-top:8px}
+  .upgrade-panel .foot button{min-height:36px;padding:7px 12px}
+  .compact-panel.upgrade-panel{margin:auto}
+}
+
+/* 1031 x 580: full labels and two portrait rows, with shorter artwork. */
+@media(min-width:900px) and (max-width:1100px) and (min-height:521px) and (max-height:600px){
+  #overlay[data-theme] .main-menu h1{font-size:58px}
+  #overlay[data-theme] .main-menu .menu-option{font-size:27px}
+  .character-panel.upgrade-panel{width:min(980px,96vw);padding:13px 18px}
+  .character-panel h1{font-size:31px}
+  .character-card img{height:170px}
+  .character-card strong{font-size:12px}
+  .upgrade-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .training-panel .upgrade-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+}
+
+/* 836 x 470: denser cards while retaining supporting copy. */
+@media(min-width:760px) and (max-width:899px) and (min-height:401px) and (max-height:520px){
+  #overlay[data-theme] .main-menu h1{font-size:50px}
+  #overlay[data-theme] .main-menu .menu-option{font-size:24px}
+  .character-panel.upgrade-panel{width:min(810px,97vw);padding:10px 14px}
+  .character-panel h1{font-size:27px}
+  .character-card img{height:112px}
+  .character-card strong{min-height:30px;font-size:11px}
+  .upgrade-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .training-panel .upgrade-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+  #overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card .upgrade-icon{width:60px;height:60px}
+}
+
+/* 640 x 360: every primary action stays in-frame without whole-page scaling. */
+@media(min-width:600px) and (max-width:759px) and (max-height:400px){
+  .hud-bar{padding:7px 10px;font-size:9px;letter-spacing:.09em}
+  .hud-bottom{padding:7px 10px 9px}
+  .ticker{min-height:15px;font-size:9px;line-height:1.3}
+  .match-exit{top:35px;right:8px;min-height:30px;padding:5px 8px;font-size:9px}
+  .career-identity{top:35px;left:8px;gap:5px;max-width:210px;padding:3px 7px 3px 3px;font-size:9px}
+  .career-identity img{width:26px;height:26px}
+
+  #overlay[data-theme] .main-menu{padding:7px 16px}
+  #overlay[data-theme] .main-menu .menu-brand{padding-bottom:10px}
+  #overlay[data-theme] .main-menu h1{font-size:38px}
+  #overlay[data-theme] .main-menu .mode-list{gap:2px}
+  #overlay[data-theme] .main-menu .menu-option{min-height:36px;padding:4px 20px;font-size:19px}
+  #overlay[data-theme] .main-menu .menu-option.reset-progress{min-height:28px;margin-top:2px;font-size:10px}
+
+  .character-panel.upgrade-panel{width:calc(100vw - 12px);margin:4px auto;padding:7px 10px}
+  .character-panel h1{font-size:20px}
+  .character-panel h1 small{font-size:8px;letter-spacing:.18em;margin-top:2px}
+  .character-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px 7px}
+  .character-card img{height:110px;object-position:center 22%}
+  .character-card strong{min-height:27px;padding:3px 5px;font-size:9px;line-height:1.15}
+  .character-card .character-mark{top:3px;right:3px;padding:2px 3px;font-size:6px}
+  .character-panel .foot{margin-top:3px}
+  .character-panel .foot button{min-height:29px;padding:4px 10px;font-size:9px}
+
+  .upgrade-screen{width:calc(100vw - 10px);margin:3px auto}
+  .upgrade-status{min-height:29px;padding:3px 8px;margin-bottom:3px;gap:7px}
+  .upgrade-status .bank,.upgrade-status .conf{font-size:8px}
+  .upgrade-status .bank b,.upgrade-status .conf .pips{font-size:12px}
+  #overlay[data-theme] .upgrade-screen .clean-upgrades{padding:6px 8px;border-radius:12px}
+  #overlay[data-theme] .clean-upgrades>.center{padding:0 0 2px}
+  #overlay[data-theme] .clean-upgrades h1{font-size:18px}
+  .upgrade-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin:3px 0}
+  .training-panel .upgrade-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px}
+  #overlay[data-theme] .clean-upgrades .upgrade-card{gap:2px;padding:4px 5px;border-radius:9px}
+  .upgrade-screen .upgrade-title{min-height:20px;padding:0 2px;font-size:9px;line-height:1.1}
+  #overlay[data-theme] .upgrade-screen .clean-upgrades .upgrade-card .upgrade-icon{width:40px;height:40px;margin:0}
+  #overlay[data-theme] .clean-upgrades .upgrade-card .upgrade-level{font-size:7px;letter-spacing:.02em}
+  #overlay[data-theme] .clean-upgrades .upgrade-card .pips{height:5px;gap:2px}
+  #overlay[data-theme] .clean-upgrades .upgrade-card button{min-height:25px;margin-top:1px;padding:3px;font-size:10px}
+  #overlay[data-theme] .upgrade-screen .upgrade-help{top:24px;right:3px;width:20px}
+  .upgrade-screen .upgrade-help summary{width:20px;height:20px;font-size:11px}
+  #overlay[data-theme] .clean-upgrades .charm-card{min-height:27px;padding:2px 7px}
+  .upgrade-screen .charm-icon{width:23px;height:23px}
+  .upgrade-details summary{padding:2px 0;font-size:9px}
+  #overlay[data-theme] .clean-upgrades .foot{margin-top:3px}
+  .upgrade-panel .foot button{min-height:28px;padding:3px 9px;font-size:9px}
+  .compact-panel.upgrade-panel{width:min(570px,94vw);padding:15px;margin:auto}
+  .compact-panel h1{font-size:25px}
+  .compact-panel .result-score{padding:14px 0;font-size:36px}
+}
+
+/* Shared small-screen selector: portraits absorb all space between title and actions. */
+@media(max-width:849px){
+  #overlay[data-theme] .character-panel.upgrade-panel{
+    width:100%;height:100%;min-height:100%;margin:0;
+    display:flex;flex-direction:column;
+  }
+  .character-panel>h1,.character-panel>.foot{flex:0 0 auto}
+  .character-panel .character-grid{
+    flex:1 1 auto;min-height:0;grid-template-rows:repeat(4,minmax(0,1fr));
+  }
+  .character-panel button.character-card{min-height:0}
+  .character-panel .character-card img{
+    flex:1 1 0;height:0;min-height:0;object-fit:cover;
+  }
+}
+@media(min-width:600px) and (max-width:849px){
+  .character-panel .character-grid{grid-template-rows:repeat(2,minmax(0,1fr))}
+}
+.character-panel .foot{justify-content:space-between}
+@media(min-width:850px){
+  .character-panel.upgrade-panel{padding-top:14px}
+}

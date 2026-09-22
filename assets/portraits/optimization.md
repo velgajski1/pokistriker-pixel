@@ -13,6 +13,7 @@ Release assets need the WebP images, `assets/squad.glb`, `assets/squad.json`,
 and `assets/ball.glb`, alongside `index.html`, `style.css`, and `js/`.
 Exclude PNG originals, the unused `assets/striker.glb` / `striker.json`,
 generation records, `references/`, `tools/`, captures, and `node_modules/`.
-Three.js and its loaders are fetched separately using the CDN import map.
+Three.js and its loaders are included locally under `vendor/three/`.
+Run `npm run package:release` to create a curated release directory and ZIP.
 
 Original PNGs remain available for future resizing and re-encoding; none were deleted.

@@ -8,7 +8,8 @@
     "start": "npx --yes serve -l 5173 .",
     "dev": "npx --yes serve -l 5173 .",
     "check": "node tools/validate.mjs check",
-    "striker": "node tools/striker.mjs"
+    "striker": "node tools/striker.mjs",
+    "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-release.ps1"
   },
   "devDependencies": {
     "playwright": "^1.63.0"
