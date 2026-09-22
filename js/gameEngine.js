@@ -405,6 +405,30 @@ const KIT_AWAY = { kit: 0xe23b4e, shorts: 0x1b1f27, socks: 0xe23b4e, boots: 0x0f
 const KIT_REF  = { kit: 0x14181f, shorts: 0x14181f, socks: 0x14181f, boots: 0x0a0c10 };
 const KIT_KEEP = { kit: 0xff8a2b, shorts: 0x14202e, socks: 0x1b2836, boots: 0x0c1017, gloves: 0xe8f0ff };
 
+function shadeTeamShirt(material) {
+  const pattern = { value: 0 };
+  const accent = { value: new THREE.Color(0xffffff) };
+  material.userData.teamPattern = { pattern, accent };
+  material.customProgramCacheKey = () => 'team-shirt-v1';
+  material.onBeforeCompile = shader => {
+    shader.uniforms.teamPattern = pattern;
+    shader.uniforms.teamAccent = accent;
+    shader.vertexShader = 'varying vec3 kitBind;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
+      '#include <begin_vertex>\nkitBind = position / ' + CAPTAIN_BIND_SCALE.toFixed(8) + ';');
+    shader.fragmentShader = 'varying vec3 kitBind;\nuniform float teamPattern;\nuniform vec3 teamAccent;\n' + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+      float vertical = sin(kitBind.x * 90.0);
+      float horizontal = sin((kitBind.y - 1.0) * 90.0);
+      float patternWave = teamPattern < 1.5 ? vertical : teamPattern < 2.5 ? horizontal : vertical * horizontal;
+      float aa = max(.03, fwidth(patternWave));
+      float patternMask = smoothstep(-aa, aa, patternWave);
+      patternMask *= step(.5, teamPattern);
+      diffuseColor.rgb = mix(diffuseColor.rgb, teamAccent, patternMask);
+    `);
+  };
+}
+
 function recolourKit(rig, kit) {
   for (const region of ['kit', 'shorts', 'socks']) {
     rig.kit[region] = kit[region];
@@ -413,6 +437,11 @@ function recolourKit(rig, kit) {
   rig.avatar?.model.traverse(node => {
     if (node.isMesh && Object.hasOwn(kit, node.material.name)) {
       node.material.color.setHex(kit[node.material.name]);
+      const uniforms = node.material.userData.teamPattern;
+      if (uniforms) {
+        uniforms.pattern.value = { stripes: 1, hoops: 2, checks: 3 }[kit.pattern] || 0;
+        uniforms.accent.value.setHex(kit.accent ?? kit.kit);
+      }
     }
   });
 }
@@ -634,12 +663,12 @@ function addShirtNumber(model, number) {
 // Bind-space shading follows the animated skin without floating face overlays.
 // Both imported head primitives use the same continuous hairline and colours.
 function shadeCaptainFace(material, look) {
-  material.roughness = .86;
-  material.customProgramCacheKey = () => 'captain-face-v2';
+  material.roughness = .96;
+  material.customProgramCacheKey = () => 'captain-face-v3';
   material.onBeforeCompile = shader => {
     shader.uniforms.faceSkin = { value: new THREE.Color(look.skin) };
     shader.uniforms.faceHair = { value: new THREE.Color(look.hair) };
-    shader.uniforms.faceStyle = { value: ['bald', 'buzz', 'crew', 'sidepart', 'swept', 'floppy', 'headband'].indexOf(look.style) };
+    shader.uniforms.faceStyle = { value: ['bald', 'buzz', 'crew', 'sidepart', 'swept', 'floppy', 'headband', 'curls', 'afro', 'crop', 'ponytail', 'bun'].indexOf(look.style) };
     shader.uniforms.faceBeard = { value: look.beard >= .4 ? Math.min(.48, look.beard * .55) : 0 };
     shader.uniforms.faceMoustache = { value: look.moustache || 0 };
     shader.vertexShader = 'varying vec3 faceBind;\n' + shader.vertexShader;
@@ -657,13 +686,23 @@ function shadeCaptainFace(material, look) {
         hairline -= .024 * smoothstep(.045, .085, abs(p.x)) * front;
         if (faceStyle == 3.0) hairline += .012 * sin(p.x * 28.0) * front;
         if (faceStyle == 4.0 || faceStyle == 5.0) hairline -= .016 * front;
+        hairline += .003 * sin(p.x * 270.0 + sin(p.z * 95.0)) * front;
         float edge = max(.002, fwidth(p.y) * 1.2);
         float hair = smoothstep(hairline - edge, hairline + edge, p.y);
         if (faceStyle == 0.0) hair = 0.0;
         if (faceStyle == 1.0) hair *= .68;
         float grain = sin(p.x * 1700.0) * sin(p.y * 1600.0 + p.z * 900.0);
         grain *= 1.0 - smoothstep(.0005, .003, fwidth(p.y));
-        vec3 hairColour = faceHair * (1.0 + grain * .055);
+        float flow = p.x * 430.0 + p.y * 110.0 + sin(p.z * 32.0) * 3.0;
+        if (faceStyle == 4.0 || faceStyle == 3.0) flow += p.y * 260.0;
+        float detail = 1.0 - smoothstep(.4, 2.2, fwidth(flow));
+        float locks = (.5 + .5 * sin(flow)) * detail;
+        if (faceStyle == 7.0 || faceStyle == 8.0) {
+          locks = (.5 + .5 * sin(p.x * 360.0 + sin(p.y * 290.0)) * sin(p.z * 310.0 + p.y * 180.0)) * detail;
+        }
+        if (faceStyle == 1.0 || faceStyle == 2.0) locks = (.5 + grain * .5) * detail;
+        vec3 hairColour = faceHair * (.80 + locks * .32 + grain * .09)
+          + vec3(.012, .010, .008) * locks;
         if (faceStyle == 3.0) {
           float part = 1.0 - smoothstep(.001, .0035, abs(p.x - .025 - p.z * .15));
           hairColour = mix(hairColour, faceSkin * .65, part * .65);
@@ -696,24 +735,35 @@ function captainHairGeometry(style, headIndex, career = false) {
   const key = style + ':' + headIndex + ':' + career;
   if (captainHairShapes.has(key)) return captainHairShapes.get(key);
   const positions = [], indices = [], joints = [], weights = [];
-  const rings = 20, segments = 40;
+  const rings = 28, segments = 56;
+  const curly = style === 'afro' || style === 'curls';
+  const short = style === 'bald' || style === 'buzz';
+  const tied = style === 'ponytail' || style === 'bun' || style === 'headband';
   const volume = style === 'afro' ? .033 : style === 'curls' ? (career ? .03 : .016)
     : style === 'floppy' || style === 'swept' ? (career ? .025 : .014) : style === 'bald' || style === 'buzz' ? 0 : .006;
   for (let row = 0; row <= rings; row++) {
     for (let col = 0; col <= segments; col++) {
       const phi = col / segments * Math.PI * 2;
       const facing = Math.cos(phi);
-      const edge = career ? 1.575 + facing * (facing > 0 ? .05 : .065)
+      let edge = career ? 1.575 + facing * (facing > 0 ? .05 : .065)
         : 1.585 + facing * (facing > 0 ? .023 : .065);
+      if (!short) edge += (tied ? .002 : .004) * Math.sin(phi * 11 + .6) + .002 * Math.sin(phi * 19);
+      if (style === 'floppy') edge -= .012 * Math.max(0, facing) * (.5 + .5 * Math.sin(phi * 5));
       const height = career ? .105 : .108;
       const theta = row / rings * Math.acos((edge - 1.575) / height);
       const top = Math.max(0, Math.cos(theta));
-      const curls = style === 'afro' || style === 'curls'
-        ? (career ? .006 : .003) * Math.sin(phi * 12) * Math.sin(theta * 18) * Math.sin(theta) : 0;
-      const radius = volume * top + curls;
-      const sweep = style === 'sidepart' || style === 'swept' ? .012 * top * top : 0;
+      const crown = Math.sin(theta);
+      const wave = Math.sin(phi * 17 + theta * (style === 'swept' || style === 'sidepart' ? 9 : 3));
+      const clumps = curly
+        ? .009 * (Math.sin(phi * 13 + Math.sin(theta * 9)) * Math.sin(theta * 17)
+          + .35 * Math.sin(phi * 23 - theta * 21)) * crown
+        : short ? 0 : (style === 'floppy' ? .008 : tied ? .0025 : .0045) * wave * crown;
+      // Tuck the lower edge into the head rather than leaving a helmet-like lip.
+      const rim = Math.pow(row / rings, 10) * (short ? .007 : .005);
+      const radius = volume * top + clumps - rim;
+      const sweep = style === 'sidepart' || style === 'swept' ? .020 * top * top : 0;
       positions.push((Math.sin(phi) * Math.sin(theta) * ((career ? .093 : .096) + radius) + sweep) * CAPTAIN_BIND_SCALE,
-        (1.575 + Math.cos(theta) * height + volume * top * top + curls) * CAPTAIN_BIND_SCALE,
+        (1.575 + Math.cos(theta) * height + volume * top * top + clumps) * CAPTAIN_BIND_SCALE,
         (Math.cos(phi) * Math.sin(theta) * ((career ? .1 : .104) + radius) - (career ? .005 : 0)) * CAPTAIN_BIND_SCALE);
       joints.push(headIndex, 0, 0, 0); weights.push(1, 0, 0, 0);
       if (row < rings && col < segments) {
@@ -741,6 +791,7 @@ function colourCaptain(model, rig) {
     node.frustumCulled = false;
     node.material = node.material.clone();
     const region = node.material.name;
+    if (region === 'kit' && squad.foes.includes(rig)) shadeTeamShirt(node.material);
     if (region === 'skin' || region === 'hair') shadeCaptainFace(node.material, rig.look);
     node.material.color.setHex(region === 'skin' ? rig.look.skin
       : region === 'hair' ? (rig.look.style === 'bald' ? rig.look.skin : rig.look.hair)
@@ -763,10 +814,20 @@ function buildCaptainAccessory(model, scalp, look) {
   hair.name = 'captain-hair-accessory';
   const material = new THREE.MeshStandardMaterial({ color: look.hair, roughness: .9 });
   const bun = look.style === 'bun';
-  const tail = new THREE.Mesh(bun ? new THREE.SphereGeometry(.05, 10, 8)
-    : new THREE.CapsuleGeometry(.03, .13, 4, 8), material);
-  tail.position.set(.01, bun ? 1.60 : 1.53, -.13);
-  tail.rotation.x = -.35;
+  const tail = new THREE.Mesh(bun ? new THREE.SphereGeometry(.045, 20, 14)
+    : new THREE.CapsuleGeometry(.025, .12, 8, 24), material);
+  const vertices = tail.geometry.attributes.position;
+  for (let i = 0; i < vertices.count; i++) {
+    const x = vertices.getX(i), y = vertices.getY(i), z = vertices.getZ(i);
+    const angle = Math.atan2(z, x);
+    const strand = 1 + .16 * Math.sin(angle * 7 + y * 35);
+    const taper = bun ? 1 : .60 + .40 * THREE.MathUtils.smoothstep(y, -.095, .065);
+    vertices.setXYZ(i, x * strand * taper + (bun ? 0 : .012 * Math.sin(y * 24)),
+      y, z * strand * taper);
+  }
+  tail.geometry.computeVertexNormals();
+  tail.position.set(.01, bun ? 1.60 : 1.55, bun ? -.10 : -.105);
+  tail.rotation.x = -.55;
   hair.add(tail);
   // Accessory vertices are authored in the same bind space as the scalp.
   hair.scale.setScalar(CAPTAIN_BIND_SCALE);
@@ -1879,8 +1940,41 @@ function supporterParts(pose) {
       new THREE.SphereGeometry(.025, 5, 4).scale(.7, pose === 0 ? .45 : 1.3, .35).translate(0, 1.51, .11)])];
 }
 
+/** Static stadium detailing is merged by material: no per-frame work or new lights. */
+function stadiumBoardTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024; canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#10273b'; ctx.fillRect(0, 0, 1024, 128);
+  ctx.fillStyle = '#28465c'; ctx.fillRect(0, 0, 1024, 5);
+  ctx.fillStyle = '#d6ff3f'; ctx.fillRect(0, 118, 1024, 4);
+  ctx.font = 'italic 900 43px Arial'; ctx.textAlign = 'center';
+  ctx.fillStyle = '#dcebf2'; ctx.fillText('STRIKER STREAK', 256, 80);
+  ctx.fillStyle = '#79c8d6'; ctx.fillText('MAKE IT COUNT', 770, 80);
+  ctx.fillStyle = '#d6ff3f';
+  for (const x of [22, 520]) {
+    ctx.beginPath(); ctx.moveTo(x, 44); ctx.lineTo(x + 20, 64);
+    ctx.lineTo(x, 84); ctx.lineTo(x + 7, 64); ctx.closePath(); ctx.fill();
+  }
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = THREE.RepeatWrapping;
+  map.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+  return map;
+}
+
 function buildStands() {
-  const wall = new THREE.MeshStandardMaterial({ color: 0x18212d, roughness: 1 });
+  const wall = new THREE.MeshStandardMaterial({ color: 0x303c49, roughness: 1 });
+  const structure = [], trim = [], steps = [], lamps = [], paving = [];
+  const boardMap = stadiumBoardTexture();
+  const detail = (parts, stand, x, y, depth, w, h, d, tilt = 0) => {
+    const cos = Math.cos(stand.angle), sin = Math.sin(stand.angle);
+    const geometry = new THREE.BoxGeometry(w, h, d);
+    geometry.rotateX(tilt);
+    geometry.rotateY(stand.angle);
+    geometry.translate(stand.x + x * cos - sin * depth, y, stand.z - x * sin - cos * depth);
+    parts.push(geometry);
+  };
   const transform = new THREE.Object3D();
   const tint = new THREE.Color();
   const rows = 14;
@@ -1905,6 +1999,11 @@ function buildStands() {
       transform.scale.set(stand.width, base, 0.94);
       transform.updateMatrix();
       tiers.setMatrixAt(tierIndex++, transform.matrix);
+      // Bright stair nosings make the existing crowd access gaps legible.
+      for (let col = 0; col < stand.columns; col += 27) {
+        const x = (col + .5 - (stand.columns - 1) / 2) * .72;
+        detail(steps, stand, x, base + .015, depth - .36, 1.32, .035, .10);
+      }
       for (let col = 0; col < stand.columns; col++) {
         if (col % 27 < 2 || (row > 9 && Math.random() < .06)) continue; // access aisles
         const across = (col - (stand.columns - 1) / 2) * .72 + (Math.random() - .5) * .12;
@@ -1920,9 +2019,33 @@ function buildStands() {
     roof.position.set(stand.x - sin * 11, 12.1, stand.z - cos * 11);
     roof.rotation.y = stand.angle;
     scene.add(roof);
+    detail(trim, stand, 0, 11.92, 8.45, stand.width + 3, .38, .18);
+    detail(structure, stand, 0, 5, 13.1, stand.width, 10, .28);
+    detail(paving, stand, 0, .025, -1.6, stand.width, .05, 2.2);
+    // Front safety rail and rear roof supports stay behind the collision boards.
+    detail(trim, stand, 0, 2.25, -.5, stand.width, .065, .065);
+    for (let x = -stand.width / 2 + 2; x < stand.width / 2; x += 8) {
+      detail(structure, stand, x, 6.1, 12.5, .22, 12.2, .22);
+      detail(structure, stand, x, 11.75, 10.5, .16, .22, 5.4);
+      detail(trim, stand, x, 1.85, -.5, .055, .8, .055);
+      detail(lamps, stand, x, 11.65, 8.5, 2.2, .07, .15);
+    }
+    // Roof ribs give the canopy depth from the overhead camera.
+    for (let x = -stand.width / 2; x <= stand.width / 2; x += 3) {
+      detail(trim, stand, x, 12.38, 11, .06, .06, 5);
+    }
+    for (const x of [-stand.width * .28, stand.width * .28]) {
+      detail(structure, stand, x, 15, 12, .30, 6, .30);
+      detail(structure, stand, x, 17.7, 12, 3.8, 1.65, .35);
+      for (let col = 0; col < 5; col++) for (let row = 0; row < 2; row++) {
+        detail(lamps, stand, x + (col - 2) * .69, 17.35 + row * .68, 11.79, .52, .48, .08);
+      }
+    }
     const bounds = AD_BOARDS[stands.indexOf(stand)];
+    const map = boardMap.clone();
+    map.repeat.set(stand.width / (BOARD_HEIGHT * 8), 1);
     const board = new THREE.Mesh(new THREE.BoxGeometry(stand.width, BOARD_HEIGHT, BOARD_THICKNESS),
-      new THREE.MeshLambertMaterial({ color: stand.angle === 0 ? 0x1c4084 : 0x293d59 }));
+      new THREE.MeshLambertMaterial({ map, color: 0xc4d3df }));
     board.position.set((bounds.minX + bounds.maxX) / 2, BOARD_HEIGHT / 2, (bounds.minZ + bounds.maxZ) / 2);
     board.name = 'advertising-board';
     board.rotation.y = stand.angle;
@@ -1962,11 +2085,16 @@ function buildStands() {
     }
   }
   buildSupporterFlags();
-  const lamp = new THREE.MeshBasicMaterial({ color: 0xeaf2fb });
-  for (const sx of [-1, 1]) {
-    const pylon = new THREE.Mesh(new THREE.BoxGeometry(3.2, 1.3, 0.4), lamp);
-    pylon.position.set(sx * 20, 17.5, GOAL.PLANE_Z - 12);
-    scene.add(pylon);
+  for (const [name, parts, material] of [
+    ['structure', structure, new THREE.MeshStandardMaterial({ color: 0x263744, roughness: .8 })],
+    ['trim', trim, new THREE.MeshStandardMaterial({ color: 0x607889, roughness: .65, metalness: .25 })],
+    ['stairs', steps, new THREE.MeshLambertMaterial({ color: 0xc7af69 })],
+    ['lamps', lamps, new THREE.MeshBasicMaterial({ color: 0xcde7ed })],
+    ['walkways', paving, new THREE.MeshStandardMaterial({ color: 0x36434b, roughness: 1 })],
+  ]) {
+    const mesh = new THREE.Mesh(joinCrowdParts(parts), material);
+    mesh.name = 'stadium-' + name;
+    scene.add(mesh);
   }
 }
 

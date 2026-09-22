@@ -63,10 +63,18 @@ Click / tap / <kbd>Space</kbd>, three times per chance: **lock aim → set power
 Power sets both shot speed and elevation: ~0.4 is along the floor, ~0.85 finds
 the top corner, above ~0.92 goes over the bar.
 
-Career trainer confidence starts at 50%, gains 10% per goal, loses 5% for every
+Career trainer confidence starts at 70%, gains 10% per goal, loses 5% for every
 resolved non-goal opportunity, and loses 1% at each five-minute mark. Reaching
 zero during a match does not end the career: later goals can restore confidence.
-Only zero confidence at full time ends the career. Career Over is persisted
+At full time, wins add 5 confidence points, draws add 0, and losses subtract 5.
+A results screen shows the score, outcome, adjustment and animated confidence
+bar, then waits for Next. The adjustment is saved once and this screen resumes
+on reload. Only zero confidence after this adjustment ends the career: a win
+can rescue a player on zero, while a loss can trigger benching. The tenth-match
+victory check also happens after the adjustment and Next. Single matches keep
+their score-only ending, since trainer confidence belongs to career mode.
+`node tools/match-results.mjs` checks all outcomes, limits and reload behavior.
+Career Over is persisted
 until the player selects Next and enters Meta Upgrades.
 At that final whistle, an angry manager slides over the frozen overhead pitch
 with “You are benched!!”. After 3.8 seconds, Career Over appears. The result and
@@ -86,16 +94,28 @@ increases by $100 after every use in the current run: $100, $200, $300, and so o
 Career and Single Match open with an opponent preview: club name, kit-colored
 flag, and defense rating. The scoreboard tracks goals for and against in the
 current fixture; career goals remain separate for cash and Legacy Points.
+Careers face ten fixed clubs in order. Surviving match ten with confidence above
+zero wins the game; this is a survival campaign, not a requirement to win every
+scoreline. Zero confidence at the final whistle still means being benched.
+The victory summary and 20 LP per career goal are saved before showing the ending;
+reloading cannot award them twice. Next leads to meta upgrades. Existing careers
+adopt the fixed opponent for their current match; completed training checkpoints
+at match ten or later finish as victories if confidence remains positive.
+`node tools/career-victory.mjs` checks progression, endings and payout persistence.
+Localhost Alt+V previews the final-match result → Next → victory → Next → meta
+upgrades flow. It checkpoints an active career but uses sample results, without
+awarding LP or replacing saved progress. Also exposed as `__demo.previewVictory()`.
+
 Opponents accrue goal credit at a fixed 1% per played minute, starting at 50%.
 Each full credit awards a goal during the next overhead segment, pausing play
 for 1.8 seconds. Credit carries across career fixtures; scores reset at kickoff.
 Scores, credit, the goal pause, and pre-match screens are saved with the career.
 Conceding goals does not change trainer confidence or award cash.
 
-Defense rating rises from 25 toward 99 over a career using the match progression
-curve. Existing goalkeeper progression remains active; defender speed increases
-by up to 30%, reaction delay decreases by up to 45%, and shot-reading error
-decreases by up to 65%. This changes scoring difficulty and needs playtesting.
+Defense rating rises from 25 toward 88 over a career using the match progression
+curve. Goalkeeper progression remains active; defender speed increases
+by up to 25.5%, reaction delay decreases by up to 38.25%, and shot-reading error
+decreases by up to 55.25%. This changes scoring difficulty and needs playtesting.
 
 ## Layout
 
@@ -178,11 +198,14 @@ js/
   2/3, centre-backs 4/5, midfielders 6/8/10 and attackers 7/9/11. Back prints
   inherit the shirt's skin weights so they bend with running, kicking and diving.
   White digits have a dark outline for contrast across all kit palettes.
-- **Opponent and supporter colours change per match.** Five palettes cover
-  crimson, ivory, gold, forest and plum kits with contrasting goalkeeper colours.
+- **Opponent and supporter colours change per match.** Ten palettes cover
+  two solid, four striped, two hooped and two checkered kits with contrasting
+  goalkeeper colours. Patterns follow bind-space shirt vertices through animation;
+  materials and uniforms are prepared once, with no texture downloads. The home
+  kit stays blue. `node tools/teams-review.mjs` captures all ten designs.
   Crowd shirts, scarves and flags follow the opponent, mixed with home fans and
   neutral clothing. `run.opponentColors` and `run.crowdColorSeed` are chosen once
-  at kickoff; consecutive fixtures in a run avoid repeating a palette. Materials
+  at kickoff; career fixtures use a fixed club order and other modes draw random kits. Materials
   and crowd buffers are reused. `node tools/team-colors.mjs` checks all palettes,
   crowd variation and preservation of player skin, hair and home colours.
 - **Three pitch surfaces rotate between matches.** Emerald stripes, summer
@@ -400,6 +423,18 @@ and source/cycle durations are recorded in `assets/squad.json`.
 
 ### Difficulty
 
+First-time players take one assisted tutorial shot before reaching the menu:
+tap / Space locks aim, then a second tap sets power and shoots. The tutorial
+uses a central 10m chance, no blockers, a slow keeper starting off-center, and
+forgiving aim/power ranges. It awards no career currency. Completion is saved
+after the shot, including misses; interrupted tutorials restart on next load.
+Older saved records skip onboarding. Reset Progress also resets the tutorial.
+Alt+T replays the tutorial from any screen, checkpointing an active career first.
+After the shot, a congratulations screen waits for Next. It is restored on reload
+until acknowledged. Next restores any pending Career Over result; otherwise the menu opens.
+No additional image assets are needed. Tutorial assistance does not change
+normal match shooting or goalkeeper tuning.
+
 Keeper ability progresses continuously with distance, goals conceded in the
 current match and career run match number. `KEEPER_PROGRESS` tunes the curve;
 `shot.keeperAbility` exposes the profile captured at chance start. Higher skill
@@ -408,6 +443,14 @@ up dive extension and improves catches/parries. Improvements approach bounded
 limits; body size and collision radii do not grow. Match goals reset for the next
 fixture, while match-number progression continues until a new run.
 `node tools/keeper-progression.mjs` checks each progression axis and its limits.
+
+Career progression now uses .10 match pressure (previously .14), with opening
+keeper assistance fading out by match 6 instead of match 4. Career keeper skill
+approaches 90% of the previous elite profile. Defender progression uses a .10
+curve instead of .14 and caps at 85% of the previous added difficulty. These
+changes make the ramp slower and the ceiling easier; conversion rates need
+playtesting. Starting confidence is 70 for new careers; existing saves retain
+their current confidence.
 
 The table below predates the imported squad skeleton, dive animations and corrected goal,
 post and ball dimensions. These alter coverage, target size and collision

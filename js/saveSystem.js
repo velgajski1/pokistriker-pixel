@@ -6,6 +6,7 @@
 const KEY = 'benched.career.v1';
 
 const BLANK = () => ({
+  tutorialComplete: false,
   legacy: 0,
   lifetimeGoals: 0,
   bestRun: 0,      // most matches survived
@@ -21,6 +22,8 @@ export function load() {
     if (!raw) return fresh;
     const data = JSON.parse(raw);
     const out = { ...fresh, ...data, meta: { ...fresh.meta, ...(data.meta || {}) } };
+    // Records from before onboarding belong to returning players.
+    out.tutorialComplete = data.tutorialComplete === undefined ? true : data.tutorialComplete === true;
     for (const k of Object.keys(fresh.meta)) {
       out.meta[k] = Math.max(0, Math.min(5, out.meta[k] | 0));
     }

@@ -66,7 +66,7 @@ const BENCHED_PRESENTATION_SECONDS = 3.8;
 const CLUBS = [
   'Puddleford Rovers', 'Brickwall Athletic', 'Ironbridge United',
   'Northgate City', 'Kingsport FC', 'Redcastle Rangers',
-  'Stonehaven Athletic', 'Crownfield United',
+  'Stonehaven Athletic', 'Crownfield United', 'Silvercrest FC', 'Summit Champions',
 ];
 const DEFENDER_REACTION = { sadSpeed: .65, slowMin: .7, slowMax: 1.05 };
 
@@ -75,11 +75,11 @@ const ECONOMY = {
   BOOT_BONUS: 10,           // per Golden Boot level
   CHARM_BASE_COST: 100,
   CHARM_RESTORE: 10,
-  LEGACY_PER_GOAL: 10,
+  LEGACY_PER_GOAL: 20,
 };
 
 const MORALE = {
-  START: 50,
+  START: 70,
   BASE_MAX: 100,
   ON_GOAL: +10,
   ON_MISSED_CHANCE: -5,
@@ -206,7 +206,7 @@ const CHANCE_CALLS = [
 const state = {
   screen: 'MENU',      // MENU | CHARACTER | PREMATCH | MATCH | TRAINING | BENCHED | GAMEOVER
   phase: 'SIM',        // SIM | AIM | POWER | WINDUP | FLIGHT | ENEMY_GOAL
-  mode: 'career',      // career | single | practice
+  mode: 'career',      // career | single | practice | tutorial
   career: save.load(),
   characterSelection: null,
   run: null,
@@ -231,9 +231,9 @@ const blockers = [
 ];
 let blockerCount = 0;
 
-export const KEEPER_PROGRESS = { distanceScale: 30, perGoal: .24, perMatch: .14 };
+export const KEEPER_PROGRESS = { distanceScale: 30, perGoal: .24, perMatch: .10, careerSkillCap: .9 };
 const OPENING_KEEPER = {
-  fullStrengthMatch: 4, pressureScale: .5,
+  fullStrengthMatch: 6, pressureScale: .5,
   reactionDelay: .12, speedReduction: .3, readError: .35,
   heightError: .12, setSpread: .15, diveDelay: .08,
   catchReduction: 3, parryReduction: .15,
@@ -247,7 +247,7 @@ export function keeperAbility(distance, goals = 0, match = 1, career = true) {
     + Math.max(0, goals) * KEEPER_PROGRESS.perGoal
     + Math.max(0, match - 1) * KEEPER_PROGRESS.perMatch)
     * (1 - openingEase * (1 - OPENING_KEEPER.pressureScale));
-  const skill = 1 - Math.exp(-pressure);
+  const skill = (1 - Math.exp(-pressure)) * (career ? KEEPER_PROGRESS.careerSkillCap : 1);
   const blend = (base, elite) => base + (elite - base) * skill;
   return {
     skill, distance, goals, match, openingEase,
@@ -295,11 +295,10 @@ const sweepSpeed = () => SHOT.BASE_SWEEP * (1 - 0.12 * train('target')) * (1 - 0
   * aimDistanceMultiplier(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z));
 const speedScale = () => (1 + 0.06 * train('legday')) * (1 + 0.05 * meta('talent'));
 const goalPayout = () => ECONOMY.GOAL_PAYOUT + ECONOMY.BOOT_BONUS * meta('boot');
-const defenseStrength = () => 1 - Math.exp(-Math.max(0, (state.mode === 'career' ? state.run.match : 1) - 1) * .14);
+const defenseStrength = () => .85 * (1 - Math.exp(-Math.max(0, (state.mode === 'career' ? state.run.match : 1) - 1) * .10));
 function opponentProfile() {
-  const match = state.mode === 'career' ? state.run.match : 1;
   return {
-    name: CLUBS[(match - 1) % CLUBS.length],
+    name: CLUBS[state.run.opponentColors],
     rating: Math.round(25 + defenseStrength() * 74),
     color: `#${OPPONENT_COLORS[state.run.opponentColors].kit.toString(16).padStart(6, '0')}`,
   };
@@ -316,7 +315,7 @@ const fairChanceRate = () => FAIR_CHANCE.BASE_PER_MINUTE
 // ===========================================================================
 /** Save at lifecycle boundaries / navigation, never on every frame. */
 function checkpointCareer() {
-  if (state.mode !== 'career' || !state.run || !['MATCH', 'TRAINING', 'PREMATCH'].includes(state.screen)) return;
+  if (state.mode !== 'career' || !state.run || !['MATCH', 'TRAINING', 'PREMATCH', 'RESULTS'].includes(state.screen)) return;
   const pending = state.screen === 'MATCH' && ['AIM', 'POWER', 'WINDUP', 'FLIGHT'].includes(state.phase)
     && shot.resolved === null;
   state.career.activeRun = {
@@ -331,7 +330,7 @@ function checkpointCareer() {
 function careerCheckpoint() {
   const checkpoint = state.career.activeRun;
   const run = checkpoint?.run;
-  if (checkpoint?.version !== 1 || !['MATCH', 'TRAINING', 'PREMATCH'].includes(checkpoint.screen) || !run
+  if (checkpoint?.version !== 1 || !['MATCH', 'TRAINING', 'PREMATCH', 'RESULTS'].includes(checkpoint.screen) || !run
     || !CHARACTERS.some(character => character.id === run.characterId)) return null;
   if (!['match', 'cash', 'goals', 'matchGoals', 'chancesLeft'].every(key => Number.isSafeInteger(run[key]) && run[key] >= 0)
     || run.match < 1 || run.matchGoals > run.goals || run.chancesLeft > 10
@@ -353,6 +352,12 @@ function careerCheckpoint() {
     || !Number.isInteger(run.pitchSurface) || !engine.PITCH_SURFACES[run.pitchSurface]
     || !Number.isInteger(run.opponentColors) || !OPPONENT_COLORS[run.opponentColors]
     || !Number.isSafeInteger(run.crowdColorSeed) || run.crowdColorSeed < 0 || run.crowdColorSeed > 0xffffffff) return null;
+  if (checkpoint.screen === 'RESULTS') {
+    const result = run.matchResult;
+    const delta = run.matchGoals > run.enemyGoals ? 5 : run.matchGoals < run.enemyGoals ? -5 : 0;
+    if (!result || !Number.isFinite(result.before) || result.before < 0 || result.before > 125
+      || result.delta !== delta || result.after !== run.confidence || run.clock !== CLOCK.FULL_TIME) return null;
+  }
   const pending = checkpoint.pending;
   if (pending && (checkpoint.screen !== 'MATCH' || ![pending.x, pending.y, pending.z].every(Number.isFinite)
     || Math.abs(pending.x) > SPOT.MAX_LATERAL || pending.y !== GROUND_Y
@@ -372,6 +377,7 @@ function enterCareer() {
   state.run.enemyGoals ??= 0;
   state.run.enemyCredit ??= .5;
   state.run.enemyPause ??= 0;
+  state.run.opponentColors = Math.min(state.run.match, CLUBS.length) - 1;
   const character = CHARACTERS.find(player => player.id === state.run.characterId);
   engine.stopCelebration();
   engine.stopReactions();
@@ -386,7 +392,9 @@ function enterCareer() {
   engine.frameAmbient(true);
   ui.showPower(false);
   ui.setPrompt('');
+  if (state.screen === 'RESULTS') { renderMatchResult(); return; }
   if (state.screen === 'TRAINING' && state.run.confidence <= 0) { benched(); return; }
+  if (state.screen === 'TRAINING' && state.run.match >= CLUBS.length) { finishCareer(true); return; }
   if (state.screen === 'PREMATCH') { renderPrematch(); return; }
   if (state.screen === 'TRAINING') {
     ui.showHud(false);
@@ -449,7 +457,7 @@ function startRun(mode = 'career', characterId = null) {
     buildLine: '',
   };
   startMatch();
-  if (mode === 'practice') beginHighlight(false);
+  if (mode === 'practice' || mode === 'tutorial') beginHighlight(false);
 }
 
 function confidenceMaxForNewRun() {
@@ -457,26 +465,38 @@ function confidenceMaxForNewRun() {
 }
 
 export const OPPONENT_COLORS = [
-  { name: 'Crimson', kit: 0xc92f43, shorts: 0x20232b, socks: 0xc92f43, accent: 0xf4e8d2,
+  { name: 'Crimson', pattern: 'solid', kit: 0xc92f43, shorts: 0x20232b, socks: 0xc92f43, accent: 0xf4e8d2,
     keeper: { kit: 0xf2af32, shorts: 0x252b33, socks: 0xf2af32 } },
-  { name: 'Ivory', kit: 0xeee9db, shorts: 0x37333a, socks: 0xeee9db, accent: 0xb62e42,
+  { name: 'Ivory', pattern: 'stripes', kit: 0xeee9db, shorts: 0x37333a, socks: 0xeee9db, accent: 0xb62e42,
     keeper: { kit: 0xef8235, shorts: 0x27222d, socks: 0xef8235 } },
-  { name: 'Gold', kit: 0xf2c344, shorts: 0x28272b, socks: 0xf2c344, accent: 0x28272b,
+  { name: 'Gold', pattern: 'stripes', kit: 0xf2c344, shorts: 0x28272b, socks: 0xf2c344, accent: 0x28272b,
     keeper: { kit: 0xd35b9d, shorts: 0x302439, socks: 0xd35b9d } },
-  { name: 'Forest', kit: 0x268153, shorts: 0xece9db, socks: 0x268153, accent: 0xece9db,
+  { name: 'Forest', pattern: 'hoops', kit: 0x268153, shorts: 0xece9db, socks: 0x268153, accent: 0xece9db,
     keeper: { kit: 0xf28a36, shorts: 0x2a2630, socks: 0xf28a36 } },
-  { name: 'Plum', kit: 0x963966, shorts: 0xe8e3db, socks: 0x963966, accent: 0xe8e3db,
+  { name: 'Plum', pattern: 'solid', kit: 0x963966, shorts: 0xe8e3db, socks: 0x963966, accent: 0xe8e3db,
     keeper: { kit: 0xd8da4c, shorts: 0x292c32, socks: 0xd8da4c } },
+  { name: 'Redcastle', pattern: 'checks', kit: 0xc53039, shorts: 0xf2eee3, socks: 0xc53039, accent: 0xf2eee3,
+    keeper: { kit: 0x28ac9a, shorts: 0x163832, socks: 0x28ac9a } },
+  { name: 'Stone', pattern: 'stripes', kit: 0xe8e6df, shorts: 0x20242c, socks: 0xe8e6df, accent: 0x20242c,
+    keeper: { kit: 0xe88e30, shorts: 0x302638, socks: 0xe88e30 } },
+  { name: 'Crown', pattern: 'checks', kit: 0x672b87, shorts: 0x292036, socks: 0x672b87, accent: 0xe2b94b,
+    keeper: { kit: 0x55ad78, shorts: 0x1c3428, socks: 0x55ad78 } },
+  { name: 'Silver', pattern: 'hoops', kit: 0xd7e2e6, shorts: 0x194b50, socks: 0xd7e2e6, accent: 0x194b50,
+    keeper: { kit: 0xcf497b, shorts: 0x332338, socks: 0xcf497b } },
+  { name: 'Summit', pattern: 'stripes', kit: 0x222329, shorts: 0x222329, socks: 0xe5be58, accent: 0xe5be58,
+    keeper: { kit: 0xece5d7, shorts: 0x303639, socks: 0xece5d7 } },
 ];
 
 function startMatch() {
   const run = state.run;
+  run.matchResult = null;
   run.pitchSurface = Math.floor(Math.random() * engine.PITCH_SURFACES.length);
   engine.setPitchSurface(run.pitchSurface);
-  // Draw a different opponent palette for the next fixture in this run.
+  // Careers face the same ten clubs in order; other modes draw a random kit.
   const previousColors = run.opponentColors;
   let colors = Math.floor(Math.random() * (OPPONENT_COLORS.length - (previousColors === undefined ? 0 : 1)));
   if (previousColors !== undefined && colors >= previousColors) colors++;
+  if (state.mode === 'career') colors = Math.min(run.match, CLUBS.length) - 1;
   run.opponentColors = colors;
   run.crowdColorSeed = Math.floor(Math.random() * 0xffffffff);
   engine.setMatchColors(OPPONENT_COLORS[colors], run.crowdColorSeed);
@@ -499,7 +519,7 @@ function startMatch() {
   }
   run.schedule.sort((a, b) => a - b);
 
-  if (state.mode !== 'practice') { renderPrematch(); return; }
+  if (state.mode !== 'practice' && state.mode !== 'tutorial') { renderPrematch(); return; }
   kickOff();
 }
 
@@ -509,6 +529,7 @@ function renderPrematch() {
   ui.setDimmed(true);
   engine.frameAmbient();
   ui.showPrematch({ ...opponentProfile(), match: state.run.match,
+    totalMatches: state.mode === 'career' ? CLUBS.length : null,
     confidence: state.mode === 'career' ? state.run.confidence : null,
     confidenceMax: confidenceMax(),
     onPlay: kickOff, onMenu: renderMenu });
@@ -534,7 +555,32 @@ function endMatch() {
   const run = state.run;
   if (state.mode === 'single') return finishSingleMatch();
 
+  const before = run.confidence;
+  const delta = run.matchGoals > run.enemyGoals ? 5 : run.matchGoals < run.enemyGoals ? -5 : 0;
+  adjustConfidence(delta);
+  run.matchResult = { before, delta, after: run.confidence };
+  renderMatchResult();
+}
+
+function renderMatchResult() {
+  const run = state.run;
+  state.screen = 'RESULTS';
+  ui.showHud(false);
+  ui.showPower(false);
+  ui.setPrompt('');
+  ui.setDimmed(true);
+  checkpointCareer();
+  ui.showMatchResult({ match: run.match, opponent: opponentProfile().name,
+    goals: run.matchGoals, enemyGoals: run.enemyGoals,
+    ...run.matchResult, confidenceMax: confidenceMax(), onNext: continueAfterMatch });
+}
+
+function continueAfterMatch() {
+  if (state.screen !== 'RESULTS') return;
+  const run = state.run;
+
   if (run.confidence <= 0) return benched();
+  if (state.mode === 'career' && run.match >= CLUBS.length) return finishCareer(true);
 
   state.screen = 'TRAINING';
   ui.showHud(false);
@@ -544,6 +590,10 @@ function endMatch() {
 
 function benched() {
   if (state.mode !== 'career') return finishSingleMatch();
+  finishCareer(false);
+}
+
+function finishCareer(won) {
   const run = state.run;
   const earned = run.goals * ECONOMY.LEGACY_PER_GOAL;
   const matches = run.match;
@@ -554,10 +604,11 @@ function benched() {
   state.career.runs += 1;
   state.career.bestRun = Math.max(state.career.bestRun, run.match);
   delete state.career.activeRun;
-  state.career.gameOver = { version: 1, matches, goals: run.goals, earned, isBest };
+  state.career.gameOver = { version: 1, matches, goals: run.goals, earned, isBest, won };
   save.save(state.career);
 
-  showBenchedPresentation(state.career.gameOver);
+  if (won) showCareerGameOver(state.career.gameOver);
+  else showBenchedPresentation(state.career.gameOver);
 }
 
 function showBenchedPresentation(summary, preview = false) {
@@ -580,7 +631,7 @@ function showCareerGameOver(summary, preview = false) {
   ui.showHud(false);
   ui.setDimmed(true);
   ui.showGameOver({
-    ...summary, rate: ECONOMY.LEGACY_PER_GOAL,
+    ...summary, rate: summary.goals > 0 ? summary.earned / summary.goals : ECONOMY.LEGACY_PER_GOAL,
     onNext: () => {
       if (!preview) {
         delete state.career.gameOver;
@@ -595,7 +646,10 @@ function careerGameOver() {
   const summary = state.career.gameOver;
   if (!summary || summary.version !== 1 || !Number.isSafeInteger(summary.matches) || summary.matches < 1
     || !Number.isSafeInteger(summary.goals) || summary.goals < 0
-    || summary.earned !== summary.goals * ECONOMY.LEGACY_PER_GOAL
+    // Keep already-paid results from the previous 10 LP rate resumable.
+    || (summary.earned !== summary.goals * ECONOMY.LEGACY_PER_GOAL && summary.earned !== summary.goals * 10)
+    || (summary.won !== undefined && typeof summary.won !== 'boolean')
+    || (summary.won === true && summary.matches < CLUBS.length)
     || typeof summary.isBest !== 'boolean') return null;
   return summary;
 }
@@ -719,6 +773,13 @@ export function chooseChanceOrigin(target, random = Math.random) {
 }
 
 function prepareChance() {
+  if (state.mode === 'tutorial') {
+    origin.x = 0;
+    origin.y = GROUND_Y;
+    origin.z = GOAL.PLANE_Z + 10;
+    blockerCount = 0;
+    return;
+  }
   chooseChanceOrigin(origin);
   const range = origin.z - GOAL.PLANE_Z;
 
@@ -770,6 +831,15 @@ function beginHighlight(soft, restored = false) {
     run.matchGoals, run.match, state.mode === 'career');
   shot.defenseStrength = defenseStrength();
   shot.keeperSetX = narrow + (Math.random() * 2 - 1) * shot.keeperAbility.setSpread;
+  if (state.mode === 'tutorial') {
+    shot.power = .35;
+    shot.keeperSetX = -3;
+    shot.keeperAbility.reaction = 3;
+    shot.keeperAbility.diveSpeed = .5;
+    shot.keeperAbility.setSpeed = .2;
+    shot.keeperAbility.catchSpeed = 0;
+    shot.keeperAbility.parryBias = 0;
+  }
   shot.keeperX = shot.keeperSetX;
   shot.keeperDive = 0;
   shot.keeperSide = 1;
@@ -779,24 +849,30 @@ function beginHighlight(soft, restored = false) {
   engine.faceStrikerForSelection();
 
   state.phase = 'AIM';
-  ui.setPrompt('Tap / Space to lock aim');
+  ui.setPrompt(state.mode === 'tutorial' ? '1 / 2 · Tap / Space to lock the arrow toward goal' : 'Tap / Space to lock aim');
+  if (state.mode === 'tutorial') ui.setTicker(0, 'One practice shot! Aim and power are assisted while you learn.');
   queueMicrotask(checkpointCareer);
 }
 
 /** Keeps the arena alive while the clock is frozen and you are aiming. */
 function updateAim(dt) {
   // Triangle sweep across the goalmouth, delta-scaled.
-  shot.aimX += shot.sweepDir * sweepSpeed() * dt;
-  if (shot.aimX > SHOT.AIM_SPAN)  { shot.aimX = 2 * SHOT.AIM_SPAN - shot.aimX; shot.sweepDir = -1; }
-  if (shot.aimX < -SHOT.AIM_SPAN) { shot.aimX = -2 * SHOT.AIM_SPAN - shot.aimX; shot.sweepDir = 1; }
+  const tutorial = state.mode === 'tutorial';
+  const span = tutorial ? 1.5 : SHOT.AIM_SPAN;
+  shot.aimX += shot.sweepDir * (tutorial ? 1.2 : sweepSpeed()) * dt;
+  if (shot.aimX > span)  { shot.aimX = 2 * span - shot.aimX; shot.sweepDir = -1; }
+  if (shot.aimX < -span) { shot.aimX = -2 * span - shot.aimX; shot.sweepDir = 1; }
   shot.theta = aimAngleFor(origin, shot.aimX);
   engine.setAim(shot.theta);
 }
 
 function updatePower(dt) {
-  shot.power += shot.powerDir * SHOT.POWER_CYCLE * dt;
-  if (shot.power > 1) { shot.power = 1; shot.powerDir = -1; }
-  if (shot.power < 0) { shot.power = 0; shot.powerDir = 1; }
+  const tutorial = state.mode === 'tutorial';
+  const minimum = tutorial ? .2 : 0;
+  const maximum = tutorial ? .55 : 1;
+  shot.power += shot.powerDir * (tutorial ? .3 : SHOT.POWER_CYCLE) * dt;
+  if (shot.power > maximum) { shot.power = maximum; shot.powerDir = -1; }
+  if (shot.power < minimum) { shot.power = minimum; shot.powerDir = 1; }
   ui.setPower(shot.power);
 
   // Preview where this power lands on the goal plane.
@@ -812,7 +888,7 @@ function advance() {
     state.phase = 'POWER';
     engine.showAimRig(true, true);
     ui.showPower(true);
-    ui.setPrompt('Tap / Space to set power');
+    ui.setPrompt(state.mode === 'tutorial' ? '2 / 2 · Tap / Space again to set power and shoot!' : 'Tap / Space to set power');
     return;
   }
   if (state.phase === 'POWER') {
@@ -1010,7 +1086,7 @@ export function substep(h) {
     shot.keeperDelay -= h;
     // Short grounded side steps set his feet before committing to the leap.
     const gap = shot.keeperTarget - shot.keeperX;
-    const step = 1.8 * h;
+    const step = (state.mode === 'tutorial' ? .2 : 1.8) * h;
     shot.keeperX += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
   } else if (!shot.keeperLaunched && shot.flightTime < shot.keeperJumpAt) {
     const gap = shot.keeperTarget - shot.keeperX;
@@ -1348,6 +1424,14 @@ function finishChance() {
   engine.stopCelebration();
   engine.stopReactions();
 
+  if (state.mode === 'tutorial') {
+    state.career.tutorialComplete = true;
+    state.career.tutorialResultPending = true;
+    save.save(state.career);
+    showTutorialComplete();
+    return;
+  }
+
   if (state.mode === 'practice') {
     ui.showPower(false);
     beginHighlight(false);
@@ -1370,6 +1454,24 @@ function finishChance() {
 // ===========================================================================
 // Screens
 // ===========================================================================
+function showTutorialComplete() {
+  state.screen = 'TUTORIAL_COMPLETE';
+  state.mode = 'tutorial';
+  engine.setAnimationsPaused(false);
+  engine.frameAmbient(true);
+  ui.showHud(false);
+  ui.showPower(false);
+  ui.setPrompt('');
+  ui.setDimmed(true);
+  ui.showTutorialComplete(() => {
+    delete state.career.tutorialResultPending;
+    save.save(state.career);
+    const pending = careerGameOver();
+    if (pending) showCareerGameOver(pending);
+    else renderMenu();
+  });
+}
+
 function renderCharacterSelection() {
   state.screen = 'CHARACTER';
   state.run = null;
@@ -1395,6 +1497,7 @@ function renderCharacterSelection() {
 }
 
 function renderMenu() {
+  if (!state.career.tutorialComplete) { startRun('tutorial'); return; }
   checkpointCareer();
   state.screen = 'MENU';
   state.run = null;
@@ -1412,7 +1515,7 @@ function renderMenu() {
   ui.showMainMenu({
     onCareer: enterCareer,
     resume: checkpoint ? `${character.name} · Match ${checkpoint.run.match}` : null,
-    hasProgress: !!checkpoint || !!state.career.characterId
+    hasProgress: state.career.tutorialComplete || !!checkpoint || !!state.career.characterId
       || state.career.legacy > 0 || state.career.runs > 0
       || state.career.bestRun > 0 || state.career.lifetimeGoals > 0
       || META.some(({ key }) => state.career.meta[key] > 0),
@@ -1532,11 +1635,36 @@ function showUpgradeScreen(screen) {
   }
 }
 
+function previewVictory() {
+  if (!upgradeShortcutsEnabled) return;
+  checkpointCareer();
+  state.screen = 'VICTORY_PREVIEW';
+  state.benchPresentation = null;
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.setAnimationsPaused(false);
+  engine.frameAmbient(true);
+  ui.showHud(false);
+  ui.showPower(false);
+  ui.setPrompt('');
+  ui.setDimmed(true);
+  // Sample results only: do not replace the run or award/save preview LP.
+  ui.showMatchResult({ match: CLUBS.length, opponent: CLUBS[CLUBS.length - 1],
+    goals: 2, enemyGoals: 1, before: 50, delta: 5, after: 55, confidenceMax: 100,
+    onNext: () => showCareerGameOver({ version: 1, matches: CLUBS.length,
+      goals: 10, earned: 10 * ECONOMY.LEGACY_PER_GOAL, isBest: true, won: true }, true),
+  });
+}
+
 function previewGameOver() {
   if (!upgradeShortcutsEnabled) return;
   checkpointCareer();
   const pending = careerGameOver();
-  if (pending) { showBenchedPresentation(pending); return; }
+  if (pending) {
+    if (pending.won) showCareerGameOver(pending);
+    else showBenchedPresentation(pending);
+    return;
+  }
   const goals = state.run?.goals ?? 3;
   showBenchedPresentation({
     version: 1,
@@ -1594,7 +1722,7 @@ async function boot() {
     crowd: engine.crowd, formation: engine.formation,
     matchView: engine.matchView,
     dimensions: { goal: GOAL, pitch: PITCH, ballRadius: BALL_R },
-    showUpgradeScreen, previewGameOver, characters: CHARACTERS,
+    showUpgradeScreen, previewGameOver, previewVictory, characters: CHARACTERS,
   };
   await Promise.all([engine.loadStriker(), engine.loadBall(),
     ui.preloadMenuAssets(CHARACTERS.map(character => character.portrait))]);
@@ -1615,11 +1743,31 @@ async function boot() {
   });
   addEventListener('keydown', (e) => {
     if (!window.__demo.ready) return;
+    if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyV') {
+      if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      e.preventDefault();
+      if (!e.repeat) previewVictory();
+      return;
+    }
+    if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyT') {
+      if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      e.preventDefault();
+      if (!e.repeat) {
+        checkpointCareer();
+        state.benchPresentation = null;
+        startRun('tutorial');
+      }
+      return;
+    }
     if (state.screen === 'BENCHED') {
       if (!e.ctrlKey && !e.metaKey && [' ', 'Enter', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
       return;
     }
     if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (state.mode === 'tutorial' && (e.code === 'Escape' || e.altKey)) {
+      if (!e.ctrlKey && !e.metaKey) e.preventDefault();
+      return;
+    }
     if (!e.altKey && !e.ctrlKey && !e.metaKey && !e.repeat && state.screen !== 'MATCH') {
       if (e.code === 'ArrowLeft' || e.code === 'ArrowRight'
         || (ui.isMainMenu() && (e.code === 'ArrowUp' || e.code === 'ArrowDown'))) {
@@ -1637,7 +1785,7 @@ async function boot() {
     }
     if (e.code === 'Escape') {
       e.preventDefault();
-      if (state.screen !== 'GAMEOVER' || state.mode !== 'career') renderMenu();
+      if (state.screen !== 'RESULTS' && (state.screen !== 'GAMEOVER' || state.mode !== 'career')) renderMenu();
       return;
     }
     if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyG') {
@@ -1656,9 +1804,10 @@ async function boot() {
   });
 
   const pendingGameOver = careerGameOver();
-  if (pendingGameOver) showCareerGameOver(pendingGameOver);
+  if (state.career.tutorialResultPending === true) showTutorialComplete();
+  else if (pendingGameOver) showCareerGameOver(pendingGameOver);
+  else if (careerCheckpoint()?.screen === 'RESULTS') enterCareer();
   else renderMenu();
-  ui.setMatchExit(renderMenu);
   await new Promise(resolve => {
     const afterRender = engine.scene.onAfterRender;
     engine.scene.onAfterRender = function (...args) {

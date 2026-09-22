@@ -159,6 +159,11 @@ export function setDimmed(on) { el.dim.classList.toggle('clear', !on); }
 export function showHud(on) { el.hud.classList.toggle('hidden', !on); }
 
 export function setScore(match, clock, goals, mode = 'career', enemyGoals = 0) {
+  if (mode === 'tutorial') {
+    el.left.textContent = 'LEARN TO SHOOT';
+    el.right.textContent = 'ONE PRACTICE SHOT';
+    return;
+  }
   el.left.textContent = mode === 'practice' ? 'TRAINING | UNLIMITED SHOTS'
     : `${mode === 'single' ? 'SINGLE MATCH' : `MATCH ${match}`} | CLOCK: ${clock}'`;
   el.right.textContent = mode === 'practice' ? `GOALS: ${goals}` : `YOU ${goals} : ${enemyGoals} OPPONENT`;
@@ -359,10 +364,6 @@ function action(text, callback, className = '') {
   return button;
 }
 
-export function setMatchExit(onMenu) {
-  el.hud.appendChild(action('Main Menu', onMenu, 'match-exit'));
-}
-
 export function showMainMenu(vm) {
   const p = panel();
   p.classList.add('upgrade-panel', 'main-menu');
@@ -440,6 +441,48 @@ export function showConfirmation(title, description, onConfirm, onCancel) {
   cancel.focus();
 }
 
+export function showTutorialComplete(onNext) {
+  const p = panel();
+  p.classList.add('upgrade-panel', 'compact-panel', 'center');
+  const message = document.createElement('p');
+  message.textContent = 'Congratulations! You’re ready to take your skills onto the pitch.';
+  const foot = document.createElement('div');
+  foot.className = 'foot';
+  const next = action('Next', onNext, 'accent big');
+  foot.append(next);
+  p.append(header('TUTORIAL COMPLETE', 'NICE WORK, STRIKER!'), divider(), message, foot);
+  mount(p);
+  next.focus();
+}
+
+export function showMatchResult(vm) {
+  const p = panel();
+  p.classList.add('upgrade-panel', 'compact-panel', 'match-result-panel', 'center');
+  const outcome = vm.delta > 0 ? 'VICTORY' : vm.delta < 0 ? 'DEFEAT' : 'DRAW';
+  p.dataset.outcome = outcome.toLowerCase();
+  const opponent = document.createElement('p');
+  opponent.className = 'sub';
+  opponent.textContent = `YOUR TEAM vs ${vm.opponent}`;
+  const score = document.createElement('p');
+  score.className = 'result-score';
+  score.textContent = `${vm.goals} : ${vm.enemyGoals}`;
+  const change = document.createElement('p');
+  change.className = 'match-confidence-change';
+  change.textContent = `${vm.delta > 0 ? '+' : ''}${vm.delta} trainer confidence · ${vm.delta > 0 ? 'Win bonus' : vm.delta < 0 ? 'Loss penalty' : 'No change for a draw'}`;
+  const values = document.createElement('p');
+  values.className = 'sub';
+  values.textContent = `${Math.round(vm.before)}% → ${Math.round(vm.after)}%${vm.after - vm.before !== vm.delta ? ' (confidence limit reached)' : ''}`;
+  const meter = confidenceMeter(vm.before, vm.confidenceMax, 'prematch-confidence');
+  const foot = document.createElement('div');
+  foot.className = 'foot';
+  foot.append(action('Next', vm.onNext, 'accent big'));
+  p.append(header(outcome, `MATCH ${vm.match} · FULL TIME`), opponent, score, divider(), change, values, meter.root, foot);
+  mount(p);
+  requestAnimationFrame(() => {
+    if (meter.root.isConnected) updateConfidenceMeter(meter, vm.after, vm.confidenceMax);
+  });
+}
+
 export function showSingleResult(vm) {
   const p = panel();
   p.classList.add('upgrade-panel', 'compact-panel', 'center');
@@ -472,9 +515,13 @@ export function showPrematch(vm) {
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.append(action('Back', vm.onMenu), action('Kick Off', vm.onPlay, 'accent big'));
-  p.append(header(`MATCH ${vm.match}`, 'YOUR OPPONENT'), flag, name, defense, detail);
+  p.append(header(`MATCH ${vm.match}${vm.totalMatches ? ` / ${vm.totalMatches}` : ''}`, 'YOUR OPPONENT'), flag, name, defense, detail);
   if (vm.confidence != null) {
     p.append(confidenceMeter(vm.confidence, vm.confidenceMax, 'prematch-confidence').root);
+    const warning = document.createElement('p');
+    warning.className = 'sub';
+    warning.textContent = 'If trainer confidence is 0% at full time, you are benched. Career over!';
+    p.append(warning);
   }
   p.append(foot);
   mount(p);
@@ -610,7 +657,8 @@ export function showBenched() {
 export function showGameOver(vm) {
   const p = panel();
   p.className = 'panel upgrade-panel compact-panel game-over-panel center';
-  p.append(header('CAREER OVER', 'TRAINER CONFIDENCE HIT ZERO'), divider());
+  p.append(header(vm.won ? 'YOU BEAT THE GAME!' : 'CAREER OVER',
+    vm.won ? 'ALL 10 OPPONENTS FACED · STILL IN THE TEAM' : 'TRAINER CONFIDENCE HIT ZERO'), divider());
 
   const image = document.createElement('img');
   image.className = 'game-over-image';
@@ -627,7 +675,13 @@ export function showGameOver(vm) {
   `;
   const content = document.createElement('div');
   content.className = 'game-over-content';
-  content.append(image, body);
+  if (vm.won) {
+    const emblem = document.createElement('div');
+    emblem.className = 'career-victory-emblem';
+    emblem.setAttribute('aria-label', 'Champion');
+    emblem.textContent = '★';
+    content.append(emblem, body);
+  } else content.append(image, body);
   p.append(content, divider());
 
   const foot = document.createElement('div');

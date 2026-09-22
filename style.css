@@ -20,6 +20,21 @@ html,body{
 
 /* The single utility visibility flag. */
 .hidden{display:none !important}
+.career-victory-emblem{display:grid;place-items:center;align-self:center;color:#d6ff3f;font:900 clamp(64px,13vh,150px)/1 Arial,sans-serif;text-shadow:0 4px 0 #566828,0 0 28px #d6ff3f40;padding:16px}
+.match-result-panel .result-score{font-size:clamp(32px,8vh,64px);line-height:1.1;margin:10px 0}
+.match-confidence-change{font-weight:700;color:var(--ink)}
+.match-result-panel[data-outcome="victory"] .match-confidence-change{color:var(--good)}
+.match-result-panel[data-outcome="defeat"] .match-confidence-change{color:var(--warn)}
+@media(max-height:480px){
+  .match-result-panel.upgrade-panel{padding:10px 20px;max-height:calc(100dvh - 12px);overflow-y:auto}
+  .match-result-panel h1{font-size:26px;margin:0}
+  .match-result-panel h1 small{margin-top:3px;font-size:9px}
+  .match-result-panel .sub{font-size:10px;margin-top:4px}
+  .match-result-panel .rule{margin:6px 0}
+  .match-result-panel .prematch-confidence{margin:6px auto}
+  .match-result-panel .foot{margin-top:6px}
+  .match-confidence-change{font-size:12px}
+}
 
 /* Full-time benching plays over the frozen overhead pitch. */
 #overlay.benched-overlay[data-theme],#overlay.benched-overlay{
@@ -55,7 +70,13 @@ html,body{
   .benched-message{max-width:92vw;text-align:center}
   .benched-message strong{font-size:clamp(28px,8vw,46px)}
 }
-@media(prefers-reduced-motion:reduce){.benched-manager,.benched-message{animation:none}}
+/* Keep the requested entrance visible with reduced motion, without rocking or bouncing. */
+@keyframes manager-slide{from{transform:translateX(-100vw)}to{transform:translateX(0)}}
+@keyframes benched-fade{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){
+  .benched-manager{animation:manager-slide 1.35s .15s cubic-bezier(.35,0,.2,1) both}
+  .benched-message{animation:benched-fade .6s .95s ease-out both}
+}
 
 /* Present in the initial HTML, covering scene construction and asset loading. */
 body.loading>:not(#preloader){visibility:hidden}

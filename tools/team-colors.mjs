@@ -30,7 +30,8 @@ try {
     return rows;
   });
   assert(results.every(r => r.correct && r.buffersReused), 'Team colours incorrect or instance buffers recreated');
-  assert(new Set(results.map(r => r.crowdChecksum)).size === 5, 'Crowd colours did not vary with each palette');
+  assert(results.length === 10, 'Expected ten opponents');
+  assert(new Set(results.map(r => r.crowdChecksum)).size === 10, 'Crowd colours did not vary with each palette');
   assert(!errors.length, errors.join('\n'));
   console.log(JSON.stringify(results, null, 2));
 } finally {
