@@ -6,7 +6,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $releaseFiles = @(
   'index.html', 'style.css',
   'js/app.js', 'js/gameEngine.js', 'js/physics.js',
-  'js/uiManager.js', 'js/saveSystem.js',
+  'js/uiManager.js', 'js/saveSystem.js', 'js/audio.js',
   'assets/squad.glb', 'assets/squad.json', 'assets/ball.glb',
   'assets/ui/bg/shooting-goal.webp',
   'assets/ui/hud/confidence-frame.png',
@@ -22,6 +22,10 @@ $releaseFiles = @(
 foreach ($portrait in @('barry', 'lars', 'nico', 'ravi', 'milo', 'felix', 'theo', 'kai')) {
   $releaseFiles += "assets/portraits/$portrait.webp"
 }
+foreach ($sound in @('tick_001', 'click_001', 'back_001', 'select_001', 'confirmation_001', 'confirmation_002', 'error_001')) {
+  $releaseFiles += "assets/audio/ui/$sound.ogg"
+}
+$releaseFiles += 'assets/audio/ui/License.txt'
 foreach ($icon in @('boot', 'charm', 'icebath', 'legday', 'pet', 'poacher', 'star', 'subnet', 'talent', 'target', 'veins')) {
   $releaseFiles += "assets/ui/icons/$icon.webp"
 }

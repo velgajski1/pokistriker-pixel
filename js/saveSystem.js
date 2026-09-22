@@ -4,6 +4,18 @@
  */
 
 const KEY = 'benched.career.v1';
+const AUDIO_KEY = 'benched.audio.v1';
+
+export function loadAudio() {
+  let data;
+  try { data = JSON.parse(localStorage.getItem(AUDIO_KEY)); } catch { /* defaults */ }
+  const volume = (value, fallback) => Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback;
+  return { music: volume(data?.music, .3), sfx: volume(data?.sfx, .65) };
+}
+
+export function saveAudio(settings) {
+  try { localStorage.setItem(AUDIO_KEY, JSON.stringify(settings)); } catch { /* optional */ }
+}
 
 const BLANK = () => ({
   tutorialComplete: false,
@@ -43,6 +55,10 @@ export function save(career) {
 }
 
 export function wipe() {
-  try { localStorage.removeItem(KEY); } catch { /* nothing to do */ }
-  return BLANK();
+  // Reset career progress, not first-play onboarding. Persist the fresh record
+  // so a reload also remembers that the tutorial was already completed.
+  const fresh = BLANK();
+  fresh.tutorialComplete = load().tutorialComplete;
+  save(fresh);
+  return fresh;
 }

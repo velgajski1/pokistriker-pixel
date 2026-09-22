@@ -4,6 +4,7 @@ const { browser, page, errors } = await open();
 try {
   const report = await page.evaluate(async () => {
     const e = await import('/js/gameEngine.js'), d = __demo;
+    d.renderer.setAnimationLoop(null);
     e.parade(2, 1); e.setAnimationsPaused(true);
     const p = d.players[2], a = p.rig.avatar;
     const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 840;
@@ -28,6 +29,12 @@ try {
   });
   writeFileSync('.captures/sad-walk-upper-body.png', Buffer.from(report.image.split(',')[1], 'base64'));
   assert(report.measures.every(m => Number.isFinite(m.width) && m.headClearance > .1), 'Compressed or invalid upper-body pose');
+  const walking = report.measures.filter(m => m.name === 'walk');
+  const averageWidth = walking.reduce((sum, m) => sum + m.width, 0) / walking.length;
+  const averageClearance = walking.reduce((sum, m) => sum + m.headClearance, 0) / walking.length;
+  assert(report.measures.filter(m => m.name === 'react_walk_sad').every(m =>
+    Math.abs(m.width - averageWidth) < averageWidth * .04
+    && Math.abs(m.headClearance - averageClearance) < .025), 'Sad walk distorts the neck/shoulder silhouette');
   assert(!errors.length, errors.join('\n'));
   console.log(JSON.stringify(report.measures, null, 2));
 } finally { await browser.close(); }

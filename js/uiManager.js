@@ -8,6 +8,48 @@
 
 const $ = (id) => document.getElementById(id);
 
+export function initAudioControls(settings, onChange, onSound) {
+  const controls = document.createElement('details');
+  controls.className = 'audio-controls';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Sound';
+  controls.append(summary);
+  for (const key of ['music', 'sfx']) {
+    const label = document.createElement('label');
+    const title = document.createElement('span');
+    title.textContent = key === 'music' ? 'Music' : 'Sound effects';
+    const input = document.createElement('input');
+    input.type = 'range'; input.min = '0'; input.max = '100'; input.step = '1';
+    input.value = String(Math.round(settings[key] * 100));
+    input.setAttribute('aria-label', title.textContent + ' volume');
+    const output = document.createElement('output');
+    output.textContent = input.value + '%';
+    input.oninput = () => {
+      output.textContent = input.value + '%';
+      onChange(key, Number(input.value) / 100);
+    };
+    input.onchange = () => onSound('click');
+    label.append(title, input, output); controls.append(label);
+  }
+  for (const event of ['pointerdown', 'click', 'keydown']) controls.addEventListener(event, e => e.stopPropagation());
+  document.body.append(controls);
+  document.addEventListener('pointerover', e => {
+    const button = e.target.closest('button');
+    if (button && !button.contains(e.relatedTarget)) onSound('hover');
+  });
+  document.addEventListener('focusin', e => { if (e.target.closest('button')) onSound('hover'); });
+  document.addEventListener('pointerdown', e => {
+    if (e.target.closest('button:disabled')) onSound('unavailable');
+  }, true);
+  document.addEventListener('click', e => {
+    const button = e.target.closest('button');
+    if (!button) return;
+    onSound(button.disabled || button.getAttribute('aria-disabled') === 'true' ? 'unavailable'
+      : /back/i.test(button.textContent) ? 'back' : button.classList.contains('character-card') ? 'select'
+      : /^(play|next|confirm|kick off)/i.test(button.textContent.trim()) ? 'confirm' : 'click');
+  }, true);
+}
+
 const el = {
   dim: null, hud: null, left: null, right: null,
   ticker: null, powerWrap: null, powerBar: null, powerFill: null,
@@ -158,7 +200,7 @@ export function setDimmed(on) { el.dim.classList.toggle('clear', !on); }
 
 export function showHud(on) { el.hud.classList.toggle('hidden', !on); }
 
-export function setScore(match, clock, goals, mode = 'career', enemyGoals = 0) {
+export function setScore(match, clock, goals, mode = 'career', enemyGoals = 0, homeClub = '', opponent = '') {
   if (mode === 'tutorial') {
     el.left.textContent = 'LEARN TO SHOOT';
     el.right.textContent = 'ONE PRACTICE SHOT';
@@ -166,7 +208,7 @@ export function setScore(match, clock, goals, mode = 'career', enemyGoals = 0) {
   }
   el.left.textContent = mode === 'practice' ? 'TRAINING | UNLIMITED SHOTS'
     : `${mode === 'single' ? 'SINGLE MATCH' : `MATCH ${match}`} | CLOCK: ${clock}'`;
-  el.right.textContent = mode === 'practice' ? `GOALS: ${goals}` : `YOU ${goals} : ${enemyGoals} OPPONENT`;
+  el.right.textContent = mode === 'practice' ? `GOALS: ${goals}` : `${homeClub} ${goals} : ${enemyGoals} ${opponent}`;
 }
 
 export function setConfidence(value, max, mode = 'career') {
@@ -462,7 +504,7 @@ export function showMatchResult(vm) {
   p.dataset.outcome = outcome.toLowerCase();
   const opponent = document.createElement('p');
   opponent.className = 'sub';
-  opponent.textContent = `YOUR TEAM vs ${vm.opponent}`;
+  opponent.textContent = `${vm.homeClub} vs ${vm.opponent}`;
   const score = document.createElement('p');
   score.className = 'result-score';
   score.textContent = `${vm.goals} : ${vm.enemyGoals}`;
@@ -492,7 +534,7 @@ export function showSingleResult(vm) {
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.append(action('Main Menu', vm.onMenu), action('Play Again', vm.onReplay, 'accent'));
-  p.append(header('FULL TIME', vm.goals > vm.enemyGoals ? 'VICTORY' : vm.goals < vm.enemyGoals ? 'DEFEAT' : 'DRAW'), score, foot);
+  p.append(header('FULL TIME', `${vm.homeClub} vs ${vm.opponent} · ${vm.goals > vm.enemyGoals ? 'VICTORY' : vm.goals < vm.enemyGoals ? 'DEFEAT' : 'DRAW'}`), score, foot);
   mount(p);
 }
 
@@ -520,20 +562,20 @@ export function showPrematch(vm) {
     p.append(confidenceMeter(vm.confidence, vm.confidenceMax, 'prematch-confidence').root);
     const warning = document.createElement('p');
     warning.className = 'sub';
-    warning.textContent = 'If trainer confidence is 0% at full time, you are benched. Career over!';
+    warning.textContent = 'If trainer confidence is 0% at full time, you are benched and your season ends. Train over summer and come back stronger!';
     p.append(warning);
   }
   p.append(foot);
   mount(p);
 }
 
-/** MAIN MENU - lifetime Legacy Point spending. */
+/** SUMMER BREAK - permanent training paid for with Legacy Points. */
 export function showMenu(vm) {
   const p = panel();
   p.classList.add('upgrade-panel', 'clean-upgrades');
   const head = document.createElement('div');
   head.className = 'center';
-  head.append(header('META UPGRADES'));
+  head.append(header('SUMMER BREAK', 'Train for next season · Improvements stay with you'));
   p.append(head, divider());
 
   const row = document.createElement('div');
@@ -545,7 +587,7 @@ export function showMenu(vm) {
   // Balances are outside the upgrade panel, separate from the cards.
 
   const h2 = document.createElement('h2');
-  h2.textContent = 'Permanent Upgrades';
+  h2.textContent = 'Summer Training';
   const upgrades = document.createElement('div');
   upgrades.className = 'upgrade-grid';
   for (const r of vm.rows) upgrades.appendChild(statRow(r));
@@ -556,7 +598,7 @@ export function showMenu(vm) {
   foot.className = 'foot';
   const start = document.createElement('button');
   start.className = 'accent big';
-  start.textContent = 'Play Match >';
+  start.textContent = 'Next Season';
   start.addEventListener('click', vm.onStart);
   foot.append(action('Main Menu', vm.onMenu), start);
   p.appendChild(foot);
@@ -577,7 +619,7 @@ export function showTraining(vm) {
   p.classList.add('upgrade-panel', 'training-panel', 'clean-upgrades');
   const head = document.createElement('div');
   head.className = 'center';
-  head.append(header('MATCH UPGRADES', `FULL TIME: YOU ${vm.matchGoals} : ${vm.enemyGoals} OPPONENT`));
+  head.append(header('MATCH UPGRADES', `FULL TIME: ${vm.homeClub} ${vm.matchGoals} : ${vm.enemyGoals} ${vm.opponent}`));
   p.append(head, divider());
 
   const summary = document.createElement('div');
@@ -653,12 +695,12 @@ export function showBenched() {
   el.overlay.classList.remove('hidden');
 }
 
-/** BENCHED - run over, goals convert to Legacy Points. */
+/** Season summary - goals fund permanent summer training. */
 export function showGameOver(vm) {
   const p = panel();
   p.className = 'panel upgrade-panel compact-panel game-over-panel center';
-  p.append(header(vm.won ? 'YOU BEAT THE GAME!' : 'CAREER OVER',
-    vm.won ? 'ALL 10 OPPONENTS FACED · STILL IN THE TEAM' : 'TRAINER CONFIDENCE HIT ZERO'), divider());
+  p.append(header(vm.won ? 'YOU BEAT THE GAME!' : 'SEASON OVER',
+    vm.won ? `${vm.seasonMatches ?? vm.matches}-MATCH SEASON COMPLETED · STILL IN THE TEAM` : 'BENCHED FOR THE REST OF THE SEASON'), divider());
 
   const image = document.createElement('img');
   image.className = 'game-over-image';
@@ -668,10 +710,13 @@ export function showGameOver(vm) {
   const body = document.createElement('div');
   body.className = 'sub';
   body.innerHTML = `
-    <p>You survived <b>${vm.matches}</b> match${vm.matches === 1 ? '' : 'es'}
+    <p>This season you played <b>${vm.matches}</b> match${vm.matches === 1 ? '' : 'es'}
     and scored <b>${vm.goals}</b> goal${vm.goals === 1 ? '' : 's'}.</p>
     <p>${vm.goals} goals &times; ${vm.rate} = <b style="color:var(--accent)">${vm.earned} LEGACY POINTS</b></p>
-    ${vm.isBest ? '<p><b style="color:var(--good)">NEW CAREER BEST</b></p>' : ''}
+    <p>${vm.won
+      ? 'Another season: same player and summer upgrades; match upgrades reset. New career: choose a new player and reset all upgrades and LP.'
+      : 'Next: summer-break training. Spend LP on improvements that last every season.'}</p>
+    ${vm.isBest ? '<p><b style="color:var(--good)">PERSONAL BEST SEASON</b></p>' : ''}
   `;
   const content = document.createElement('div');
   content.className = 'game-over-content';
@@ -687,11 +732,13 @@ export function showGameOver(vm) {
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.style.justifyContent = 'center';
-  const next = document.createElement('button');
-  next.className = 'accent big';
-  next.textContent = 'Next >';
-  next.addEventListener('click', vm.onNext);
-  foot.appendChild(next);
+  if (vm.won) {
+    foot.style.flexDirection = 'column';
+    foot.append(action('Another Season', vm.onRepeatSeason, 'accent big'),
+      action('New Career · New Player', vm.onNewCareer));
+  } else {
+    foot.append(action('Next >', vm.onNext, 'accent big'));
+  }
   p.appendChild(foot);
 
   mount(p);

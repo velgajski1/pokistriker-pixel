@@ -106,8 +106,9 @@ body.loading>:not(#preloader){visibility:hidden}
   position:absolute;left:0;right:0;display:flex;justify-content:space-between;gap:12px;
   padding:14px 20px;font-size:clamp(10px,2.4vw,13px);letter-spacing:.14em;text-transform:uppercase;
 }
-.hud-top{top:0;border-bottom:1px solid var(--rule);background:linear-gradient(#000a,#0000)}
-.hud-top span:last-child{color:var(--accent);text-align:right}
+.hud-top{top:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr) minmax(0,1fr);align-items:start;border-bottom:1px solid var(--rule);background:linear-gradient(#000a,#0000)}
+.hud-top span{min-width:0;overflow-wrap:break-word}
+.hud-top span:last-child{grid-column:2;color:var(--accent);text-align:center;line-height:1.4}
 
 .hud-bottom{
   position:absolute;left:0;right:0;bottom:0;padding:16px 20px 22px;
@@ -226,7 +227,7 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
 .confidence-meter.low .confidence-heading b{color:var(--warn)}
 .confidence-meter.low .confidence-fill{opacity:.72}
 .confidence-meter.over .confidence-fill{box-shadow:0 0 16px #d6ff3fcc,0 0 5px #fff}
-.trainer-confidence{position:absolute;top:55px;left:50%;width:clamp(190px,29vw,310px);transform:translateX(-50%)}
+.trainer-confidence{position:absolute;top:14px;right:20px;width:min(23vw,310px)}
 .training-confidence{width:min(330px,52vw);margin-left:auto}
 .game-over-panel.upgrade-panel{display:flex;flex-direction:column;align-items:center;width:min(600px,calc(100vw - 24px));max-height:calc(100dvh - 24px);margin:12px auto;padding:clamp(14px,3vh,28px);overflow:hidden}
 #overlay:has(.game-over-panel.upgrade-panel){align-items:center}
@@ -236,7 +237,10 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
 .game-over-panel .sub p+p{margin-top:6px}
 .game-over-panel .foot button{min-width:min(260px,70vw)}
 @media(max-width:599px){
-  .trainer-confidence{top:98px;width:min(250px,66vw)}
+  .hud-top{grid-template-columns:1fr 1fr;row-gap:12px}
+  .hud-top #hud-right{grid-column:1 / -1;grid-row:1}
+  .hud-top #hud-left{grid-column:1;grid-row:2}
+  .trainer-confidence{top:64px;right:12px;width:43vw}
   .game-over-panel.upgrade-panel{width:calc(100vw - 16px);max-height:calc(100dvh - 16px);margin:8px auto;padding:clamp(10px,3vw,16px)}
   .game-over-panel>h1{font-size:clamp(21px,8vw,28px);line-height:1}
   .game-over-panel>h1 small{margin-top:5px;font-size:clamp(8px,2.6vw,10px);letter-spacing:.16em}
@@ -526,7 +530,7 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
   .powerbar{height:11px}
   .match-exit{top:48px;right:12px;min-height:36px;padding:7px 11px}
   .career-identity{top:47px;left:12px}
-  .trainer-confidence{top:45px;width:clamp(185px,28vw,260px)}
+  .trainer-confidence{top:10px;right:14px;width:min(23vw,260px)}
   .confidence-heading{font-size:8px}
   .confidence-heading b{font-size:10px}
   .phase-prompt{top:68%}
@@ -608,7 +612,7 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
   .match-exit{top:35px;right:8px;min-height:30px;padding:5px 8px;font-size:9px}
   .career-identity{top:35px;left:8px;gap:5px;max-width:210px;padding:3px 7px 3px 3px;font-size:9px}
   .career-identity img{width:26px;height:26px}
-  .trainer-confidence{top:34px;width:174px}
+  .trainer-confidence{top:7px;right:10px;width:23vw}
   .trainer-confidence .confidence-heading{font-size:7px}
   .trainer-confidence .confidence-heading b{font-size:9px}
   .training-confidence{width:220px}
@@ -685,3 +689,14 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
 @media(min-width:850px){
   .character-panel.upgrade-panel{padding-top:14px}
 }
+/* Compact, persistent sound controls; sliders at zero mute their own bus. */
+.audio-controls { position: fixed; right: 12px; bottom: 36px; z-index: 100;
+  color: #fff; background: #101c29ed; border: 1px solid #ffffff40;
+  border-radius: 8px; padding: 8px 12px; font: 14px system-ui, sans-serif; }
+.audio-controls summary { cursor: pointer; min-height: 24px; }
+.audio-controls label { display: grid; grid-template-columns: 95px 110px 38px;
+  align-items: center; gap: 8px; margin-top: 10px; }
+.audio-controls input { width: 110px; accent-color: #b3eb47; }
+.audio-controls output { text-align: right; }
+.loading .audio-controls { display: none; }
+@media (max-width: 849px) { .audio-controls { bottom: 28px; right: 6px; padding: 5px 8px; } }

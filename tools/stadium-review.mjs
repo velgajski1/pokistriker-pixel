@@ -15,6 +15,7 @@ try {
       { name: 'shooting', position: [0, 3, z + 17], target: [0, 3, z - 7] },
       { name: 'overhead', position: [0, 72, z + 60], target: [0, 0, z + 45] },
       { name: 'wide', position: [60, 40, z + 95], target: [0, 4, z + 48] },
+      { name: 'exterior', position: [95, 115, z + 155], target: [0, 2, z + 52] },
     ];
     return views.map(view => {
       d.camera.position.set(...view.position);
@@ -29,5 +30,5 @@ try {
     console.log(`${shot.name}: ${shot.calls} draw calls, ${shot.triangles} triangles`);
   }
   assert(!errors.length, errors.join('\n'));
-  console.log('PASS: three stadium views rendered without browser errors.');
+  console.log('PASS: four stadium views rendered without browser errors.');
 } finally { await browser.close(); }
