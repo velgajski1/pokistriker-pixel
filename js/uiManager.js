@@ -10,7 +10,7 @@ const $ = (id) => document.getElementById(id);
 
 export function initAudioControls(settings, onChange, onSound) {
   const controls = document.createElement('details');
-  controls.className = 'audio-controls';
+  controls.className = 'audio-controls hidden';
   const summary = document.createElement('summary');
   summary.textContent = 'Sound';
   controls.append(summary);
@@ -52,7 +52,7 @@ export function initAudioControls(settings, onChange, onSound) {
 
 const el = {
   dim: null, hud: null, left: null, right: null,
-  ticker: null, powerWrap: null, powerBar: null, powerFill: null,
+  ticker: null,
   prompt: null, verdict: null, overlay: null,
   identity: null, confidence: null, confidenceFill: null, confidenceValue: null,
 };
@@ -111,9 +111,6 @@ export function init() {
   el.left = $('hud-left');
   el.right = $('hud-right');
   el.ticker = $('ticker');
-  el.powerWrap = $('powerwrap');
-  el.powerBar = el.powerWrap.querySelector('.powerbar');
-  el.powerFill = $('powerfill');
   el.prompt = $('phase-prompt');
   el.verdict = $('verdict');
   el.overlay = $('overlay');
@@ -152,29 +149,54 @@ function confidenceMeter(value, max, className = '') {
   return { root, fill, value: amount };
 }
 
-function updateConfidenceMeter(meter, value, max) {
+const confidenceTweens = new WeakMap();
+
+function updateConfidenceMeter(meter, value, max, animate = true) {
   const safeValue = Math.max(0, Math.min(max, Number(value) || 0));
   const displayPercent = Math.min(100, safeValue);
   const previous = Number(meter.root.dataset.meterValue);
   const changed = meter.root.dataset.meterValue !== undefined && previous !== safeValue;
-  const from = changed && meter.fill.isConnected ? getComputedStyle(meter.fill).clipPath : null;
+  const running = confidenceTweens.get(meter.root);
+  if (animate && !changed && running) return;
+  const fromValue = running ? running.displayed : previous;
+  const from = animate && changed && meter.fill.isConnected ? getComputedStyle(meter.fill).clipPath : null;
   const to = `inset(0 ${(100 - displayPercent).toFixed(1)}% 0 0)`;
-  if (changed) {
+  if (changed || !animate) {
+    if (running) cancelAnimationFrame(running.frame);
+    confidenceTweens.delete(meter.root);
     for (const animation of meter.fill.getAnimations()) animation.cancel();
   }
   meter.fill.style.clipPath = to;
-  if (from && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (from) {
     // Sample the visible fill before cancelling, so consecutive changes stay smooth.
-    meter.fill.animate([{ clipPath: from }, { clipPath: to }], {
+    const animation = meter.fill.animate([{ clipPath: from }, { clipPath: to }], {
       duration: Math.abs(safeValue - previous) > 1 ? 1600 : 350,
       easing: 'cubic-bezier(.25,.1,.25,1)',
     });
+    const tween = { displayed: fromValue, frame: 0 };
+    confidenceTweens.set(meter.root, tween);
+    const count = () => {
+      if (confidenceTweens.get(meter.root) !== tween) return;
+      if (!meter.root.isConnected) {
+        animation.cancel();
+        confidenceTweens.delete(meter.root);
+        return;
+      }
+      // The effect's progress includes the fill's easing, keeping both in sync.
+      const progress = animation.playState === 'finished' ? 1 : animation.effect.getComputedTiming().progress ?? 0;
+      tween.displayed = fromValue + (safeValue - fromValue) * progress;
+      meter.value.textContent = `${Math.round(tween.displayed)}%`;
+      meter.root.setAttribute('aria-valuenow', String(Math.round(tween.displayed)));
+      if (progress < 1) tween.frame = requestAnimationFrame(count);
+      else confidenceTweens.delete(meter.root);
+    };
+    count();
   }
   meter.root.dataset.meterValue = String(safeValue);
-  meter.value.textContent = `${Math.round(safeValue)}%`;
+  if (!from) meter.value.textContent = `${Math.round(safeValue)}%`;
   meter.root.setAttribute('aria-valuemin', '0');
   meter.root.setAttribute('aria-valuemax', String(max));
-  meter.root.setAttribute('aria-valuenow', String(Math.round(safeValue)));
+  if (!from) meter.root.setAttribute('aria-valuenow', String(Math.round(safeValue)));
   meter.root.classList.toggle('low', safeValue < 30);
   meter.root.classList.toggle('over', safeValue > 100);
 }
@@ -198,7 +220,10 @@ export function setCareerIdentity(character) {
 /** SIMULATING dims the arena; HIGHLIGHT clears it instantly. */
 export function setDimmed(on) { el.dim.classList.toggle('clear', !on); }
 
-export function showHud(on) { el.hud.classList.toggle('hidden', !on); }
+export function showHud(on) {
+  if (on && el.hud.classList.contains('hidden')) el.confidence.dataset.value = '';
+  el.hud.classList.toggle('hidden', !on);
+}
 
 export function setScore(match, clock, goals, mode = 'career', enemyGoals = 0, homeClub = '', opponent = '') {
   if (mode === 'tutorial') {
@@ -221,16 +246,9 @@ export function setConfidence(value, max, mode = 'career') {
 
   if (el.confidence.dataset.value === String(value)
     && el.confidence.dataset.max === String(max)) return;
-  if (el.confidence.dataset.value === '') {
-    el.confidenceFill.style.clipPath = 'inset(0 100% 0 0)';
-    requestAnimationFrame(() => updateConfidenceMeter({
-      root: el.confidence, fill: el.confidenceFill, value: el.confidenceValue,
-    }, value, max));
-  } else {
-    updateConfidenceMeter({
-      root: el.confidence, fill: el.confidenceFill, value: el.confidenceValue,
-    }, value, max);
-  }
+  updateConfidenceMeter({
+    root: el.confidence, fill: el.confidenceFill, value: el.confidenceValue,
+  }, value, max, el.confidence.dataset.value !== '');
   el.confidence.dataset.value = String(value);
   el.confidence.dataset.max = String(max);
 }
@@ -244,13 +262,6 @@ export function setTicker(minute, text) {
 export function setPrompt(text) {
   el.prompt.textContent = text || '';
   el.prompt.classList.toggle('show', !!text);
-}
-
-export function showPower(on) { el.powerWrap.classList.toggle('hidden', !on); }
-
-export function setPower(p) {
-  el.powerFill.style.width = `${(p * 100).toFixed(1)}%`;
-  el.powerBar.classList.toggle('hot', p > 0.9);   // over-hit territory
 }
 
 export function flashVerdict(text, kind) {
@@ -511,18 +522,34 @@ export function showMatchResult(vm) {
   const change = document.createElement('p');
   change.className = 'match-confidence-change';
   change.textContent = `${vm.delta > 0 ? '+' : ''}${vm.delta} trainer confidence · ${vm.delta > 0 ? 'Win bonus' : vm.delta < 0 ? 'Loss penalty' : 'No change for a draw'}`;
-  const values = document.createElement('p');
-  values.className = 'sub';
-  values.textContent = `${Math.round(vm.before)}% → ${Math.round(vm.after)}%${vm.after - vm.before !== vm.delta ? ' (confidence limit reached)' : ''}`;
   const meter = confidenceMeter(vm.before, vm.confidenceMax, 'prematch-confidence');
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.append(action('Next', vm.onNext, 'accent big'));
-  p.append(header(outcome, `MATCH ${vm.match} · FULL TIME`), opponent, score, divider(), change, values, meter.root, foot);
+  const title = header(outcome, `MATCH ${vm.match} · FULL TIME`);
+  p.append(title, opponent, score, divider(), change, meter.root, foot);
   mount(p);
-  requestAnimationFrame(() => {
+  const fillMeter = () => {
     if (meter.root.isConnected) updateConfidenceMeter(meter, vm.after, vm.confidenceMax);
-  });
+  };
+  if (outcome === 'VICTORY') {
+    const pieces = [title, opponent, score, change, meter.root, foot];
+    const delays = [0, 250, 500, 1000, 1400, 2100];
+    const next = foot.querySelector('button');
+    next.disabled = true;
+    for (let i = 0; i < pieces.length; i++) {
+      const animation = pieces[i].animate([
+        { opacity: 0, transform: `translateX(${i % 2 ? 100 : -100}px)` },
+        { opacity: 1, transform: 'translateX(0)' },
+      ], { duration: 650, delay: delays[i],
+        easing: 'cubic-bezier(.16,1,.3,1)', fill: 'backwards' });
+      // Hold the starting confidence until the bar is fully opaque and in place.
+      if (pieces[i] === meter.root) animation.finished.then(fillMeter).catch(() => {});
+      if (pieces[i] === foot) animation.finished.then(() => {
+        if (next.isConnected) next.disabled = false;
+      }).catch(() => {});
+    }
+  } else requestAnimationFrame(fillMeter);
 }
 
 export function showSingleResult(vm) {
@@ -556,23 +583,40 @@ export function showPrematch(vm) {
   detail.textContent = 'Higher defense means faster, sharper goalkeepers and defenders.';
   const foot = document.createElement('div');
   foot.className = 'foot';
-  foot.append(action('Back', vm.onMenu), action('Kick Off', vm.onPlay, 'accent big'));
-  p.append(header(`MATCH ${vm.match}${vm.totalMatches ? ` / ${vm.totalMatches}` : ''}`, 'YOUR OPPONENT'), flag, name, defense, detail);
+  foot.append(action('Back', vm.onMenu), action('Play', vm.onPlay, 'accent big'));
+  const title = header(`MATCH ${vm.match}${vm.totalMatches ? ` / ${vm.totalMatches}` : ''}`, 'YOUR OPPONENT');
+  const pieces = [title, flag, name, defense, detail];
+  p.append(...pieces);
+  let meter = null;
   if (vm.confidence != null) {
-    p.append(confidenceMeter(vm.confidence, vm.confidenceMax, 'prematch-confidence').root);
+    meter = confidenceMeter(vm.confidence, vm.confidenceMax, 'prematch-confidence');
+    p.append(meter.root);
     const warning = document.createElement('p');
     warning.className = 'sub';
     warning.textContent = 'If trainer confidence is 0% at full time, you are benched and your season ends. Train over summer and come back stronger!';
     p.append(warning);
+    pieces.push(meter.root, warning);
   }
   p.append(foot);
+  pieces.push(foot);
   mount(p);
+  const buttons = foot.querySelectorAll('button');
+  for (const button of buttons) button.disabled = true;
+  for (let i = 0; i < pieces.length; i++) {
+    const entrance = pieces[i].animate([
+      { opacity: 0, transform: `translateX(${i % 2 ? 80 : -80}px)` },
+      { opacity: 1, transform: 'translateX(0)' },
+    ], { duration: 650, delay: i * 180, easing: 'cubic-bezier(.16,1,.3,1)', fill: 'backwards' });
+    if (pieces[i] === foot) entrance.finished.then(() => {
+      if (foot.isConnected) for (const button of buttons) button.disabled = false;
+    }).catch(() => {});
+  }
 }
 
 /** SUMMER BREAK - permanent training paid for with Legacy Points. */
 export function showMenu(vm) {
   const p = panel();
-  p.classList.add('upgrade-panel', 'clean-upgrades');
+  p.classList.add('upgrade-panel', 'clean-upgrades', 'summer-training');
   const head = document.createElement('div');
   head.className = 'center';
   head.append(header('SUMMER BREAK', 'Train for next season · Improvements stay with you'));

@@ -17,7 +17,7 @@
  * exactly what the save/block test uses.
  */
 import * as THREE from 'three';
-import { GOAL, PITCH, BALL_START, BALL_R, NET, netPockets, releaseNetPockets,
+import { GOAL, PITCH, BALL_START, BALL_R, GRAVITY, NET, netPockets, releaseNetPockets,
   AD_BOARDS, BOARD_HEIGHT, BOARD_THICKNESS } from './physics.js';
 
 // ---- File-scope scratch. Never allocate inside the rAF path. --------------
@@ -2947,7 +2947,7 @@ const npcGoalShots = [
   { x: -2, range: 19, target: 2.3, height: 1.65 },
   { x: 3, range: 8, target: -2.4, height: .35 },
 ];
-const walkOff = { active: false, actors: [] };
+const walkOff = { active: false, actors: [], ballHeight: BALL_R, elapsed: 0 };
 
 export function startWalkOff() {
   endOpponentGoal();
@@ -2962,11 +2962,18 @@ export function startWalkOff() {
       targetZ: GOAL.PLANE_Z + PITCH.LENGTH / 2 + (i % 4 - 1.5) * 1.4 });
   }
   walkOff.active = true;
+  walkOff.ballHeight = Math.max(BALL_R, objects.ball.position.y);
+  walkOff.elapsed = 0;
   objects.arrow.visible = objects.guide.visible = objects.elevation.visible = false;
 }
 
 export function updateWalkOff(dt) {
   if (!walkOff.active) return;
+  // Full time can interrupt an ambient pass. Settle that presentation ball
+  // instead of freezing it aloft; analytic motion is independent of frame rate.
+  walkOff.elapsed += dt;
+  objects.ball.position.y = Math.max(BALL_R,
+    walkOff.ballHeight + .5 * GRAVITY * walkOff.elapsed * walkOff.elapsed);
   camera.up.lerp(_selectionUp, 1 - Math.exp(-dt * 2)).normalize();
   for (const actor of walkOff.actors) {
     const rig = actor.rig;

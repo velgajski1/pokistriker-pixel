@@ -5,6 +5,8 @@
 
 const KEY = 'benched.career.v1';
 const AUDIO_KEY = 'benched.audio.v1';
+let previewMode = false;
+export function setPreviewMode(enabled) { previewMode = enabled; }
 
 export function loadAudio() {
   let data;
@@ -46,6 +48,7 @@ export function load() {
 }
 
 export function save(career) {
+  if (previewMode) return true;
   try {
     localStorage.setItem(KEY, JSON.stringify(career));
     return true;

@@ -350,7 +350,7 @@ function careerCheckpoint() {
     || (run.goalByTeammate !== undefined && typeof run.goalByTeammate !== 'boolean')
     || (run.npcGoalVariant !== undefined && (!Number.isInteger(run.npcGoalVariant) || run.npcGoalVariant < 0 || run.npcGoalVariant > 3))
     || (run.enemyGoals !== undefined && (!Number.isSafeInteger(run.enemyGoals) || run.enemyGoals < 0))
-    || (run.enemyCredit !== undefined && (!Number.isFinite(run.enemyCredit) || run.enemyCredit < 0 || run.enemyCredit > 2))
+    || (run.enemyCredit !== undefined && (!Number.isFinite(run.enemyCredit) || run.enemyCredit < 0))
     || (run.enemyPause !== undefined && (!Number.isFinite(run.enemyPause)
       || run.enemyPause < 0 || run.enemyPause > OPPONENT_GOALS.PAUSE_SECONDS))
     || !Number.isFinite(run.confidence) || run.confidence < 0 || run.confidence > 125
@@ -409,7 +409,6 @@ function enterCareer() {
   state.phase = 'SIM';
   blockerCount = 0;
   engine.frameAmbient(true);
-  ui.showPower(false);
   ui.setPrompt('');
   if (state.screen === 'RESULTS') { renderMatchResult(); return; }
   if (state.screen === 'TRAINING' && state.run.confidence <= 0) { benched(); return; }
@@ -577,7 +576,6 @@ function kickOff() {
   ui.hideOverlay();
   ui.showHud(true);
   ui.setDimmed(false);
-  ui.showPower(false);
   ui.setPrompt('');
   blockerCount = 0;
   engine.frameAmbient(true);
@@ -598,7 +596,6 @@ function endMatch() {
   state.phase = 'FULL_TIME';
   fullTimeRemaining = FULL_TIME_SECONDS;
   engine.startWalkOff();
-  ui.showPower(false);
   ui.setPrompt('FULL TIME');
   ui.setTicker(90, 'Full time. The players head for the tunnel.');
   checkpointCareer();
@@ -609,7 +606,6 @@ function renderMatchResult() {
   audio.play(teamScore(run) > run.enemyGoals ? 'win' : teamScore(run) < run.enemyGoals ? 'loss' : 'draw');
   state.screen = 'RESULTS';
   ui.showHud(false);
-  ui.showPower(false);
   ui.setPrompt('');
   ui.setDimmed(true);
   checkpointCareer();
@@ -766,7 +762,10 @@ function updateSim(dt) {
   let next = run.schedule[0];
   const previousClock = run.clock;
   run.clock = Math.min(next ?? CLOCK.FULL_TIME, run.clock + dt * CLOCK.MINUTES_PER_SECOND);
-  run.enemyCredit += (run.clock - previousClock) * OPPONENT_GOALS.PER_MINUTE;
+  // Catch-up changes the fair scoring meter's rate, not already-earned credit.
+  // Include teammate goals and recalculate after every change to the score.
+  const enemyCatchup = Math.max(1, teamScore(run) - run.enemyGoals);
+  run.enemyCredit += (run.clock - previousClock) * OPPONENT_GOALS.PER_MINUTE * enemyCatchup;
   run.teammateCredit += (run.clock - previousClock) * TEAMMATE_GOALS_PER_MINUTE;
   if (state.mode === 'career') {
     const previousLosses = Math.floor(previousClock / MORALE.MINUTES_PER_LOSS);
@@ -973,7 +972,6 @@ function updatePower(dt) {
   shot.power += shot.powerDir * (tutorial ? .3 : SHOT.POWER_CYCLE) * dt;
   if (shot.power > maximum) { shot.power = maximum; shot.powerDir = -1; }
   if (shot.power < minimum) { shot.power = minimum; shot.powerDir = 1; }
-  ui.setPower(shot.power);
 
   // Preview where this power lands on the goal plane.
   predictCrossing(origin, shot.theta, shot.power, speedScale(), prediction);
@@ -988,14 +986,12 @@ function advance() {
     audio.play('aim');
     state.phase = 'POWER';
     engine.showAimRig(true, true);
-    ui.showPower(true);
     ui.setPrompt(state.mode === 'tutorial' ? '2 / 2 · Tap / Space again to set power and shoot!' : 'Tap / Space to set power');
     return;
   }
   if (state.phase === 'POWER') {
     audio.play('power');
     audio.setPower(null);
-    ui.showPower(false);
     ui.setPrompt('');
     engine.showAimRig(false, false);
     engine.placeStrikerContact(shot.theta);
@@ -1505,7 +1501,7 @@ function resolve(outcome) {
     if (state.mode === 'career') run.cash += goalPayout();
     adjustConfidence(MORALE.ON_GOAL);
     engine.shake(0.5);
-    ui.flashVerdict(shot.touched ? 'IN OFF!' : 'GOAL', 'goal');
+    ui.flashVerdict('GOAL', 'goal');
     ui.setTicker(Math.floor(run.clock), `${GOAL_CALLS[shot.touched] || GOAL_CALLS.clean}${state.mode === 'career' ? ` <b>+$${goalPayout()}</b>.` : ''}`);
   } else if (outcome === 'save') {
     engine.shake(0.25);
@@ -1545,7 +1541,6 @@ function finishChance() {
   }
 
   if (state.mode === 'practice') {
-    ui.showPower(false);
     beginHighlight(false);
     return;
   }
@@ -1573,7 +1568,6 @@ function showTutorialComplete() {
   engine.setAnimationsPaused(false);
   engine.frameAmbient(true);
   ui.showHud(false);
-  ui.showPower(false);
   ui.setPrompt('');
   ui.setDimmed(true);
   ui.showTutorialComplete(() => {
@@ -1631,7 +1625,8 @@ function renderMenu() {
   ui.showMainMenu({
     onCareer: enterCareer,
     resume: checkpoint ? `${character.name} · Match ${checkpoint.run.match}` : null,
-    hasProgress: state.career.tutorialComplete || !!checkpoint || !!state.career.characterId
+    // Tutorial completion survives resets but isn't resettable career progress.
+    hasProgress: !!checkpoint || !!state.career.characterId
       || state.career.legacy > 0 || state.career.runs > 0
       || state.career.bestRun > 0 || state.career.lifetimeGoals > 0
       || META.some(({ key }) => state.career.meta[key] > 0),
@@ -1748,6 +1743,73 @@ function renderTraining() {
 // Boot
 // ===========================================================================
 const upgradeShortcutsEnabled = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+let screenPreviewCareer = null;
+const screenPreviewSteps = new Array(10).fill(0);
+
+// Local-only sandbox: reload to return to the real saved career. All career
+// writes (including buttons inside previews) stay disabled until then.
+function previewScreen(number) {
+  if (!upgradeShortcutsEnabled) return;
+  if (!screenPreviewCareer) {
+    checkpointCareer();
+    screenPreviewCareer = structuredClone(state.career);
+    save.setPreviewMode(true);
+  }
+  engine.endWalkOff();
+  engine.endOpponentGoal();
+  state.benchPresentation = null;
+  state.career = structuredClone(screenPreviewCareer);
+  state.career.tutorialComplete = true;
+  delete state.career.tutorialResultPending;
+  delete state.career.gameOver;
+  delete state.career.activeRun;
+  delete state.career.summerBreak;
+  state.run = null;
+  const step = screenPreviewSteps[number]++;
+  startRun('career', state.career.characterId || CHARACTERS[0].id);
+  if (number === 1) {
+    renderMenu();
+    if (step % 2) ui.showConfirmation('RESET PROGRESS?', 'Preview only: your saved career is safe.', renderMenu, renderMenu);
+  } else if (number === 2) {
+    delete state.career.characterId;
+    renderCharacterSelection();
+  } else if (number === 3) renderPrematch();
+  else if (number === 4) {
+    kickOff();
+    const variant = step % 5;
+    if (variant === 0) beginHighlight(false);
+    else if (variant === 2 || variant === 3) {
+      state.run.goalByTeammate = variant === 3;
+      state.run.enemyPause = OPPONENT_GOALS.PAUSE_SECONDS;
+      state.phase = 'ENEMY_GOAL';
+      engine.startOpponentGoal(state.run.goalByTeammate, Math.floor(step / 5) % 4);
+    } else if (variant === 4) { state.run.clock = 90; endMatch(); }
+  } else if (number === 5) {
+    const variant = step % 4;
+    state.run.matchGoals = state.run.goals = variant === 2 ? 0 : 2;
+    state.run.enemyGoals = variant === 1 ? 2 : 1;
+    state.run.clock = 90;
+    state.run.confidence = 50;
+    if (variant === 3) finishSingleMatch();
+    else {
+      const delta = variant === 0 ? 5 : variant === 1 ? 0 : -5;
+      state.run.confidence += delta;
+      state.run.matchResult = { before: 50, delta, after: state.run.confidence };
+      renderMatchResult();
+    }
+  } else if (number === 6) showUpgradeScreen('training');
+  else if (number === 7) { state.career.legacy = 500; renderMeta(); }
+  else if (number === 8) {
+    const summary = { version: 1, matches: step % 3 === 2 ? SEASON_MATCHES : 3,
+      seasonMatches: SEASON_MATCHES, goals: 5, earned: 5 * ECONOMY.LEGACY_PER_GOAL,
+      isBest: true, won: step % 3 === 2 };
+    if (step % 3 === 0) showBenchedPresentation(summary, true);
+    else showCareerGameOver(summary, true);
+  } else if (number === 9) {
+    if (step % 2) showTutorialComplete();
+    else startRun('tutorial');
+  }
+}
 
 function showUpgradeScreen(screen) {
   if (!upgradeShortcutsEnabled || (screen !== 'meta' && screen !== 'training')) return;
@@ -1774,7 +1836,6 @@ function previewVictory() {
   engine.setAnimationsPaused(false);
   engine.frameAmbient(true);
   ui.showHud(false);
-  ui.showPower(false);
   ui.setPrompt('');
   ui.setDimmed(true);
   // Sample results only: do not replace the run or award/save preview LP.
@@ -1906,20 +1967,10 @@ async function boot() {
   });
   addEventListener('keydown', (e) => {
     if (!window.__demo.ready) return;
-    if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyV') {
+    if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey && /^Digit[1-9]$/.test(e.code)) {
       if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
       e.preventDefault();
-      if (!e.repeat) previewVictory();
-      return;
-    }
-    if (e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyT') {
-      if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
-      e.preventDefault();
-      if (!e.repeat) {
-        checkpointCareer();
-        state.benchPresentation = null;
-        startRun('tutorial');
-      }
+      if (!e.repeat) previewScreen(Number(e.code.slice(-1)));
       return;
     }
     if (state.screen === 'BENCHED') {
@@ -1949,17 +2000,6 @@ async function boot() {
     if (e.code === 'Escape') {
       e.preventDefault();
       if (state.screen !== 'RESULTS' && (state.screen !== 'GAMEOVER' || state.mode !== 'career')) renderMenu();
-      return;
-    }
-    if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyG') {
-      e.preventDefault();
-      if (!e.repeat) previewGameOver();
-      return;
-    }
-    if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey
-      && (e.code === 'Digit1' || e.code === 'Digit2')) {
-      e.preventDefault();
-      if (!e.repeat) showUpgradeScreen(e.code === 'Digit1' ? 'meta' : 'training');
       return;
     }
     if (e.target.closest('button, input, textarea, select')) return;
