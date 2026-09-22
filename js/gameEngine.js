@@ -19,6 +19,8 @@
 import * as THREE from 'three';
 import { GOAL, PITCH, BALL_START, BALL_R, GRAVITY, NET, netPockets, releaseNetPockets,
   AD_BOARDS, BOARD_HEIGHT, BOARD_THICKNESS } from './physics.js';
+import { voxelShade, voxelizeGeometry } from './voxel.js';
+import { measureBlockParts, paintSkin, blockPartVisible, blockPart, BLOCK_PX, SKIN_SIZE, HEAD_RISE } from './blockman.js';
 
 // ---- File-scope scratch. Never allocate inside the rAF path. --------------
 const _camTarget = new THREE.Vector3(0, 1.35, GOAL.PLANE_Z);
@@ -27,7 +29,7 @@ const _camHome = new THREE.Vector3(0, 3.6, 8.2);
 const _camWant = new THREE.Vector3();
 const _wp = new THREE.Vector3();
 
-const CLEAR = 0x202c36;
+const CLEAR = 0x8fcaff;   // daytime sky; also the fog colour
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
@@ -405,45 +407,113 @@ const KIT_AWAY = { kit: 0xe23b4e, shorts: 0x1b1f27, socks: 0xe23b4e, boots: 0x0f
 const KIT_REF  = { kit: 0x14181f, shorts: 0x14181f, socks: 0x14181f, boots: 0x0a0c10 };
 const KIT_KEEP = { kit: 0xff8a2b, shorts: 0x14202e, socks: 0x1b2836, boots: 0x0c1017, gloves: 0xe8f0ff };
 
-function shadeTeamShirt(material) {
-  const pattern = { value: 0 };
-  const accent = { value: new THREE.Color(0xffffff) };
-  material.userData.teamPattern = { pattern, accent };
-  material.customProgramCacheKey = () => 'team-shirt-v1';
-  material.onBeforeCompile = shader => {
-    shader.uniforms.teamPattern = pattern;
-    shader.uniforms.teamAccent = accent;
-    shader.vertexShader = 'varying vec3 kitBind;\n' + shader.vertexShader;
-    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
-      '#include <begin_vertex>\nkitBind = position / ' + CAPTAIN_BIND_SCALE.toFixed(8) + ';');
-    shader.fragmentShader = 'varying vec3 kitBind;\nuniform float teamPattern;\nuniform vec3 teamAccent;\n' + shader.fragmentShader;
-    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
-      float vertical = sin(kitBind.x * 90.0);
-      float horizontal = sin((kitBind.y - 1.0) * 90.0);
-      float patternWave = teamPattern < 1.5 ? vertical : teamPattern < 2.5 ? horizontal : vertical * horizontal;
-      float aa = max(.03, fwidth(patternWave));
-      float patternMask = smoothstep(-aa, aa, patternWave);
-      patternMask *= step(.5, teamPattern);
-      diffuseColor.rgb = mix(diffuseColor.rgb, teamAccent, patternMask);
-    `);
-  };
+// ---- Block players ----------------------------------------------------------
+// Every player keeps the squad model's skeleton and clips, but the scanned
+// mesh is hidden: rigid Minecraft-style boxes ride the bones instead (see
+// blockman.js), textured from a per-player skin canvas. Collision capsules
+// still come from the joints, so nothing about play changes.
+const blockBoneName = key => key === 'HeadFront' ? 'headfront' : 'mixamorig' + key;
+const KEEPERS = () => [squad.keeper, squad.homeKeeper];
+
+function blockSkin() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = SKIN_SIZE;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = texture.minFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  const material = new THREE.MeshStandardMaterial({ map: texture, roughness: .9, alphaTest: .5 });
+  material.name = 'block-skin';
+  return { canvas, texture, material };
 }
+
+/** A hand-placed block part: box `name` centred at (x, y, z) in `parent`'s frame. */
+function addBlock(parent, material, name, x, y, z = 0, grow = 1) {
+  const mesh = new THREE.Mesh(blockPart(name, grow), material);
+  mesh.name = 'block-' + name;
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+
+/**
+ * Block body for the procedural rigs (linesmen): the same parts and skins as
+ * the players, hung on the rig's shoulder, hip and knee groups.
+ */
+function blockifyHumanoid(rig, dress) {
+  rig.body.traverse(node => { if (node.isMesh) node.visible = false; });
+  const P = BLOCK_PX, { material, canvas, texture } = blockSkin();
+  const top = RIG.SHOULDER_Y + P * .5;
+  addBlock(rig.body, material, 'torso', 0, top - 4.5 * P);
+  addBlock(rig.body, material, 'hips', 0, top - 10.5 * P);
+  addBlock(rig.body, material, 'head', 0, top + HEAD_RISE * P, P * .5);
+  for (const arm of rig.arms) {
+    const key = arm.sx > 0 ? 'L' : 'R';
+    addBlock(arm.shoulder, material, 'arm' + key, arm.sx * (6 * P - RIG.SHOULDER_X), -5 * P);
+  }
+  for (const leg of rig.legs) {
+    const key = leg.sx > 0 ? 'L' : 'R', x = leg.sx * (2 * P - .105);
+    // This rig's joints sit at other heights: stretch the thigh from the shorts
+    // to the knee and the shin from the knee to the boot so the leg stays closed.
+    const from = top - 12 * P - RIG.HIP_Y, to = -RIG.KNEE;
+    addBlock(leg.hip, material, 'thigh' + key, x, (from + to) / 2).scale.y = (from - to) / (5 * P);
+    const knee = RIG.HIP_Y - RIG.KNEE, bootTop = 2 * P;
+    addBlock(leg.knee, material, 'shin' + key, x, -(knee - bootTop) / 2).scale.y = (knee - bootTop) / (7 * P);
+    addBlock(leg.knee, material, 'boot' + key, x, P - knee, P * 1.5);
+  }
+  paintSkin(canvas, { look: rig.look, ...dress });
+  texture.needsUpdate = true;
+}
+
+/** Boot-only: hides the scan and hangs this player's boxes on its bones. */
+function dressBlocks(model, rig, parts) {
+  model.traverse(node => { if (node.isSkinnedMesh) node.visible = false; });
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = SKIN_SIZE;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = texture.minFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  const material = new THREE.MeshStandardMaterial({ map: texture, roughness: .9, alphaTest: .5 });
+  material.name = 'block-skin';
+  const meshes = {};
+  for (const part of parts) {
+    const mesh = new THREE.Mesh(part.geometry, material);
+    mesh.name = 'block-' + part.name;
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.copy(part.local);
+    mesh.castShadow = true;
+    mesh.frustumCulled = false;
+    model.getObjectByName(part.bone).add(mesh);
+    meshes[part.name] = mesh;
+  }
+  rig.blocks = { canvas, texture, material, meshes };
+  paintBlocks(rig);
+}
+
+/** Repaints a player's skin from its current look, kit and number. */
+function paintBlocks(rig) {
+  if (!rig.blocks) return;
+  paintSkin(rig.blocks.canvas, { look: rig.look, kit: rig.kit, number: rig.number,
+    pattern: rig.kitPattern || null, accent: rig.kitAccent, sleeves: KEEPERS().includes(rig) });
+  rig.blocks.texture.needsUpdate = true;
+  for (const [name, mesh] of Object.entries(rig.blocks.meshes)) mesh.visible = blockPartVisible(name, rig.look);
+}
+
+// World-scale block sizes for everything that is not a squad player, in metres.
+const CROWD_PX = 0.052;       // block fans: 32 px from shoes to crown
+const BALL_VOXEL = 0.045;     // five blocks across
+const TURF_TILE = 0.25;       // one turf texel per quarter metre, markings included
 
 function recolourKit(rig, kit) {
   for (const region of ['kit', 'shorts', 'socks']) {
     rig.kit[region] = kit[region];
     rig.kitMaterials[region].color.setHex(kit[region]);
   }
-  rig.avatar?.model.traverse(node => {
-    if (node.isMesh && Object.hasOwn(kit, node.material.name)) {
-      node.material.color.setHex(kit[node.material.name]);
-      const uniforms = node.material.userData.teamPattern;
-      if (uniforms) {
-        uniforms.pattern.value = { stripes: 1, hoops: 2, checks: 3 }[kit.pattern] || 0;
-        uniforms.accent.value.setHex(kit.accent ?? kit.kit);
-      }
-    }
-  });
+  rig.kitPattern = kit.pattern || null;
+  rig.kitAccent = kit.accent ?? kit.kit;
+  paintBlocks(rig);
 }
 
 /** Match-only recolouring: reuse all rig materials and crowd instance buffers. */
@@ -614,6 +684,7 @@ async function loadCaptain() {
     relaxIdle(gltf.animations);
     relaxSadWalk(gltf.animations);
     const model = gltf.scene;
+    const blockParts = measureBlockParts(model, blockBoneName);
     const mixer = new THREE.AnimationMixer(model);
     const actions = {};
     for (const name of ANIMATIONS) {
@@ -646,8 +717,7 @@ async function loadCaptain() {
     // while geometry and animation clips are shared by the entire squad.
     for (const rig of rigs) {
       const avatarModel = rig === squad.striker ? model : skeletonUtils.clone(template);
-      colourCaptain(avatarModel, rig);
-      addShirtNumber(avatarModel, rig.number);
+      dressBlocks(avatarModel, rig, blockParts);
       if (rig !== squad.striker) attachCaptain(rig, avatarModel, gltf.animations, data, offsets);
       if (rig.avatar) rig.avatar.idleName = rig === squad.keeper || rig === squad.homeKeeper
         ? 'keeper_idle' : squad.foes.includes(rig) ? 'alert' : 'idle';
@@ -691,288 +761,16 @@ async function loadCaptain() {
   }
 }
 
-let shirtNumberGeometry;
-function addShirtNumber(model, number) {
-  if (number == null) return;
-  let shirt;
-  model.traverse(node => { if (node.isSkinnedMesh && node.material.name === 'kit') shirt = node; });
-  if (!shirt) return;
-  if (!shirtNumberGeometry) {
-    // Copy the back's skin weights so the print bends with the actual shirt.
-    const geometry = shirt.geometry.clone();
-    const position = geometry.attributes.position, normal = geometry.attributes.normal;
-    const uv = geometry.attributes.uv;
-    const scale = CAPTAIN_BIND_SCALE;
-    const indices = [];
-    for (let i = 0; i < geometry.index.count; i += 3) {
-      const a = geometry.index.getX(i), b = geometry.index.getX(i + 1), c = geometry.index.getX(i + 2);
-      const y = (position.getY(a) + position.getY(b) + position.getY(c)) / 3;
-      const x = (position.getX(a) + position.getX(b) + position.getX(c)) / 3;
-      if (Math.abs(x) < .24 * scale && y > 1.0 * scale && y < 1.5 * scale
-        && normal.getZ(a) + normal.getZ(b) + normal.getZ(c) < -1) indices.push(a, b, c);
-    }
-    geometry.setIndex(indices);
-    for (let i = 0; i < position.count; i++) {
-      uv.setXY(i, .5 - position.getX(i) / (.32 * scale), (position.getY(i) / scale - 1.04) / .39);
-      position.setXYZ(i, position.getX(i) + normal.getX(i) * .002,
-        position.getY(i) + normal.getY(i) * .002, position.getZ(i) + normal.getZ(i) * .002);
-    }
-    shirtNumberGeometry = geometry;
-  }
-  const material = new THREE.MeshStandardMaterial({ map: numberTexture(number),
-    roughness: .85, transparent: true, alphaTest: .1, depthWrite: false,
-    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
-  material.name = 'shirt-number';
-  const print = new THREE.SkinnedMesh(shirtNumberGeometry, material);
-  print.name = 'shirt-number';
-  print.userData.number = number;
-  print.frustumCulled = false;
-  print.bind(shirt.skeleton, shirt.bindMatrix);
-  shirt.add(print);
-}
-
-// Bind-space shading follows the animated skin without floating face overlays.
-// Both imported head primitives use the same continuous hairline and colours.
-function shadeCaptainFace(material, look) {
-  material.roughness = .96;
-  material.customProgramCacheKey = () => 'captain-face-v3';
-  material.onBeforeCompile = shader => {
-    shader.uniforms.faceSkin = { value: new THREE.Color(look.skin) };
-    shader.uniforms.faceHair = { value: new THREE.Color(look.hair) };
-    shader.uniforms.faceStyle = { value: ['bald', 'buzz', 'crew', 'sidepart', 'swept', 'floppy', 'headband', 'curls', 'afro', 'crop', 'ponytail', 'bun'].indexOf(look.style) };
-    shader.uniforms.faceBeard = { value: look.beard >= .4 ? Math.min(.48, look.beard * .55) : 0 };
-    shader.uniforms.faceMoustache = { value: look.moustache || 0 };
-    shader.vertexShader = 'varying vec3 faceBind;\n' + shader.vertexShader;
-    shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>',
-      '#include <begin_vertex>\nfaceBind = position / ' + CAPTAIN_BIND_SCALE.toFixed(8) + ';');
-    shader.fragmentShader = `varying vec3 faceBind;
-      uniform vec3 faceSkin, faceHair;
-      uniform float faceStyle, faceBeard, faceMoustache;
-      ` + shader.fragmentShader;
-    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
-      if (faceBind.y > 1.405 && abs(faceBind.x) < .14) {
-        vec3 p = faceBind;
-        float front = smoothstep(-.035, .065, p.z);
-        float hairline = mix(1.505, 1.61, front);
-        if (faceStyle == 10.0) hairline = mix(1.515, 1.601, front);
-        hairline -= .024 * smoothstep(.045, .085, abs(p.x)) * front;
-        if (faceStyle == 3.0) hairline += .012 * sin(p.x * 28.0) * front;
-        if (faceStyle == 4.0 || faceStyle == 5.0) hairline -= .016 * front;
-        hairline += .003 * sin(p.x * 270.0 + sin(p.z * 95.0)) * front;
-        float edge = max(.002, fwidth(p.y) * 1.2);
-        float hair = smoothstep(hairline - edge, hairline + edge, p.y);
-        if (faceStyle == 0.0) hair = 0.0;
-        if (faceStyle == 1.0) hair *= .68;
-        float grain = sin(p.x * 1700.0) * sin(p.y * 1600.0 + p.z * 900.0);
-        grain *= 1.0 - smoothstep(.0005, .003, fwidth(p.y));
-        float flow = p.x * 430.0 + p.y * 110.0 + sin(p.z * 32.0) * 3.0;
-        if (faceStyle == 10.0) {
-          // Combed-back strands, not the crosshatched cap texture.
-          flow = p.x * 620.0 + sin(p.z * 18.0 + p.y * 12.0) * 5.0;
-          grain *= .18;
-        }
-        if (faceStyle == 4.0 || faceStyle == 3.0) flow += p.y * 260.0;
-        float detail = 1.0 - smoothstep(.4, 2.2, fwidth(flow));
-        float locks = (.5 + .5 * sin(flow)) * detail;
-        if (faceStyle == 7.0 || faceStyle == 8.0) {
-          locks = (.5 + .5 * sin(p.x * 360.0 + sin(p.y * 290.0)) * sin(p.z * 310.0 + p.y * 180.0)) * detail;
-        }
-        if (faceStyle == 1.0 || faceStyle == 2.0) locks = (.5 + grain * .5) * detail;
-        vec3 hairColour = faceHair * (.80 + locks * .32 + grain * .09)
-          + vec3(.012, .010, .008) * locks;
-        if (faceStyle == 3.0) {
-          float part = 1.0 - smoothstep(.001, .0035, abs(p.x - .025 - p.z * .15));
-          hairColour = mix(hairColour, faceSkin * .65, part * .65);
-        }
-        float jaw = smoothstep(1.443, 1.46, p.y) * (1.0 - smoothstep(1.505, 1.53, p.y));
-        float beard = jaw * smoothstep(.005, .05, p.z) * faceBeard;
-        vec3 skinColour = mix(faceSkin, faceHair, beard * (.88 + grain * .12));
-        diffuseColor.rgb = mix(skinColour, hairColour, hair);
-        float moustache = (1.0 - smoothstep(.035, .047, abs(p.x)))
-          * (1.0 - smoothstep(.005, .011, abs(p.y - 1.535 + abs(p.x) * .12))) * front;
-        diffuseColor.rgb = mix(diffuseColor.rgb, faceHair, moustache * faceMoustache);
-        float eyeX = abs(p.x) - .033;
-        float eye = 1.0 - smoothstep(.8, 1.2, length(vec2(eyeX / .012, (p.y - 1.576) / .0035)));
-        eye *= smoothstep(.065, .08, p.z);
-        float iris = 1.0 - smoothstep(.0025, .0045, abs(eyeX));
-        diffuseColor.rgb = mix(diffuseColor.rgb, mix(faceSkin * 1.08, vec3(.025), iris), eye * .8);
-        float brow = (1.0 - smoothstep(.011, .016, abs(eyeX)))
-          * (1.0 - smoothstep(.0015, .004, abs(p.y - 1.59 + eyeX * .10))) * front;
-        diffuseColor.rgb = mix(diffuseColor.rgb, faceHair, brow * .65);
-        if (faceStyle == 6.0) {
-          float band = 1.0 - smoothstep(.004, .006, abs(p.y - 1.632 + p.z * .06));
-          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(.045), band);
-        }
-      }`);
-  };
-}
-
-const captainHairShapes = new Map();
-function captainHairGeometry(style, headIndex, career = false) {
-  const key = style + ':' + headIndex + ':' + career;
-  if (captainHairShapes.has(key)) return captainHairShapes.get(key);
-  const positions = [], indices = [], joints = [], weights = [];
-  const rings = 28, segments = 56;
-  const curly = style === 'afro' || style === 'curls';
-  const short = style === 'bald' || style === 'buzz';
-  const tied = style === 'ponytail' || style === 'bun' || style === 'headband';
-  const volume = style === 'afro' ? .033 : style === 'curls' ? (career ? .03 : .016)
-    : style === 'floppy' || style === 'swept' ? (career ? .025 : .014)
-      : style === 'ponytail' ? .012 : style === 'bald' || style === 'buzz' ? 0 : .006;
-  for (let row = 0; row <= rings; row++) {
-    for (let col = 0; col <= segments; col++) {
-      const phi = col / segments * Math.PI * 2;
-      const facing = Math.cos(phi);
-      let edge = career ? 1.575 + facing * (facing > 0 ? .05 : .065)
-        : 1.585 + facing * (facing > 0 ? .023 : .065);
-      if (career && style === 'ponytail') edge = 1.562 + facing * (facing > 0 ? .038 : .05);
-      if (!short) edge += (tied ? .002 : .004) * Math.sin(phi * 11 + .6) + .002 * Math.sin(phi * 19);
-      if (style === 'floppy') edge -= .012 * Math.max(0, facing) * (.5 + .5 * Math.sin(phi * 5));
-      const height = career ? .105 : .108;
-      const theta = row / rings * Math.acos((edge - 1.575) / height);
-      const top = Math.max(0, Math.cos(theta));
-      const crown = Math.sin(theta);
-      const wave = Math.sin(phi * 17 + theta * (style === 'swept' || style === 'sidepart' ? 9 : 3));
-      const clumps = curly
-        ? .009 * (Math.sin(phi * 13 + Math.sin(theta * 9)) * Math.sin(theta * 17)
-          + .35 * Math.sin(phi * 23 - theta * 21)) * crown
-        : short ? 0 : (style === 'floppy' ? .008 : tied ? .0025 : .0045) * wave * crown;
-      // Tuck the lower edge into the head rather than leaving a helmet-like lip.
-      const rim = Math.pow(row / rings, 10) * (short ? .007 : .005);
-      const radius = volume * top + clumps - rim;
-      const sweep = style === 'sidepart' || style === 'swept' ? .020 * top * top : 0;
-      positions.push((Math.sin(phi) * Math.sin(theta) * ((career ? .093 : .096) + radius) + sweep) * CAPTAIN_BIND_SCALE,
-        (1.575 + Math.cos(theta) * height + volume * top * top + clumps) * CAPTAIN_BIND_SCALE,
-        (Math.cos(phi) * Math.sin(theta) * ((career ? .1 : .104) + radius) - (career ? .005 : 0)) * CAPTAIN_BIND_SCALE);
-      joints.push(headIndex, 0, 0, 0); weights.push(1, 0, 0, 0);
-      if (row < rings && col < segments) {
-        const a = row * (segments + 1) + col, b = a + segments + 1;
-        indices.push(a, b, a + 1, b, b + 1, a + 1);
-      }
-    }
-  }
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(joints, 4));
-  geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weights, 4));
-  geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  geometry.computeBoundingSphere();
-  captainHairShapes.set(key, geometry);
-  return geometry;
-}
-
-function colourCaptain(model, rig) {
-  let scalp = null;
-  model.traverse(node => {
-    if (!node.isMesh) return;
-    node.castShadow = true;
-    node.frustumCulled = false;
-    node.material = node.material.clone();
-    const region = node.material.name;
-    if (region === 'kit' && squad.foes.includes(rig)) shadeTeamShirt(node.material);
-    if (region === 'skin' || region === 'hair') shadeCaptainFace(node.material, rig.look);
-    node.material.color.setHex(region === 'skin' ? rig.look.skin
-      : region === 'hair' ? (rig.look.style === 'bald' ? rig.look.skin : rig.look.hair)
-        : region === 'gloves' ? rig.kit.gloves || rig.look.skin : rig.kit[region] ?? 0xffffff);
-    if (region === 'hair') {
-      scalp = node;
-      const headIndex = node.skeleton.bones.indexOf(bipedBone(model, 'head'));
-      node.geometry = captainHairGeometry(rig.look.style, headIndex);
-    }
-  });
-  if (scalp && ['headband', 'ponytail', 'bun'].includes(rig.look.style)) {
-    buildCaptainAccessory(model, scalp, rig.look);
-  }
-}
-
-function buildCaptainAccessory(model, scalp, look) {
-  const head = bipedBone(model, 'head');
-  const index = scalp.skeleton.bones.indexOf(head);
-  const hair = new THREE.Group();
-  hair.name = 'captain-hair-accessory';
-  const material = new THREE.MeshStandardMaterial({ color: look.hair, roughness: .9 });
-  if (look.style === 'ponytail') {
-    // Separate tapered locks follow a curved, gravity-hanging tail. All are
-    // built once in bind space and follow the head without per-frame work.
-    for (let lock = 0; lock < 9; lock++) {
-      const angle = lock / 9 * Math.PI * 2;
-      const x = Math.sin(angle) * .014, z = Math.cos(angle) * .010;
-      const curve = new THREE.CatmullRomCurve3([
-        new THREE.Vector3(x * .4, 1.616, -.096 + z * .4),
-        new THREE.Vector3(x, 1.59, -.139 + z),
-        new THREE.Vector3(x + .009, 1.52, -.158 + z),
-        new THREE.Vector3(x * .7 + .020, 1.445 + lock % 3 * .006, -.144 + z * .6),
-      ]);
-      const geometry = new THREE.TubeGeometry(curve, 20, .009, 7, false);
-      const pos = geometry.attributes.position;
-      for (let row = 0; row <= 20; row++) {
-        const t = row / 20, center = curve.getPointAt(t);
-        const taper = 1 - .94 * Math.pow(t, 1.7);
-        for (let col = 0; col <= 7; col++) {
-          const i = row * 8 + col;
-          pos.setXYZ(i, center.x + (pos.getX(i) - center.x) * taper,
-            center.y + (pos.getY(i) - center.y) * taper,
-            center.z + (pos.getZ(i) - center.z) * taper);
-        }
-      }
-      geometry.computeVertexNormals();
-      const shade = material.clone();
-      shade.color.multiplyScalar(.88 + (lock % 3) * .09);
-      hair.add(new THREE.Mesh(geometry, shade));
-    }
-    const tie = new THREE.Mesh(new THREE.TorusGeometry(.017, .003, 6, 16),
-      new THREE.MeshStandardMaterial({ color: 0x292b30, roughness: 1 }));
-    tie.position.set(0, 1.592, -.135);
-    tie.rotation.x = -.6;
-    hair.add(tie);
-    hair.scale.setScalar(CAPTAIN_BIND_SCALE);
-    hair.applyMatrix4(scalp.skeleton.boneInverses[index]);
-    head.add(hair);
-    return hair;
-  }
-  const bun = look.style === 'bun';
-  const tail = new THREE.Mesh(bun ? new THREE.SphereGeometry(.045, 20, 14)
-    : new THREE.CapsuleGeometry(.025, .12, 8, 24), material);
-  const vertices = tail.geometry.attributes.position;
-  for (let i = 0; i < vertices.count; i++) {
-    const x = vertices.getX(i), y = vertices.getY(i), z = vertices.getZ(i);
-    const angle = Math.atan2(z, x);
-    const strand = 1 + .16 * Math.sin(angle * 7 + y * 35);
-    const taper = bun ? 1 : .60 + .40 * THREE.MathUtils.smoothstep(y, -.095, .065);
-    vertices.setXYZ(i, x * strand * taper + (bun ? 0 : .012 * Math.sin(y * 24)),
-      y, z * strand * taper);
-  }
-  tail.geometry.computeVertexNormals();
-  tail.position.set(.01, bun ? 1.60 : 1.55, bun ? -.10 : -.105);
-  tail.rotation.x = -.55;
-  hair.add(tail);
-  // Accessory vertices are authored in the same bind space as the scalp.
-  hair.scale.setScalar(CAPTAIN_BIND_SCALE);
-  hair.applyMatrix4(scalp.skeleton.boneInverses[index]);
-  head.add(hair);
-  return hair;
-}
-
 const strikerAppearances = new Map();
 let defaultStrikerLook = null;
 
-/** Boot-only variants: reuse the same skeleton, animations and foot positions. */
+/** Boot-only variants: reuse the same skeleton, animations and foot positions;
+ * a character's look is a repaint of the striker's block skin. */
 export function prepareStrikerAppearances(characters) {
   if (strikerAppearances.size) return;
   const rig = squad.striker;
   defaultStrikerLook = rig.look;
-  const meshes = [];
-  let scalp = null;
-  const accessories = [];
-  if (captain) captain.model.traverse(node => {
-    if (node.name === 'captain-hair-accessory') accessories.push(node);
-    if (!node.isMesh) return;
-    if (node.material.name === 'hair') scalp = node;
-    if (['skin', 'hair', 'gloves', 'kit', 'shirt-number'].includes(node.material.name)) meshes.push(node);
-  });
-  strikerAppearances.set(null, { look: rig.look, face: rig.appearance.face,
-    meshes: meshes.map(mesh => ({ mesh, material: mesh.material, geometry: mesh.geometry })), accessories });
+  strikerAppearances.set(null, { look: rig.look, face: rig.appearance.face });
   for (const character of characters) {
     const look = character.look;
     const face = new THREE.Group();
@@ -981,56 +779,7 @@ export function prepareStrikerAppearances(characters) {
     buildFace(face, look, material);
     face.visible = false;
     rig.body.add(face);
-    const variant = { look, face, meshes: [], accessories: [] };
-    for (const mesh of meshes) {
-      const region = mesh.material.name;
-      const mat = mesh.material.clone();
-      let geometry = mesh.geometry;
-      if (region === 'skin' || region === 'hair') shadeCaptainFace(mat, look);
-      if (['skin', 'hair', 'gloves'].includes(region)) {
-        mat.color.setHex(region === 'hair' && look.style !== 'bald' ? look.hair : look.skin);
-      }
-      if (region === 'hair') {
-        geometry = captainHairGeometry(look.style,
-          mesh.skeleton.bones.indexOf(bipedBone(captain.model, 'head')), true);
-      } else {
-        // Apply the same deformation to cloth, skin and shirt printing so
-        // shared garment seams stay closed. Legs and foot positions stay fixed.
-        geometry = mesh.geometry.clone();
-        const pos = geometry.attributes.position;
-        for (let i = 0; i < pos.count; i++) {
-          const y = pos.getY(i) / CAPTAIN_BIND_SCALE;
-          if (look.style === 'ponytail' && region === 'skin' && y > 1.51) {
-            // Remove the source scan's jagged fringe beneath Lars's new hair.
-            const x = pos.getX(i) / CAPTAIN_BIND_SCALE;
-            const z = pos.getZ(i) / CAPTAIN_BIND_SCALE;
-            const nx = x / .093, ny = (y - 1.575) / .105, nz = (z + .005) / .1;
-            const radius = Math.hypot(nx, ny, nz);
-            const weight = Math.max(THREE.MathUtils.smoothstep(y, 1.59, 1.615),
-              THREE.MathUtils.smoothstep(y, 1.51, 1.57)
-                * (1 - THREE.MathUtils.smoothstep(z, .035, .075)));
-            if (radius > 1) {
-              const scale = lerp(1, .995 / radius, weight);
-              pos.setXYZ(i, x * scale * CAPTAIN_BIND_SCALE,
-                (1.575 + (y - 1.575) * scale) * CAPTAIN_BIND_SCALE,
-                (-.005 + (z + .005) * scale) * CAPTAIN_BIND_SCALE);
-            }
-          }
-          const chest = THREE.MathUtils.smoothstep(y, .85, 1.15)
-            * (1 - THREE.MathUtils.smoothstep(y, 1.38, 1.46));
-          pos.setX(i, pos.getX(i) * (1 + (look.build - 1) * chest));
-        }
-        // Preserve the imported seam normals across the split material regions.
-        geometry.computeBoundingSphere();
-      }
-      variant.meshes.push({ mesh, material: mat, geometry });
-    }
-    if (scalp && ['headband', 'ponytail', 'bun'].includes(look.style)) {
-      const accessory = buildCaptainAccessory(captain.model, scalp, look);
-      accessory.visible = false;
-      variant.accessories.push(accessory);
-    }
-    strikerAppearances.set(character.id, variant);
+    strikerAppearances.set(character.id, { look, face });
   }
 }
 
@@ -1040,14 +789,10 @@ export function setStrikerAppearance(id = null) {
   if (!variant) return;
   for (const entry of strikerAppearances.values()) {
     entry.face.visible = entry === variant;
-    for (const accessory of entry.accessories) accessory.visible = entry === variant;
-  }
-  for (const entry of variant.meshes) {
-    entry.mesh.material = entry.material;
-    entry.mesh.geometry = entry.geometry;
   }
   const rig = squad.striker;
   rig.look = variant.look;
+  paintBlocks(rig);
   rig.appearance.skin.color.setHex(variant.look.skin);
   rig.appearance.hand.color.setHex(variant.look.skin);
   rig.appearance.torso.scale.set(variant.look.build, 1, .72 * variant.look.build);
@@ -1405,6 +1150,35 @@ export function startReaction(role, name) {
   return track.duration + .3;
 }
 
+/**
+ * Between arcade chances there is no match play to blend a celebration or a
+ * reaction back out, so snap every player to his idle clip before the next
+ * chance captures poses for aiming.
+ */
+export function settlePlayers() {
+  if (captain) {
+    for (const name of ANIMATIONS) captain.actions[name].setEffectiveWeight(0);
+    captain.actions.idle.setEffectiveWeight(1);
+    captain.actions.idle.time = 0;
+    captain.moveBlend = 0;
+    captain.passTime = -1;
+    kickTime = -1;
+    captainSpeed = 0;
+    captain.mixer.update(0);
+  }
+  for (const player of players) {
+    const avatar = player.rig.avatar;
+    if (!avatar?.actions) continue;
+    for (const action of Object.values(avatar.actions)) action.setEffectiveWeight(0);
+    const idle = avatar.actions[avatar.idleName] || avatar.actions.idle;
+    idle.setEffectiveWeight(1);
+    idle.time = 0;
+    avatar.passTime = -1;
+    avatar.mixer.update(0);
+  }
+  pauseCaptured = false;
+}
+
 export function stopReactions() {
   defenderReactions.active = false;
   for (const role of ['keeper', 'shooter']) if (reactions[role]) reactions[role].name = null;
@@ -1599,6 +1373,7 @@ function buildSidelineStaff() {
   const yellow = new THREE.MeshStandardMaterial({ color: 0xffea32, side: THREE.DoubleSide });
   for (let i = 0; i < 2; i++) {
     const rig = buildHumanoid({ ...KIT_REF, kit: 0xe2ed36, lite: true }, LOOKS[i ? 7 : 4]);
+    blockifyHumanoid(rig, { kit: { ...KIT_REF, kit: 0xe2ed36 } });
     rig.root.position.set(i ? 35.2 : -35.2, 0, GOAL.PLANE_Z + PITCH.LENGTH * (i ? .75 : .25));
     group.add(rig.root);
     const flag = new THREE.Group();
@@ -1628,30 +1403,67 @@ function buildSidelineStaff() {
   }
 }
 
-async function loadPhotographers() {
-  let timer;
-  try {
-    const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
-    const loader = new GLTFLoader();
-    const models = await Promise.race([
-      Promise.all(['standing', 'kneeling'].map(name =>
-        loader.loadAsync(`assets/photographer-${name}.glb`))),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Photographer load timed out')), 10000); }),
-    ]);
-    for (let i = 0; i < sidelineStaff.photographers.length; i++) {
-      const photographer = sidelineStaff.photographers[i];
-      const model = models[i % 2].scene.clone(true);
-      model.traverse(node => {
-        if (node.isMesh) { node.castShadow = true; node.receiveShadow = false; }
-      });
-      photographer.model = model;
-      photographer.rig.root.add(model);
+/**
+ * Photographers are built from block parts: one standing, one kneeling, both
+ * holding a camera up to the face. Poses are fixed; nothing animates per frame.
+ */
+function buildBlockPhotographer(kneeling, look) {
+  const P = BLOCK_PX;
+  const { material, canvas, texture } = blockSkin();
+  const model = new THREE.Group();
+  // Same 8/12/12 stack as the players; kneeling drops the body by a shin.
+  const legTop = kneeling ? 5 * P : 12 * P;
+  addBlock(model, material, 'hips', 0, legTop + 1.5 * P);
+  addBlock(model, material, 'torso', 0, legTop + 7.5 * P);
+  const head = addBlock(model, material, 'head', 0, legTop + (12 + HEAD_RISE) * P, P * .5);
+  for (const side of [-1, 1]) {
+    const key = side > 0 ? 'L' : 'R';
+    // Arms raised forward to hold the camera.
+    const shoulder = new THREE.Group();
+    shoulder.position.set(side * 6 * P, legTop + 11.5 * P, 0);
+    shoulder.rotation.set(-1.35, 0, side * -.35);
+    model.add(shoulder);
+    addBlock(shoulder, material, 'arm' + key, 0, -4.5 * P);
+    const x = side * 2 * P;
+    if (kneeling && side > 0) {
+      // Front leg: thigh forward, shin down to a planted boot.
+      const thigh = addBlock(model, material, 'thigh' + key, x, legTop - 1 * P, 2.5 * P);
+      thigh.rotation.x = Math.PI / 2;
+      addBlock(model, material, 'shin' + key, x, 3.5 * P, 3.5 * P).scale.y = 5 / 7;
+      addBlock(model, material, 'boot' + key, x, P, 4 * P);
+    } else if (kneeling) {
+      // Back leg: knee on the ground, shin trailing behind.
+      addBlock(model, material, 'thigh' + key, x, legTop - 2.5 * P).scale.y = .6;
+      const shin = addBlock(model, material, 'shin' + key, x, 2 * P, -3.5 * P);
+      shin.rotation.x = Math.PI / 2;
+      const boot = addBlock(model, material, 'boot' + key, x, 1.5 * P, -7.5 * P);
+      boot.rotation.x = -Math.PI / 2;
+    } else {
+      addBlock(model, material, 'thigh' + key, x, legTop - 2.5 * P);
+      addBlock(model, material, 'shin' + key, x, legTop - 8.5 * P);
+      addBlock(model, material, 'boot' + key, x, P, 1.5 * P);
     }
-  } catch (error) {
-    // Decorative assets must not prevent the match from loading.
-    console.warn('Photographer models unavailable:', error);
-  } finally {
-    clearTimeout(timer);
+  }
+  const dark = new THREE.MeshStandardMaterial({ color: 0x17191d, roughness: .6 });
+  const camera = new THREE.Mesh(new THREE.BoxGeometry(6 * P, 4 * P, 3 * P), dark);
+  camera.position.set(0, head.position.y - P, 6.5 * P);
+  const lens = new THREE.Mesh(new THREE.BoxGeometry(2 * P, 2 * P, 3 * P), dark);
+  lens.position.set(0, -.5 * P, 2.5 * P);
+  camera.add(lens);
+  model.add(camera);
+  model.traverse(node => { if (node.isMesh) node.castShadow = true; });
+  paintSkin(canvas, { look, kit: { kit: 0x2e3a2f, shorts: 0x23272e, socks: 0x23272e, boots: 0x15171b },
+    sleeves: true, trousers: true });
+  texture.needsUpdate = true;
+  return model;
+}
+
+async function loadPhotographers() {
+  for (let i = 0; i < sidelineStaff.photographers.length; i++) {
+    const photographer = sidelineStaff.photographers[i];
+    const model = buildBlockPhotographer(i % 2 === 1, LOOKS[(i * 5 + 2) % LOOKS.length]);
+    photographer.model = model;
+    photographer.rig.root.add(model);
   }
 }
 
@@ -1825,68 +1637,66 @@ const turfMaps = [];
 let turfMaterial;
 export const PITCH_SURFACES = ['Emerald stripes', 'Summer checkerboard', 'Worn diagonal'];
 
+/** Turf as square tiles: one texel per TURF_TILE, markings painted as whole tiles. */
 function turfTexture(variant) {
   const c = document.createElement('canvas');
-  c.width = 1024; c.height = 1536;
+  c.width = Math.round(120 / TURF_TILE); c.height = Math.round(145 / TURF_TILE);
   const g = c.getContext('2d');
   let seed = 7351 + variant * 919;
   const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
   const colors = [[48, 100, 43], [76, 111, 46], [65, 98, 46]];
   const base = colors[variant];
   const pixels = g.createImageData(c.width, c.height);
+  const half = TURF_TILE * .55;
+  const halfW = PITCH.WIDTH / 2, halfL = PITCH.LENGTH / 2;
+  const marking = (px, z) => {
+    const ax = Math.abs(px), az = Math.abs(z);
+    if (ax > halfW + half || az > halfL + half) return false;
+    if (Math.abs(ax - halfW) < half || Math.abs(az - halfL) < half || Math.abs(z) < half) return true;
+    if (Math.abs(Math.hypot(px, z) - 9.15) < half) return true;
+    const depth = halfL - az; // distance in from the nearer goal line
+    if (Math.abs(ax - 9.16) < half && depth < 5.5 + half) return true;
+    if (Math.abs(depth - 5.5) < half && ax < 9.16 + half) return true;
+    if (Math.abs(ax - 20.16) < half && depth < 16.5 + half) return true;
+    if (Math.abs(depth - 16.5) < half && ax < 20.16 + half) return true;
+    if (depth > 16.5 && Math.abs(Math.hypot(px, depth - 11) - 9.15) < half) return true; // penalty arc
+    if (ax < half && (Math.abs(depth - 11) < half || Math.abs(z) < half)) return true;    // spots
+    return false;
+  };
   for (let y = 0; y < c.height; y++) {
-    const z = (y / c.height - .5) * 145;
+    const z = (y + .5) * TURF_TILE - 72.5;
     for (let x = 0; x < c.width; x++) {
-      const px = (x / c.width - .5) * 120;
-      const inPitch = Math.abs(px) < PITCH.WIDTH / 2 && Math.abs(z) < PITCH.LENGTH / 2;
+      const px = (x + .5) * TURF_TILE - 60;
+      const i = (y * c.width + x) * 4;
+      if (marking(px, z)) {
+        const tone = 222 + random() * 16;
+        pixels.data[i] = tone; pixels.data[i + 1] = tone + 4; pixels.data[i + 2] = tone - 6;
+        pixels.data[i + 3] = 255;
+        continue;
+      }
+      const inPitch = Math.abs(px) < halfW && Math.abs(z) < halfL;
       const band = variant === 0 ? Math.floor((z + 52.5) / 8.08)
         : variant === 1 ? Math.floor((px + 34) / 8.5) + Math.floor((z + 52.5) / 8.08)
-        : Math.floor((px + z + 100) / 8);
-      const mowing = inPitch ? (band % 2 ? 6 : -5) : -9;
-      const mottling = Math.sin(px * .53 + Math.sin(z * .31)) * 2.5
-        + Math.sin(z * 1.7 + px * .77) * 1.5;
-      const grain = (random() - .5) * 16;
-      const i = (y * c.width + x) * 4;
-      pixels.data[i] = base[0] + mowing + mottling + grain;
-      pixels.data[i + 1] = base[1] + mowing + mottling + grain;
-      pixels.data[i + 2] = base[2] + mowing * .6 + mottling + grain * .6;
+          : Math.floor((px + z + 100) / 8);
+      const mowing = inPitch ? (band % 2 ? 7 : -6) : -10;
+      const mottling = Math.round(Math.sin(px * .53 + Math.sin(z * .31)) * 1.5) * 2;
+      const grain = (random() - .5) * 12;
+      // Worn goal mouths and centre: browner tiles, never baked-in markings.
+      const mouth = Math.max(0, 1 - Math.hypot(px / 7, (halfL - Math.abs(z)) / 6));
+      const centre = Math.max(0, 1 - Math.hypot(px, z) / 5);
+      const wear = (variant === 2 ? 1.6 : .8) * Math.max(mouth, centre * .6) * (random() < .7 ? 1 : 0);
+      pixels.data[i] = base[0] + mowing + mottling + grain + wear * 44;
+      pixels.data[i + 1] = base[1] + mowing + mottling + grain + wear * 14;
+      pixels.data[i + 2] = base[2] + mowing * .6 + mottling + grain * .6 + wear * 10;
       pixels.data[i + 3] = 255;
     }
   }
   g.putImageData(pixels, 0, 0);
-  // Soft wear around both goal mouths and midfield, never baked-in markings.
-  for (let i = 0; i < (variant === 2 ? 180 : 55); i++) {
-    const end = i % 3;
-    const x = c.width * .5 + (random() - .5) * (end === 2 ? 160 : 90);
-    const y = c.height * (.5 + (end === 2 ? 0 : end === 0 ? -49 / 145 : 49 / 145))
-      + (random() - .5) * 75;
-    const radius = 4 + random() * 21;
-    const patch = g.createRadialGradient(x, y, 0, x, y, radius);
-    patch.addColorStop(0, variant === 2 ? 'rgba(151,124,68,.13)' : 'rgba(131,125,65,.06)');
-    patch.addColorStop(1, 'rgba(131,125,65,0)');
-    g.fillStyle = patch; g.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-  }
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
+  t.magFilter = THREE.NearestFilter;
   t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   t.name = PITCH_SURFACES[variant];
-  return t;
-}
-
-function turfDetail() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 256;
-  const g = c.getContext('2d');
-  g.fillStyle = '#808080'; g.fillRect(0, 0, 256, 256);
-  for (let i = 0; i < 18000; i++) {
-    const tone = 60 + (Math.random() * 135) | 0;
-    g.fillStyle = `rgb(${tone},${tone},${tone})`;
-    g.fillRect(Math.random() * 256, Math.random() * 256, .7, 1 + Math.random() * 3);
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(80, 97);
-  t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
   return t;
 }
 
@@ -1895,33 +1705,9 @@ export function setPitchSurface(index) {
   turfMaterial.map = turfMaps[index];
 }
 
-function ballTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 256;
-  const g = c.getContext('2d');
-  g.fillStyle = '#f7f9fb';
-  g.fillRect(0, 0, 256, 256);
-  g.fillStyle = '#14181d';
-  const spots = [[40, 46], [128, 30], [212, 54], [84, 122], [176, 118], [40, 198], [130, 214], [214, 190]];
-  for (const [cx, cy] of spots) {
-    g.beginPath();
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
-      const px = cx + Math.cos(a) * 26, py = cy + Math.sin(a) * 26;
-      i ? g.lineTo(px, py) : g.moveTo(px, py);
-    }
-    g.closePath();
-    g.fill();
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.anisotropy = 4;
-  return t;
-}
-
 function buildField() {
   for (let i = 0; i < PITCH_SURFACES.length; i++) turfMaps.push(turfTexture(i));
-  turfMaterial = new THREE.MeshStandardMaterial({ map: turfMaps[0], roughness: .96,
-    bumpMap: turfDetail(), bumpScale: .018 });
+  turfMaterial = new THREE.MeshStandardMaterial({ map: turfMaps[0], roughness: .96 });
   const field = new THREE.Mesh(
     new THREE.PlaneGeometry(120, 145),
     turfMaterial
@@ -1931,52 +1717,14 @@ function buildField() {
   field.name = 'pitch-turf';
   field.receiveShadow = true;
   scene.add(field);
-
-  const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5 });
-  const strip = (pts) => {
-    const geo = new THREE.BufferGeometry().setFromPoints(
-      pts.map((p) => new THREE.Vector3(p[0], 0.02, p[1]))
-    );
-    scene.add(new THREE.Line(geo, lineMat));
-  };
-
-  strip([[-34, GOAL.PLANE_Z], [34, GOAL.PLANE_Z]]);
-  strip([[-9.16, GOAL.PLANE_Z], [-9.16, GOAL.PLANE_Z + 5.5], [9.16, GOAL.PLANE_Z + 5.5], [9.16, GOAL.PLANE_Z]]);
-  strip([[-20.16, GOAL.PLANE_Z], [-20.16, GOAL.PLANE_Z + 16.5], [20.16, GOAL.PLANE_Z + 16.5], [20.16, GOAL.PLANE_Z]]);
-  const far = GOAL.PLANE_Z + PITCH.LENGTH;
-  const half = GOAL.PLANE_Z + PITCH.LENGTH / 2;
-  strip([[-34, half], [34, half]]);
-  strip([[-34, GOAL.PLANE_Z], [-34, far], [34, far], [34, GOAL.PLANE_Z]]);
-  strip([[-9.16, far], [-9.16, far - 5.5], [9.16, far - 5.5], [9.16, far]]);
-  strip([[-20.16, far], [-20.16, far - 16.5], [20.16, far - 16.5], [20.16, far]]);
-
-  const arc = [];
-  for (let i = 0; i <= 28; i++) {
-    const end = Math.asin(5.5 / 9.15);
-    const a = end + (Math.PI - 2 * end) * i / 28;
-    arc.push([Math.cos(a) * 9.15, GOAL.PLANE_Z + 11 + Math.sin(a) * 9.15]);
-  }
-  strip(arc);
-  strip(arc.map(p => [p[0], GOAL.PLANE_Z * 2 + PITCH.LENGTH - p[1]]));
-
-  const circle = [];
-  for (let i = 0; i <= 40; i++) {
-    const a = (i / 40) * Math.PI * 2;
-    circle.push([Math.cos(a) * 9.15, half + Math.sin(a) * 9.15]);
-  }
-  strip(circle);
-  for (const z of [GOAL.PLANE_Z + 11, half, far - 11]) {
-    const spot = new THREE.Mesh(new THREE.CircleGeometry(.06, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-    spot.rotation.x = -Math.PI / 2;
-    spot.position.set(0, .022, z);
-    scene.add(spot);
-  }
+  // Markings are part of the turf tiles (turfTexture), not separate lines.
 }
 
 function buildGoal() {
   const goalMeshes = [];
   const frame = new THREE.MeshStandardMaterial({ color: 0xf4f7fa, roughness: 0.4 });
-  const postGeo = new THREE.CylinderGeometry(GOAL.POST_R, GOAL.POST_R, GOAL.BAR_Y, 20);
+  // Square section, same width as the collision cylinder.
+  const postGeo = new THREE.BoxGeometry(GOAL.POST_R * 2, GOAL.BAR_Y, GOAL.POST_R * 2);
   for (const sx of [-1, 1]) {
     const p = new THREE.Mesh(postGeo, frame);
     p.position.set(sx * GOAL.POST_X, GOAL.BAR_Y / 2, GOAL.PLANE_Z);
@@ -1986,7 +1734,7 @@ function buildGoal() {
     goalMeshes.push(p);
   }
   const bar = new THREE.Mesh(
-    new THREE.CylinderGeometry(GOAL.POST_R, GOAL.POST_R, GOAL.POST_X * 2 + GOAL.POST_R * 2, 12), frame);
+    new THREE.BoxGeometry(GOAL.POST_R * 2, GOAL.POST_X * 2 + GOAL.POST_R * 2, GOAL.POST_R * 2), frame);
   bar.rotation.z = Math.PI / 2;
   bar.position.set(0, GOAL.BAR_Y, GOAL.PLANE_Z);
   bar.name = 'goal-crossbar';
@@ -2015,7 +1763,7 @@ function buildGoal() {
   const support = (ax, ay, az, bx, by, bz) => {
     const a = new THREE.Vector3(ax, ay, az), b = new THREE.Vector3(bx, by, bz);
     const direction = b.clone().sub(a);
-    const rail = new THREE.Mesh(new THREE.CylinderGeometry(.025, .025, direction.length(), 8), frame);
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(.05, direction.length(), .05), frame);
     rail.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
     rail.position.copy(a).add(b).multiplyScalar(.5);
     rail.name = 'goal-support';
@@ -2266,73 +2014,60 @@ function joinCrowdParts(parts) {
   return result;
 }
 
+/** Block fans in Minecraft proportions (32 px tall), one geometry per colour slot:
+ * shirt, head, hair, trousers, arms, scarf, scarf squares, shoes and eyes. */
 function supporterParts(pose) {
-  const box = (w, h, d, x, y, z = 0) => new THREE.BoxGeometry(w, h, d).translate(x, y, z);
-  const oval = (rx, ry, rz, x, y, z = 0) => new THREE.SphereGeometry(1, 8, 6)
-    .scale(rx, ry, rz).translate(x, y, z);
-  const limb = (start, end, bottom, top) => {
-    const a = new THREE.Vector3(...start), b = new THREE.Vector3(...end);
-    const direction = b.clone().sub(a);
-    return new THREE.CylinderGeometry(top, bottom, direction.length(), 8)
-      .applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize()))
-      .translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
-  };
-  const arms = [], hands = [], sleeves = [], trousers = [], shoes = [];
+  const P = CROWD_PX;
+  const box = (w, h, d, x, y, z = 0) => new THREE.BoxGeometry(w * P, h * P, d * P).translate(x * P, y * P, z * P);
+  const sleeves = [], arms = [], trousers = [], dark = [];
   for (const side of [-1, 1]) {
     const up = pose === 2 || (pose === 1 && side === 1);
-    const shoulder = [side * .19, 1.31, 0];
-    const elbow = [side * (up ? .39 : .29), up ? 1.61 : 1.04, .025];
-    const hand = [side * (up ? .48 : .27), up ? 1.96 : .81, .055];
-    const cuff = shoulder.map((v, i) => v + (elbow[i] - v) * .48);
-    sleeves.push(oval(.095, .10, .105, ...shoulder), limb(shoulder, cuff, .085, .072));
-    arms.push(limb(cuff, elbow, .057, .045), oval(.045, .046, .045, ...elbow),
-      limb(elbow, hand, .046, .032));
-    hands.push(oval(.043, .069, .032, ...hand));
-    const hip = [side * .10, .79, 0];
-    const knee = [side * .115, .43, pose === 1 ? .035 : .01];
-    const ankle = [side * .125, .105, 0];
-    trousers.push(limb(hip, knee, .098, .071), oval(.072, .082, .075, ...knee),
-      limb(knee, ankle, .073, .051));
-    shoes.push(oval(.066, .061, .125, side * .125, .061, .045));
+    // Raised arms stand straight up from the shoulder; lowered ones hang.
+    sleeves.push(box(4, 4, 4, side * 6, up ? 26 : 22));
+    arms.push(box(4, 8, 4, side * 6, up ? 32 : 16));
+    trousers.push(box(4, 12, 4, side * 2, 6));
+    dark.push(box(4.2, 2, 4.8, side * 2, 1, .4), box(1, 1, .3, side * 2, 28, 4.1));
   }
-  // A smooth waist/chest/shoulder profile instead of a straight polygonal tube.
-  const torso = new THREE.LatheGeometry([[.16, .78], [.175, .85], [.163, 1.0],
-    [.205, 1.20], [.21, 1.29], [.165, 1.35], [.058, 1.39]]
-    .map(([r, y]) => new THREE.Vector2(r, y)), 10).scale(1, 1, .64);
-  return [joinCrowdParts([torso, ...sleeves]),
-    joinCrowdParts([oval(.108, .148, .113, 0, 1.55),
-      oval(.025, .038, .018, -.108, 1.55), oval(.025, .038, .018, .108, 1.55),
-      oval(.022, .029, .034, 0, 1.55, .103),
-      new THREE.CylinderGeometry(.048, .055, .12, 8).translate(0, 1.39, 0)]),
-    new THREE.SphereGeometry(0.129, 10, 5, 0, Math.PI * 2, 0, Math.PI * .56)
-      .scale(0.88, 1.16, 0.92).translate(0, 1.57, -0.008),
-    joinCrowdParts([oval(.185, .115, .105, 0, .79), ...trousers]),
-    joinCrowdParts(arms.concat(hands)),
-    pose === 2 ? box(1.08, 0.14, 0.025, 0, 2.0, 0.04) : null,
-    pose === 2 ? joinCrowdParts([-0.42, -0.14, 0.14, 0.42].map(x => box(.13, .145, .029, x, 2.0, .04))) : null,
-    joinCrowdParts([...shoes, box(.015, .014, .012, -.035, 1.58, .105), box(.015, .014, .012, .035, 1.58, .105),
-      new THREE.SphereGeometry(.025, 5, 4).scale(.7, pose === 0 ? .45 : 1.3, .35).translate(0, 1.51, .11)])];
+  return [joinCrowdParts([box(8, 12, 4, 0, 18), ...sleeves]),
+    joinCrowdParts([box(8, 8, 8, 0, 28)]),
+    joinCrowdParts([box(8.4, 2.4, 8.4, 0, 31.4), box(8.4, 4, 1, 0, 29.6, -3.9)]),
+    joinCrowdParts(trousers),
+    joinCrowdParts(arms),
+    pose === 2 ? box(20, 2.5, .6, 0, 35, 1.2) : null,
+    pose === 2 ? joinCrowdParts([-7.5, -2.5, 2.5, 7.5].map(x => box(2.5, 2.7, .8, x, 35, 1.3))) : null,
+    joinCrowdParts(dark)];
 }
 
 /** Static stadium detailing is merged by material: no per-frame work or new lights. */
 function stadiumBoardTexture() {
+  // Low-resolution lettering, magnified without filtering, so it reads as pixels.
   const canvas = document.createElement('canvas');
-  canvas.width = 1024; canvas.height = 128;
+  canvas.width = 256; canvas.height = 32;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#10273b'; ctx.fillRect(0, 0, 1024, 128);
-  ctx.fillStyle = '#28465c'; ctx.fillRect(0, 0, 1024, 5);
-  ctx.fillStyle = '#d6ff3f'; ctx.fillRect(0, 118, 1024, 4);
-  ctx.font = 'italic 900 43px Arial'; ctx.textAlign = 'center';
-  ctx.fillStyle = '#dcebf2'; ctx.fillText('STRIKER STREAK', 256, 80);
-  ctx.fillStyle = '#79c8d6'; ctx.fillText('MAKE IT COUNT', 770, 80);
-  ctx.fillStyle = '#d6ff3f';
-  for (const x of [22, 520]) {
-    ctx.beginPath(); ctx.moveTo(x, 44); ctx.lineTo(x + 20, 64);
-    ctx.lineTo(x, 84); ctx.lineTo(x + 7, 64); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#10273b'; ctx.fillRect(0, 0, 256, 32);
+  ctx.fillStyle = '#28465c'; ctx.fillRect(0, 0, 256, 2);
+  ctx.fillStyle = '#d6ff3f'; ctx.fillRect(0, 29, 256, 1);
+  ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#dcebf2'; ctx.fillText('BLOCK STRIKER', 68, 16);
+  ctx.fillStyle = '#ffd23f'; ctx.fillText('HIT THE TARGET', 196, 16);
+  // Threshold the anti-aliased glyph edges so every texel is fully on or off.
+  const image = ctx.getImageData(0, 0, 256, 32);
+  for (let i = 0; i < image.data.length; i += 4) {
+    const bright = image.data[i] + image.data[i + 1] + image.data[i + 2];
+    if (bright > 150 && bright < 420 && image.data[i + 1] < 200) {
+      const on = bright > 285;
+      image.data[i] = on ? (i % 1024 < 512 ? 0xdc : 0x79) : 0x10;
+      image.data[i + 1] = on ? (i % 1024 < 512 ? 0xeb : 0xc8) : 0x27;
+      image.data[i + 2] = on ? (i % 1024 < 512 ? 0xf2 : 0xd6) : 0x3b;
+    }
   }
+  ctx.putImageData(image, 0, 0);
+  ctx.fillStyle = '#d6ff3f';
+  for (const x of [4, 132]) { ctx.fillRect(x, 11, 2, 10); ctx.fillRect(x + 2, 13, 2, 6); ctx.fillRect(x + 4, 15, 2, 2); }
   const map = new THREE.CanvasTexture(canvas);
   map.colorSpace = THREE.SRGBColorSpace;
   map.wrapS = THREE.RepeatWrapping;
+  map.magFilter = THREE.NearestFilter;
   map.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
   return map;
 }
@@ -2475,6 +2210,7 @@ function buildStands() {
       }
       const glow = new THREE.Sprite(glowMaterial);
       glow.name = 'stadium-floodlight-glow';
+      glow.visible = false;   // a day game: the floodlights are off
       glow.position.set(stand.x + x * cos - sin * 11.7, 17.7, stand.z - x * sin - cos * 11.7);
       glow.scale.set(9, 7, 1);
       scene.add(glow);
@@ -2581,63 +2317,172 @@ function buildSupporterFlags() {
   }
 }
 
+/**
+ * The ball is built from blocks: a sphere voxelized into BALL_VOXEL cubes,
+ * painted like a classic ball - black pentagon patches around the twelve
+ * vertices of an icosahedron, white hexagon panels between them.
+ */
+const BALL_PATCHES = (() => {
+  const t = (1 + Math.sqrt(5)) / 2;
+  return [[-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0], [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+    [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1]].map(v => new THREE.Vector3(...v).normalize());
+})();
+
 function buildBall() {
-  const b = new THREE.Mesh(
-    new THREE.SphereGeometry(BALL_R, 20, 14),
-    new THREE.MeshStandardMaterial({ map: ballTexture(), roughness: 0.55 })
-  );
+  const sphere = new THREE.SphereGeometry(BALL_R, 32, 24);
+  const direction = new THREE.Vector3(), black = new THREE.Color(0x1a1d22), white = new THREE.Color(0xf2f3f0);
+  // Colour from the surface direction at the sampled UV (SphereGeometry's own mapping).
+  const panel = (u, v, out) => {
+    const phi = u * Math.PI * 2, theta = (1 - v) * Math.PI;
+    direction.set(-Math.cos(phi) * Math.sin(theta), Math.cos(theta), Math.sin(phi) * Math.sin(theta));
+    let nearest = 0;
+    for (const patch of BALL_PATCHES) nearest = Math.max(nearest, patch.dot(direction));
+    const colour = nearest > .93 ? black : white;
+    out[0] = colour.r; out[1] = colour.g; out[2] = colour.b;
+  };
+  const b = new THREE.Mesh(voxelizeGeometry(sphere, BALL_VOXEL, panel),
+    voxelShade(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .6 }), { size: BALL_VOXEL, jitter: .03, key: 'ball' }));
+  sphere.dispose();
+  b.name = 'soccer-ball';
   b.castShadow = true;
   b.position.set(BALL_START.x, BALL_START.y, BALL_START.z);
   scene.add(b);
   objects.ball = b;
 }
 
-let ballLoad;
-export function loadBall() {
-  if (!ballLoad) ballLoad = loadBallModel();
-  return ballLoad;
+/** Kept for the boot sequence: the ball is procedural, there is nothing to load. */
+export function loadBall() { return Promise.resolve(); }
+
+// ---------------------------------------------------------------------------
+// Arcade target: a block frame hung in the goal mouth, just behind the line so
+// the ball flies through it. Purely visual; app.js scores the crossing point.
+// ---------------------------------------------------------------------------
+const target = { group: null, ring: null, bull: null, fill: null, heart: null, collected: 0, time: 0 };
+const HEART_PIXELS = ['.XX.XX.', 'XXXXXXX', 'XXXXXXX', '.XXXXX.', '..XXX..', '...X...'];
+const TARGET_BAR = .09;
+
+function blockFrame(material) {
+  const frame = new THREE.Group();
+  for (let i = 0; i < 4; i++) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(1, 1, TARGET_BAR), material);
+    bar.userData.side = i;
+    frame.add(bar);
+  }
+  return frame;
 }
 
-async function loadBallModel() {
-  let timer;
-  try {
-    const gltf = await Promise.race([
-      import('three/addons/loaders/GLTFLoader.js').then(({ GLTFLoader }) =>
-        new GLTFLoader().loadAsync('assets/ball.glb')),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Ball load timed out')), 10000); }),
-    ]);
-    gltf.scene.updateMatrixWorld(true);
-    const mesh = gltf.scene.getObjectByProperty('isMesh', true);
-    if (!mesh) throw new Error('Ball asset has no mesh');
-    // Bake the asset transform and centre its geometry, keeping the existing
-    // ball object and its physics-driven position/rotation stable.
-    const geometry = mesh.geometry;
-    geometry.applyMatrix4(mesh.matrixWorld);
-    geometry.computeBoundingSphere();
-    const { center, radius } = geometry.boundingSphere;
-    if (!(radius > 0)) throw new Error('Ball asset has invalid bounds');
-    geometry.translate(-center.x, -center.y, -center.z);
-    geometry.scale(BALL_R / radius, BALL_R / radius, BALL_R / radius);
-    geometry.computeBoundingSphere();
-    geometry.computeBoundingBox();
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    for (const material of materials) {
-      material.metalness = 0;
-      material.side = THREE.FrontSide;
-      if (material.map) material.map.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
-    }
-    objects.ball.geometry.dispose();
-    objects.ball.material.map.dispose();
-    objects.ball.material.dispose();
-    objects.ball.geometry = geometry;
-    objects.ball.material = mesh.material;
-    objects.ball.name = 'soccer-ball';
-    objects.ball.userData.asset = 'assets/ball.glb';
-  } catch (error) {
-    console.warn('Using procedural ball fallback:', error);
-  } finally {
-    clearTimeout(timer);
+/** Sizes a frame's four bars around a square of the given half-width. */
+function sizeFrame(frame, half) {
+  for (const bar of frame.children) {
+    const side = bar.userData.side, horizontal = side < 2;
+    bar.scale.set(horizontal ? half * 2 + TARGET_BAR : TARGET_BAR, horizontal ? TARGET_BAR : half * 2, 1);
+    bar.position.set(horizontal ? 0 : (side === 2 ? -half : half), horizontal ? (side === 0 ? half : -half) : 0, 0);
   }
+}
+
+function buildTarget() {
+  const group = new THREE.Group();
+  group.name = 'arcade-target';
+  group.position.z = GOAL.PLANE_Z - .04;
+  group.visible = false;
+  const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xffd23f, toneMapped: false });
+  const bullMaterial = new THREE.MeshBasicMaterial({ color: 0xff4d3a, toneMapped: false });
+  const fillMaterial = new THREE.MeshBasicMaterial({ color: 0xff4d3a, transparent: true, opacity: .35,
+    depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
+  target.ring = blockFrame(ringMaterial);
+  target.bull = blockFrame(bullMaterial);
+  target.fill = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), fillMaterial);
+  group.add(target.ring, target.bull, target.fill);
+  // Extra life: a pixel heart built from cubes, floating in the bullseye.
+  const cube = .085;
+  const heart = new THREE.InstancedMesh(new THREE.BoxGeometry(cube, cube, cube),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), 30);
+  const place = new THREE.Object3D(), tint = new THREE.Color();
+  let n = 0;
+  HEART_PIXELS.forEach((row, y) => [...row].forEach((cell, x) => {
+    if (cell !== 'X') return;
+    place.position.set((x - 3) * cube, (2.5 - y) * cube, .12);
+    place.updateMatrix();
+    heart.setMatrixAt(n, place.matrix);
+    heart.setColorAt(n++, tint.setHex(y === 1 && (x === 1 || x === 2) ? 0xffc2b8 : 0xe8322b));
+  }));
+  heart.count = n;
+  heart.name = 'target-extra-life';
+  heart.visible = false;
+  group.add(heart);
+  target.heart = heart;
+  scene.add(group);
+  target.group = group;
+}
+
+/** Places the target: centre (x, y) on the goal plane, ring and bullseye
+ * half-widths, and whether it carries an extra-life heart. */
+export function setTarget(x, y, ringHalf, bullHalf, heart = false) {
+  target.heart.visible = heart;
+  target.heart.scale.setScalar(1);
+  target.collected = 0;
+  target.group.position.x = x;
+  target.group.position.y = y;
+  sizeFrame(target.ring, ringHalf);
+  sizeFrame(target.bull, bullHalf);
+  target.fill.scale.set(bullHalf * 2, bullHalf * 2, 1);
+}
+
+export function showTarget(on) { target.group.visible = on; }
+
+/** The heart pops towards the camera and vanishes once it has been won. */
+export function collectTargetHeart() { target.collected = 1e-3; }
+
+function updateTarget(dt) {
+  if (!target.group.visible) return;
+  target.time += dt;
+  target.fill.material.opacity = .28 + .18 * Math.sin(target.time * 6);
+  if (!target.heart.visible) return;
+  if (target.collected > 0) {
+    target.collected += dt;
+    target.heart.scale.setScalar(1 + target.collected * 5);
+    target.heart.position.z = target.collected * 3;
+    if (target.collected > .35) target.heart.visible = false;
+  } else {
+    // Bob in whole steps, like a dropped item.
+    target.heart.position.set(0, Math.round(Math.sin(target.time * 3) * 2) * .02, 0);
+    target.heart.rotation.y = Math.sin(target.time * 2) * .5;
+  }
+}
+
+/** Flat block clouds drifting high over the stadium, like a Minecraft sky. */
+const clouds = { mesh: null, drift: 0 };
+function buildClouds() {
+  const shapes = [];
+  let seed = 4127;
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  for (let c = 0; c < 26; c++) {
+    const cx = (random() - .5) * 360, cz = (random() - .5) * 360 + GOAL.PLANE_Z + PITCH.LENGTH / 2;
+    const cy = 48 + random() * 14;
+    const blocks = 2 + Math.floor(random() * 4);
+    for (let b = 0; b < blocks; b++) {
+      shapes.push([cx + (random() - .5) * 26, cy, cz + (random() - .5) * 18,
+        10 + random() * 18, 3, 8 + random() * 12]);
+    }
+  }
+  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .92, fog: false }), shapes.length);
+  const transform = new THREE.Object3D();
+  shapes.forEach(([x, y, z, w, h, d], i) => {
+    transform.position.set(x, y, z);
+    transform.scale.set(w, h, d);
+    transform.updateMatrix();
+    mesh.setMatrixAt(i, transform.matrix);
+  });
+  mesh.name = 'block-clouds';
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  clouds.mesh = mesh;
+}
+
+function updateClouds(dt) {
+  clouds.drift = (clouds.drift + dt * .8) % 360;
+  clouds.mesh.position.x = clouds.drift > 180 ? clouds.drift - 360 : clouds.drift;
 }
 
 function buildAimRig() {
@@ -3954,16 +3799,117 @@ export function frameAmbient(topDown = false) {
 }
 
 // ---------------------------------------------------------------------------
+// Pixel look: the scene renders into a low-resolution target, then one
+// full-screen pass upscales it with hard pixel edges, posterizes it with an
+// ordered dither and outlines depth silhouettes. Off by default, because the
+// block skins read best texel-sharp; `?pixel=N` renders N rows.
+// ---------------------------------------------------------------------------
+const PIXEL_PARAM = new URLSearchParams(location.search).get('pixel');
+const PIXEL_ROWS = PIXEL_PARAM === null ? 0 : Math.max(0, Number(PIXEL_PARAM) || 0);
+export const pixelLook = { enabled: PIXEL_ROWS > 0, rows: PIXEL_ROWS, scale: 1, width: 0, height: 0 };
+let pixelTarget = null, pixelScene = null, pixelCamera = null, pixelMaterial = null;
+
+function buildPixelPass() {
+  pixelTarget = new THREE.WebGLRenderTarget(1, 1, {
+    type: THREE.HalfFloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+    generateMipmaps: false, depthBuffer: true,
+  });
+  pixelTarget.depthTexture = new THREE.DepthTexture(1, 1);
+  pixelTarget.depthTexture.type = THREE.UnsignedIntType;
+  pixelMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      tColor: { value: pixelTarget.texture },
+      tDepth: { value: pixelTarget.depthTexture },
+      size: { value: new THREE.Vector2(1, 1) },
+      scale: { value: 1 },
+      near: { value: camera.near },
+      far: { value: camera.far },
+    },
+    depthTest: false, depthWrite: false,
+    vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: `
+      #include <packing>
+      uniform sampler2D tColor, tDepth;
+      uniform vec2 size;
+      uniform float scale, near, far;
+      float viewDepth(vec2 p) {
+        float d = texture2D(tDepth, (p + 0.5) / size).x;
+        return -perspectiveDepthToViewZ(d, near, far);
+      }
+      vec3 toSrgb(vec3 c) {
+        c = max(c, 0.0);
+        return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+      }
+      float bayer(vec2 p) {
+        vec2 q = mod(p, 4.0);
+        int i = int(q.x) + int(q.y) * 4;
+        int m[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
+        return float(m[i]) / 16.0 - 0.5;
+      }
+      void main() {
+        vec2 p = min(floor(gl_FragCoord.xy / scale), size - 1.0);
+        vec3 c = toSrgb(texture2D(tColor, (p + 0.5) / size).rgb);
+        // A little extra saturation, then 8 levels per channel; the light dither breaks up
+        // banding on broad gradients (sky, turf) without turning texture into noise.
+        float luma = dot(c, vec3(0.299, 0.587, 0.114));
+        c = clamp(mix(vec3(luma), c, 1.2), 0.0, 1.0);
+        const float LEVELS = 8.0;
+        c = clamp(floor(c * (LEVELS - 1.0) + 0.5 + bayer(p) * 0.25) / (LEVELS - 1.0), 0.0, 1.0);
+        // Outline the nearer side of any depth step, so silhouettes get a one-pixel dark edge.
+        float d = viewDepth(p);
+        float far4 = max(max(viewDepth(p + vec2(1.0, 0.0)), viewDepth(p - vec2(1.0, 0.0))),
+                         max(viewDepth(p + vec2(0.0, 1.0)), viewDepth(p - vec2(0.0, 1.0))));
+        float edge = step(0.6 + d * 0.06, far4 - d);
+        c *= 1.0 - edge * 0.7;
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  });
+  pixelScene = new THREE.Scene();
+  const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), pixelMaterial);
+  quad.frustumCulled = false;
+  pixelScene.add(quad);
+  pixelCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+}
+
+// The overhead match view shows the whole pitch, so it needs finer pixels to keep players readable.
+const PIXEL_OVERHEAD_ROWS = 2.5;
+const pixelRows = () => pixelLook.rows * (matchView.mode === 'overhead' ? PIXEL_OVERHEAD_ROWS : 1);
+let pixelRowsUsed = 0;
+
+function resizePixelPass() {
+  const buffer = renderer.getDrawingBufferSize(_pixelBuffer);
+  pixelRowsUsed = pixelRows();
+  const scale = Math.max(1, Math.round(buffer.y / pixelRowsUsed));
+  pixelLook.scale = scale;
+  pixelLook.width = Math.ceil(buffer.x / scale);
+  pixelLook.height = Math.ceil(buffer.y / scale);
+  pixelTarget.setSize(pixelLook.width, pixelLook.height);
+  pixelMaterial.uniforms.size.value.set(pixelLook.width, pixelLook.height);
+  pixelMaterial.uniforms.scale.value = scale;
+}
+const _pixelBuffer = new THREE.Vector2();
+
+function renderFrame() {
+  if (!pixelLook.enabled) { renderer.render(scene, camera); return; }
+  if (pixelRows() !== pixelRowsUsed) resizePixelPass();
+  renderer.setRenderTarget(pixelTarget);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  renderer.render(pixelScene, pixelCamera);
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 export function init(canvas) {
   if (started) return;
   started = true;
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: !pixelLook.enabled, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // Hard shadow edges read as pixel art; soft penumbrae turn to mush at low resolution.
+  renderer.shadowMap.type = pixelLook.enabled ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(CLEAR);
@@ -3973,8 +3919,8 @@ export function init(canvas) {
   camera.position.copy(_camHome);
   camera.lookAt(_camTarget);
 
-  scene.add(new THREE.HemisphereLight(0xcfe3ff, 0x1a3d24, 1.15));
-  const key = new THREE.DirectionalLight(0xffffff, 2.0);
+  scene.add(new THREE.HemisphereLight(0xe4f3ff, 0x4f7d35, 1.35));
+  const key = new THREE.DirectionalLight(0xfff1d6, 2.5);
   key.position.set(9, 22, 6);
   key.castShadow = true;
   key.shadow.mapSize.set(2048, 2048);
@@ -3983,10 +3929,11 @@ export function init(canvas) {
   sc.left = -30; sc.right = 30; sc.top = 14; sc.bottom = -34; sc.near = 1; sc.far = 80;
   scene.add(key);
 
-  const rim = new THREE.DirectionalLight(0x9fd0ff, 0.6);
+  const rim = new THREE.DirectionalLight(0xbfe0ff, 0.5);
   rim.position.set(-12, 8, -26);
   scene.add(rim);
 
+  if (pixelLook.enabled) buildPixelPass();
   buildField();
   buildGoal();
   buildStands();
@@ -3995,6 +3942,8 @@ export function init(canvas) {
   cachePausePoses();
   buildBall();
   buildAimRig();
+  buildTarget();
+  buildClouds();
 
   keeperSet = makeCapsuleSet(squad.keeper);
   for (let i = 0; i < 2; i++) blockerSets.push(makeCapsuleSet(squad.foes[i], false));
@@ -4013,6 +3962,7 @@ function resize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
+  if (pixelLook.enabled) resizePixelPass();
 }
 
 let animationsPaused = false;
@@ -4118,6 +4068,8 @@ function tick() {
   if (animationsPaused) holdPlayerPoses();
   updateSidelineStaff(dt);
   captureLaunch();
+  updateTarget(dt);
+  updateClouds(dt);
 
   _camWant.copy(_camHome);
   if (shakeAmp > 0.001) {
@@ -4133,7 +4085,7 @@ function tick() {
   const fogLift = Math.max(0, camera.position.y - 13.5);
   scene.fog.near = 100 + fogLift;
   scene.fog.far = 300 + fogLift;
-  renderer.render(scene, camera);
+  renderFrame();
 }
 
 export const onFrame = (cb) => { frameCb = cb; };

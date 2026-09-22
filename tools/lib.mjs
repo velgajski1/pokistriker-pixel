@@ -15,8 +15,11 @@ export async function open(errors = []) {
     const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
     const page = await context.newPage();
     page.on('pageerror', error => errors.push(String(error)));
-    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    await page.goto(process.env.DEMO_URL || 'http://localhost:5173', { waitUntil: 'networkidle' });
+    // The Poki SDK's own iframe warns about COOP on plain http; that is not a game error.
+    page.on('console', message => {
+      if (message.type() === 'error' && !/Cross-Origin-Opener-Policy/.test(message.text())) errors.push(message.text());
+    });
+    await page.goto(process.env.DEMO_URL || 'http://localhost:5174', { waitUntil: 'networkidle' });
     await page.waitForFunction(() => window.__demo?.ready, null, { timeout: 45000 });
     return { browser, context, page, errors };
   } catch (error) {
@@ -56,3 +59,17 @@ export const gpuString = page => page.evaluate(() => {
   const debug = gl.getExtension('WEBGL_debug_renderer_info');
   return gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
 });
+
+/** Arcade: reach the aim phase of a chance (starting a run if needed), with
+ * hearts topped up so a test's misses never end the run. */
+export async function startShot(page) {
+  await page.waitForFunction(() => ['TITLE', 'GAMEOVER'].includes(__demo.state.screen)
+    || ['AIM', 'FLIGHT'].includes(__demo.state.phase));
+  if (await page.evaluate(() => __demo.state.screen !== 'MATCH')) await page.keyboard.press('Space');
+  // A press during a replay skips it; the next chance starts in AIM.
+  while (await page.evaluate(() => __demo.state.phase !== 'AIM')) {
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(120);
+  }
+  await page.evaluate(() => { __demo.state.run.hearts = __demo.arcade.MAX_HEARTS; });
+}

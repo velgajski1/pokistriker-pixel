@@ -6,24 +6,24 @@ list, constraints, and "done when" criteria.
 
 ## Project
 
-BENCHED, a turn-based attacking-football roguelite in Three.js. It is plain ES modules served
-statically: no bundler, no build step, no npm runtime dependencies. Three.js 0.169 comes from
-the CDN import map in `index.html`. Follow the surrounding code style (2-space indent, single
+BLOCK STRIKER, a blocky arcade football shooter in Three.js (a clone of pokistriker). It is
+plain ES modules served statically: no bundler, no build step, no npm runtime dependencies.
+Three.js 0.169 is vendored under `vendor/three` and mapped in `index.html`. Follow the surrounding code style (2-space indent, single
 quotes, semicolons).
 
-Specs: `pokistriker.md` (design), `engineering space.md` (architecture), and README "Notes on
-the implementation" (what the code actually does, including two deliberate deviations from the
-specs). The README wins where they disagree.
+Specs: the README (rules, difficulty, look, implementation notes) and `engineering space.md`
+(architecture and coding rules). The README wins where they disagree.
 
 **Test contract:** `window.__demo`, set in `boot()` in `js/app.js`, exposes `renderer`,
-`scene`, `camera`, `state`, `shot`, `ball` and `ready`. Everything in `tools/` reads it. Extend
+`scene`, `camera`, `state`, `shot`, `ball`, `target`, `arcade`, `prediction` and `ready`. Everything in `tools/` reads it. Extend
 it when a task adds state worth testing; never rename or remove what's there.
 
 ## File boundaries
 
-- `js/app.js`: the state machine and **all** game data (run, career, upgrades, AI tuning).
-- `js/gameEngine.js`: the single place Three.js objects are created. Scene, squad rigs, ambient
-  match, build-up choreography, render loop.
+- `js/app.js`: the arcade state machine and **all** game data (run, rules, AI tuning).
+- `js/gameEngine.js`: the single place scene objects are created. Scene, squad rigs, stadium,
+  target, ambient match, cameras, render loop. `js/blockman.js` (block-person parts and skins)
+  and `js/voxel.js` (boot-time voxelizer) build geometry and textures for it.
 - `js/physics.js`: vector maths, ball kinetics, swept collision. No physics libraries (Ammo,
   Cannon, Rapier or similar).
 - `js/uiManager.js`: every DOM write.
@@ -36,7 +36,7 @@ it when a task adds state worth testing; never rename or remove what's there.
 - No drive-by refactors, reformatting or renames outside the task.
 - No new dependencies unless the task says so (your sandbox has no network anyway).
 - Don't run `git add`, `git commit`, `git stash` or other git writes; the orchestrator owns git.
-- Don't start servers; one is already running at http://localhost:5173. Run browser tests
+- Don't start servers; one is already running at http://localhost:5174. Run browser tests
   against it with `CHROMIUM_PATH="C:/Program Files/Google/Chrome/Application/chrome.exe"`. The
   bundled headless shell is ~10x slower and fails timing checks.
 - Keep the frame budget: 16.7 ms at 60 fps.
@@ -58,7 +58,8 @@ it when a task adds state worth testing; never rename or remove what's there.
 - **A goal must be entered:** the ball crosses the line inside the frame and gets fully over it.
   The net is gated on the same flag.
 - **Difficulty is tuned** (README "Difficulty" table). Any change to physics, keeper or defender
-  AI, or the `SHOT` and `LIFT` constants shifts conversion rates. Say so in your report.
+  AI, or the `ARCADE`, `TARGET`, `SHOT` and `LIFT` constants shifts conversion rates. Say so in
+  your report and re-run `npm run balance`.
 
 ## Final message
 

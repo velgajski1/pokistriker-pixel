@@ -1,16 +1,14 @@
 {
-  "name": "striker-streak",
+  "name": "block-striker",
   "version": "1.0.0",
   "private": true,
-  "description": "Striker Streak: Free Online Soccer Game",
+  "description": "Block Striker: blocky arcade football",
   "type": "module",
   "scripts": {
-    "start": "npx --yes serve -l 5173 .",
-    "dev": "npx --yes serve -l 5173 .",
+    "start": "npx --yes serve -l 5174 .",
+    "dev": "npx --yes serve -l 5174 .",
     "check": "node tools/validate.mjs check",
     "balance": "node tools/balance-simulation.mjs",
-    "test:career": "node tools/full-career-loop.mjs",
-    "striker": "node tools/striker.mjs",
     "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-release.ps1"
   },
   "devDependencies": {

@@ -1,4 +1,4 @@
-import { open, assert } from './lib.mjs';
+import { open, assert, startShot } from './lib.mjs';
 const baseline = process.argv.includes('--baseline');
 const { browser, page, errors } = await open();
 try {
@@ -10,8 +10,9 @@ try {
     ['outside edge of left post', -3.82, 4, 'woodwork'],
     ['outside right', 4.1, -4, 'wide'],
   ]) {
-    await page.keyboard.press('Alt+t');
+    await startShot(page);
     await page.keyboard.press('Space');
+    await page.waitForFunction(() => __demo.state.phase === 'POWER');
     await page.keyboard.press('Space');
     await page.waitForFunction(() => __demo.state.phase === 'FLIGHT');
     await page.evaluate(async ({x, vx}) => {

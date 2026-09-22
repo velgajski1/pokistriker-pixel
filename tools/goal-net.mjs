@@ -44,6 +44,8 @@ try {
     const e = await import('../js/gameEngine.js');
     const physics = await import('../js/physics.js');
     physics.releaseNetPockets();
+    // The arcade boots into the aim phase, which holds animation (and the net) still.
+    e.setAnimationsPaused(false);
     e.parade(0, 1);
     __demo.players[0].root.position.y = -50;
     document.getElementById('overlay').style.display = 'none';

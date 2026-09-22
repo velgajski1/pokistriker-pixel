@@ -1,10 +1,9 @@
-import { open, assert } from './lib.mjs';
+import { open, assert, startShot } from './lib.mjs';
 
 const errors = [];
 const { browser, page } = await open(errors);
 try {
-  await page.keyboard.press('Alt+4');
-  await page.waitForFunction(() => __demo.state.phase === 'AIM');
+  await startShot(page);
   await page.waitForTimeout(1600);
   await page.screenshot({ path: '.captures/shot-camera-before.png' });
   const before = await page.evaluate(() => __demo.camera.position.toArray());

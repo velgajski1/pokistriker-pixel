@@ -1,204 +1,479 @@
-/** Kenney CC0 interface samples plus procedural gameplay audio and music. */
-let context, musicBus, sfxBus, noise, ambience;
+/**
+ * audio.js - the whole soundscape, synthesized with Web Audio. No samples.
+ *
+ *   Chip voices: pulse waves (12.5 / 25 / 50% duty), triangle bass, noise drums.
+ *   Music:       two driving chiptune loops (150 and 160 bpm) sequenced on
+ *                16th notes, with layers and tempo that build with the run.
+ *   Crowd:       a filtered-noise bed that roars on goals, groans on misses
+ *                and hushes while you aim.
+ *   Effects:     arcade stingers for every beat of a shot.
+ *
+ * Mix: voices -> music / sfx buses -> master (glue compressor, limiter);
+ * a shared reverb and a lead echo sit on send buses. Everything is scheduled
+ * ahead on the audio clock, so timing never depends on the frame rate.
+ */
+let context, master, musicBus, sfxBus, reverbSend, echoSend, noise, crowd, meter, meterData;
+let pulse = {};
 let settings = { music: .3, sfx: .65 };
-let scene = 'menu', step = 0, nextBeat = 0, powerTone = null;
+let scene = 'menu', step = 0, nextStep = 0, powerTone = null, intensity = 0, duck = 1;
 const lastPlayed = new Map();
 const played = Object.create(null);
-const uiSamples = {
-  hover: 'tick_001', click: 'click_001', back: 'back_001', select: 'select_001',
-  confirm: 'confirmation_001', unavailable: 'error_001', purchase: 'confirmation_002',
-  level: 'confirmation_002', charm: 'confirmation_001',
-};
-const uiBuffers = new Map();
-let uiDownloads;
 
-export function preloadUI() {
-  if (!uiDownloads) uiDownloads = Promise.all([...new Set(Object.values(uiSamples))].map(async name => {
-    try {
-      const response = await fetch(`assets/audio/ui/${name}.ogg`);
-      if (!response.ok) return null;
-      return { name, bytes: await response.arrayBuffer() };
-    } catch { return null; }
-  }));
-  return uiDownloads;
+const midi = n => 440 * 2 ** ((n - 69) / 12);
+const NOTE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+/** 'C#5' -> 73; '-' rest, '~' hold. */
+const parse = name => {
+  if (name === '-' || name === '~') return name;
+  const m = /^([A-G])(#|b)?(\d)$/.exec(name);
+  return 12 * (Number(m[3]) + 1) + NOTE[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0);
+};
+const bars = text => text.trim().split(/\s*\|\s*/).map(bar => bar.split(/\s+/).map(parse));
+
+// ---- Songs ------------------------------------------------------------------
+// Leads are written on the sixteenth-note grid, sixteen tokens per bar
+// ('-' rest, '~' hold the previous note); chords are one per bar.
+const C = [48, 52, 55], Am = [45, 48, 52], F = [41, 45, 48], G = [43, 47, 50], Em = [40, 43, 47], E = [40, 44, 47];
+const SONGS = {
+  // Title: a bright high-score anthem.
+  menu: {
+    bpm: 150,
+    chords: [C, Am, F, G, C, Am, F, G],
+    lead: bars(`G5 - C6 - G5 - E5 - G5 ~ ~ - C6 - D6 - | E6 - D6 - C6 - A5 - C6 ~ ~ - A5 - G5 - |
+      A5 - F5 - A5 - C6 - D6 ~ C6 - A5 - F5 - | G5 ~ ~ - B5 - D6 - G6 ~ ~ ~ F6 - D6 - |
+      E6 - - E6 - D6 C6 - D6 - - D6 - C6 B5 - | C6 - - C6 - B5 A5 - E6 ~ ~ - D6 - C6 - |
+      A5 - C6 - F6 - E6 - D6 - C6 - A5 - C6 - | B5 ~ ~ ~ D6 ~ ~ ~ G6 ~ ~ ~ ~ ~ - -`),
+    lead_volume: .07, stabs: .03, arp: .03,
+  },
+  // Match: driving minor-key chase music that builds with the run.
+  match: {
+    bpm: 160,
+    chords: [Am, F, C, G, Am, F, G, E],
+    lead: bars(`A5 - - A5 - G5 - A5 - - C6 - A5 - G5 - | F5 - - F5 - E5 - F5 - - A5 - C6 - A5 - |
+      G5 - - G5 - E5 - G5 - - C6 - E6 - D6 - | B5 ~ ~ - D6 ~ ~ - G5 ~ - B5 ~ - D6 - |
+      E6 - E6 - D6 - C6 - A5 - C6 - D6 - E6 - | F6 - E6 - D6 - C6 - A5 ~ ~ - C6 - A5 - |
+      G5 - B5 - D6 - G6 - F6 - D6 - B5 - D6 - | E6 ~ ~ ~ G#5 ~ ~ ~ B5 ~ ~ ~ E6 ~ ~ ~`),
+    lead_volume: .055, stabs: .026, arp: .028,
+  },
+};
+// Octave-pumping bassline, in semitones above the chord root (two octaves down).
+const BASS = [0, 0, 12, 0, 0, 12, 0, 12, 0, 0, 12, 0, 0, 12, 7, 12];
+
+// ---- Voices -------------------------------------------------------------------
+function pulseWave(duty) {
+  const n = 48, real = new Float32Array(n), imag = new Float32Array(n);
+  for (let k = 1; k < n; k++) real[k] = 2 / (k * Math.PI) * Math.sin(k * Math.PI * duty);
+  return context.createPeriodicWave(real, imag);
 }
 
-async function decodeUI() {
-  const files = await preloadUI();
-  await Promise.all(files.filter(Boolean).map(async file => {
-    try { uiBuffers.set(file.name, await context.decodeAudioData(file.bytes)); }
-    catch { /* Older browsers without Ogg support retain synthesized fallback. */ }
-  }));
-}
-const melodies = {
-  menu: [0, 7, 12, 7, 9, 7, 4, 2, 0, 4, 7, 12, 9, 7, 2, 4],
-  upgrades: [0, 4, 7, 11, 7, 4, 2, 7, 0, 4, 9, 7, 4, 2, 7, 4],
-  victory: [0, 4, 7, 12, 12, 9, 7, 4, 5, 9, 12, 17, 16, 12, 7, 12],
-};
-const phrases = {
-  hover: [76], click: [67, 79], back: [67, 60], select: [64, 71, 76],
-  confirm: [60, 67, 72], unavailable: [45, 44], purchase: [72, 76, 79],
-  level: [60, 64, 67, 72], charm: [67, 71, 74, 79], reward: [79, 84],
-  instruction: [72, 76], aim: [69, 76], power: [76, 81],
-  tutorial: [60, 64, 67, 72, 79], positive: [72, 76], negative: [57, 52],
-  warning: [69, 69], win: [60, 64, 67, 72], draw: [60, 65, 67],
-  loss: [60, 58, 55, 48], benched: [55, 51, 48, 43],
-  victory: [60, 64, 67, 72, 67, 72, 76, 79], opponent: [55, 58, 53],
-};
-
-function tone(frequency, duration, volume, when, bus = sfxBus, type = 'sine', end = frequency) {
-  const oscillator = context.createOscillator(), gain = context.createGain();
-  oscillator.type = type;
-  oscillator.frequency.setValueAtTime(frequency, when);
-  oscillator.frequency.exponentialRampToValueAtTime(Math.max(20, end), when + duration);
+/** One enveloped note. `wave`: 'p12' | 'p25' | 'p50' | an OscillatorType. */
+function voice(frequency, when, duration, { wave = 'p25', volume = .1, bus = sfxBus, attack = .005,
+  release = .06, slide = 0, vibrato = 0, reverb = 0, echo = 0 } = {}) {
+  const osc = context.createOscillator(), gain = context.createGain();
+  if (pulse[wave]) osc.setPeriodicWave(pulse[wave]); else osc.type = wave;
+  osc.frequency.setValueAtTime(frequency, when);
+  if (slide) osc.frequency.exponentialRampToValueAtTime(Math.max(20, frequency * slide), when + duration);
+  if (vibrato) {
+    const lfo = context.createOscillator(), depth = context.createGain();
+    lfo.frequency.value = 6; depth.gain.value = frequency * vibrato;
+    lfo.connect(depth).connect(osc.frequency);
+    lfo.start(when); lfo.stop(when + duration + release + .05);
+    lfo.onended = () => { lfo.disconnect(); depth.disconnect(); };
+  }
   gain.gain.setValueAtTime(0, when);
-  gain.gain.linearRampToValueAtTime(volume, when + .008);
-  gain.gain.exponentialRampToValueAtTime(.0001, when + duration);
-  oscillator.connect(gain).connect(bus);
-  oscillator.start(when); oscillator.stop(when + duration + .02);
-  oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+  gain.gain.linearRampToValueAtTime(volume, when + attack);
+  gain.gain.setValueAtTime(volume, when + Math.max(attack, duration - release));
+  gain.gain.exponentialRampToValueAtTime(.0001, when + duration + release);
+  osc.connect(gain).connect(bus);
+  if (reverb) send(gain, reverbSend, reverb, when, duration + release);
+  if (echo) send(gain, echoSend, echo, when, duration + release);
+  osc.start(when); osc.stop(when + duration + release + .05);
+  osc.onended = () => { osc.disconnect(); gain.disconnect(); };
 }
 
-function hiss(duration, frequency, volume, when, type = 'bandpass') {
-  const source = context.createBufferSource(), filter = context.createBiquadFilter();
-  const gain = context.createGain();
-  source.buffer = noise; filter.type = type; filter.frequency.value = frequency;
+function send(from, to, amount, when, duration) {
+  const g = context.createGain();
+  g.gain.value = amount;
+  from.connect(g).connect(to);
+  setTimeout(() => g.disconnect(), (when - context.currentTime + duration + 1) * 1000);
+}
+
+/** Filtered noise burst. */
+function hiss(when, duration, { frequency = 1000, q = 1, type = 'bandpass', volume = .2, bus = sfxBus,
+  attack = .005, sweep = 0, reverb = 0 } = {}) {
+  const source = context.createBufferSource(), filter = context.createBiquadFilter(), gain = context.createGain();
+  source.buffer = noise;
+  source.playbackRate.value = .8 + Math.random() * .4;
+  filter.type = type; filter.frequency.setValueAtTime(frequency, when); filter.Q.value = q;
+  if (sweep) filter.frequency.exponentialRampToValueAtTime(frequency * sweep, when + duration);
   gain.gain.setValueAtTime(0, when);
-  gain.gain.linearRampToValueAtTime(volume, when + .015);
+  gain.gain.linearRampToValueAtTime(volume, when + attack);
   gain.gain.exponentialRampToValueAtTime(.0001, when + duration);
-  source.connect(filter).connect(gain).connect(sfxBus);
-  source.start(when); source.stop(when + duration);
+  source.connect(filter).connect(gain).connect(bus);
+  if (reverb) send(gain, reverbSend, reverb, when, duration);
+  source.start(when, Math.random() * 2); source.stop(when + duration + .02);
   source.onended = () => { source.disconnect(); filter.disconnect(); gain.disconnect(); };
+}
+
+// ---- Drums --------------------------------------------------------------------
+const drum = {
+  kick(when, volume = .5, bus = musicBus) {
+    voice(150, when, .12, { wave: 'sine', volume, bus, slide: .28, release: .08 });
+    hiss(when, .02, { frequency: 3000, volume: volume * .25, bus });
+  },
+  snare(when, volume = .25, bus = musicBus) {
+    hiss(when, .16, { frequency: 1800, q: .7, volume, bus, reverb: .15 });
+    voice(190, when, .06, { wave: 'triangle', volume: volume * .6, bus, slide: .6 });
+  },
+  hat(when, volume = .08, open = false, bus = musicBus) {
+    hiss(when, open ? .16 : .035, { frequency: 8000, type: 'highpass', volume, bus });
+  },
+  clap(when, volume = .12, bus = musicBus) {
+    for (let i = 0; i < 3; i++) hiss(when + i * .011, .05 + i * .03, { frequency: 1400, q: 1.8, volume, bus, reverb: .2 });
+  },
+  crash(when, volume = .18, bus = musicBus) {
+    hiss(when, 1.4, { frequency: 6000, type: 'highpass', volume, bus, reverb: .3 });
+  },
+};
+
+// ---- Setup --------------------------------------------------------------------
+function reverbImpulse(seconds = 1.6) {
+  const length = context.sampleRate * seconds, buffer = context.createBuffer(2, length, context.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const data = buffer.getChannelData(c);
+    for (let i = 0; i < length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / length) ** 2.6;
+  }
+  return buffer;
 }
 
 export function configure(values) {
   settings = { ...values };
   if (!context) return;
-  musicBus.gain.setTargetAtTime(settings.music, context.currentTime, .04);
-  sfxBus.gain.setTargetAtTime(settings.sfx, context.currentTime, .04);
+  musicBus.gain.setTargetAtTime(settings.music * duck, context.currentTime, .05);
+  sfxBus.gain.setTargetAtTime(settings.sfx, context.currentTime, .05);
+  master.gain.setTargetAtTime(settings.muted || adMuted ? 0 : 1.5, context.currentTime, .02);
 }
 
+/** Kept for the boot sequence; the game ships no samples to download. */
+export function preloadUI() { return Promise.resolve(); }
+
 export async function unlock() {
+  if (adMuted && context) return;   // taps on an ad must not wake the game's audio
   try {
     if (!context) {
       const AudioContext = window.AudioContext || window.webkitAudioContext;
       if (!AudioContext) return;
       context = new AudioContext();
-      musicBus = context.createGain(); sfxBus = context.createGain();
+      pulse = { p12: pulseWave(.125), p25: pulseWave(.25), p50: pulseWave(.5) };
+      master = context.createGain();
+      master.gain.value = 1.5;
+      const glue = context.createDynamicsCompressor();
+      glue.threshold.value = -18; glue.ratio.value = 3; glue.attack.value = .01; glue.release.value = .2;
       const limiter = context.createDynamicsCompressor();
-      limiter.threshold.value = -14; limiter.ratio.value = 8;
-      musicBus.connect(limiter); sfxBus.connect(limiter); limiter.connect(context.destination);
-      noise = context.createBuffer(1, context.sampleRate * 3, context.sampleRate);
+      limiter.threshold.value = -3; limiter.ratio.value = 20; limiter.attack.value = .002;
+      master.connect(glue).connect(limiter).connect(context.destination);
+      // Output meter for the test hook: peak and RMS of what reaches the speakers.
+      meter = context.createAnalyser(); meter.fftSize = 2048; meterData = new Float32Array(meter.fftSize);
+      limiter.connect(meter);
+      musicBus = context.createGain(); sfxBus = context.createGain();
+      musicBus.connect(master); sfxBus.connect(master);
+      const reverb = context.createConvolver();
+      reverb.buffer = reverbImpulse();
+      reverbSend = context.createGain(); reverbSend.gain.value = .9;
+      reverbSend.connect(reverb).connect(master);
+      const echo = context.createDelay(1), feedback = context.createGain(), tone = context.createBiquadFilter();
+      echo.delayTime.value = 60 / 160 * .75;   // dotted eighth at match tempo
+      feedback.gain.value = .32;
+      tone.type = 'lowpass'; tone.frequency.value = 2400;
+      echoSend = context.createGain();
+      echoSend.connect(echo).connect(tone).connect(feedback).connect(echo);
+      tone.connect(master);
+      noise = context.createBuffer(1, context.sampleRate * 4, context.sampleRate);
       const samples = noise.getChannelData(0);
       for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
-      const crowd = context.createBufferSource(), filter = context.createBiquadFilter();
-      crowd.buffer = noise; crowd.loop = true; filter.type = 'lowpass'; filter.frequency.value = 700;
-      ambience = context.createGain(); ambience.gain.value = 0;
-      crowd.connect(filter).connect(ambience).connect(sfxBus); crowd.start();
+      buildCrowd();
       configure(settings);
-      void decodeUI();
-      setInterval(schedule, 100);
+      nextStep = context.currentTime + .1;
+      setInterval(schedule, 25);
     }
     if (!document.hidden && context.state !== 'running') await context.resume();
   } catch { /* Audio is optional; blocked audio must not block the game. */ }
 }
 
+/** Two noise bands: a low murmur and a brighter "voices" band, both breathing slowly. */
+function buildCrowd() {
+  const bed = context.createGain();
+  bed.gain.value = 0;
+  for (const [frequency, q, level] of [[420, .8, 1], [1300, 1.2, .45]]) {
+    const source = context.createBufferSource(), filter = context.createBiquadFilter(), gain = context.createGain();
+    source.buffer = noise; source.loop = true; source.playbackRate.value = .7 + Math.random() * .2;
+    filter.type = 'bandpass'; filter.frequency.value = frequency; filter.Q.value = q;
+    gain.gain.value = level;
+    const lfo = context.createOscillator(), depth = context.createGain();
+    lfo.frequency.value = .13 + Math.random() * .1; depth.gain.value = level * .35;
+    lfo.connect(depth).connect(gain.gain); lfo.start();
+    source.connect(filter).connect(gain).connect(bed);
+    source.start();
+  }
+  bed.connect(sfxBus);
+  crowd = { bed, level: 0 };
+}
+
+// ---- Music sequencer ------------------------------------------------------------
 export function setScene(value) {
   if (scene === value) return;
-  scene = value; step = 0;
-  if (context) nextBeat = context.currentTime + .05;
+  scene = value;
+  step = 0;
+  if (context) nextStep = Math.max(nextStep, context.currentTime + .15);
+}
+
+/** 0..1: how built-up the match music is (level and combo). */
+export function setIntensity(value) { intensity = Math.max(0, Math.min(1, value)); }
+
+/** Lowers the music while aiming so the shot's own sounds carry. */
+export function setFocus(on) {
+  if ((duck < 1) === on) return;
+  duck = on ? .55 : 1;
+  if (context) musicBus.gain.setTargetAtTime(settings.music * duck, context.currentTime, .15);
 }
 
 function schedule() {
   if (!context || context.state !== 'running' || document.hidden) return;
   const now = context.currentTime;
-  ambience.gain.setTargetAtTime(scene === 'match' ? .11 : 0, now, .4);
-  if (nextBeat < now) nextBeat = now;
-  while (nextBeat < now + .15) {
-    if (scene === 'match') {
-      // Occasional distant tonal chant over the filtered crowd bed.
-      if (step % 48 === 24 && settings.sfx > 0) {
-        tone(164, .55, .018, nextBeat); tone(196, .6, .015, nextBeat + .25);
-      }
-    } else if (settings.music > 0) {
-      const melody = melodies[scene] || melodies.menu;
-      const root = [48, 53, 45, 55][Math.floor(step / 16) % 4];
-      tone(440 * 2 ** ((root + 12 + melody[step % 16] - 69) / 12), .22,
-        scene === 'upgrades' ? .035 : .055, nextBeat, musicBus, 'triangle');
-      if (step % 4 === 0) tone(440 * 2 ** ((root - 69) / 12), .38, .1, nextBeat, musicBus);
-      if (step % 2 === 0) tone(95, .1, .06, nextBeat, musicBus, 'sine', 40);
-    }
-    nextBeat += scene === 'upgrades' ? .3 : .24;
+  crowd.bed.gain.setTargetAtTime((scene === 'match' ? .1 : .035) * (duck < 1 ? .55 : 1) + crowd.level, now, .5);
+  crowd.level = Math.max(0, crowd.level * .985 - .0005);
+  const song = SONGS[scene] || SONGS.menu;
+  const bpm = song.bpm + (scene === 'match' ? 12 * intensity : 0);
+  const sixteenth = 60 / bpm / 4;
+  if (nextStep < now) nextStep = now + .02;
+  while (nextStep < now + .12) {
+    if (settings.music > 0 && !settings.muted && !adMuted) playStep(song, step, nextStep, sixteenth);
+    nextStep += sixteenth;
     step++;
   }
 }
 
-export function play(name) {
-  if (!context || context.state !== 'running' || document.hidden || settings.sfx === 0) return;
-  const now = context.currentTime;
-  if (now - (lastPlayed.get(name) ?? -100) < (name === 'hover' ? .09 : .12)) return;
-  lastPlayed.set(name, now);
-  played[name] = (played[name] || 0) + 1;
-  const buffer = uiBuffers.get(uiSamples[name]);
-  if (buffer) {
-    const source = context.createBufferSource(), gain = context.createGain();
-    source.buffer = buffer;
-    gain.gain.value = name === 'hover' ? .22 : .5;
-    source.connect(gain).connect(sfxBus);
-    source.start(now);
-    source.onended = () => { source.disconnect(); gain.disconnect(); };
-    return;
+function playStep(song, index, when, sixteenth) {
+  const bars = song.chords.length;
+  const bar = Math.floor(index / 16) % bars, beat = index % 16;
+  const chord = song.chords[bar];
+  const match = scene === 'match';
+  // The title plays everything; the match starts lean and fills in with intensity.
+  const build = match ? .35 + .65 * intensity : 1;
+  const lastBar = bar === bars - 1;
+
+  // Drums: four on the floor, snare and clap on 2 and 4, sixteenth hats with
+  // open hats on the offbeats, and a snare roll into every loop.
+  if (beat % 4 === 0) drum.kick(when, .5);
+  if (beat === 4 || beat === 12) { drum.snare(when, .22); drum.clap(when, .12 * build); }
+  if (beat % 4 === 2) drum.hat(when, .07, true);
+  else if (build > .45) drum.hat(when, beat % 2 ? .03 : .045);
+  if (lastBar && beat >= 8) {
+    if (beat % 2 === 0 || beat >= 12) drum.snare(when, .06 + (beat - 8) * .018);
+    if (beat === 8) hiss(when, sixteenth * 8, { frequency: 400, q: 1.5, volume: .06, bus: musicBus, attack: sixteenth * 7, sweep: 12 });
   }
-  const notes = phrases[name];
-  if (notes) {
-    notes.forEach((note, i) => tone(440 * 2 ** ((note - 69) / 12), .18,
-      name === 'hover' ? .035 : .09, now + i * .095, sfxBus, 'triangle'));
-    return;
+  if (beat === 0 && bar === 0 && index > 0) drum.crash(when, .14);
+
+  // Bass: sixteenth octave pump, triangle with a thin pulse on top for bite.
+  const bassNote = chord[0] - 12 + BASS[beat];
+  voice(midi(bassNote), when, sixteenth * .8, { wave: 'triangle', volume: .2, bus: musicBus, release: .02 });
+  voice(midi(bassNote), when, sixteenth * .5, { wave: 'p12', volume: .035, bus: musicBus, release: .02 });
+
+  // Offbeat chord stabs (the "pump" between kicks).
+  if (beat % 4 === 2) {
+    for (const note of chord) voice(midi(note + 12), when, sixteenth * 1.2, { wave: 'p50', volume: song.stabs * build,
+      bus: musicBus, release: .04, reverb: .2 });
   }
-  if (name === 'kick' || name === 'bounce' || name === 'block' || name === 'save') {
-    tone(name === 'kick' ? 160 + Math.random() * 30 : 110, .14, .35, now, sfxBus, 'sine', 45);
-    hiss(.12, name === 'save' ? 1600 : 600, .25, now);
-  } else if (name === 'post' || name === 'bar') {
-    const base = name === 'bar' ? 430 : 620;
-    for (let i = 1; i <= 4; i++) tone(base * i * 1.07, .65 / i, .13 / i, now);
-  } else if (name === 'kickoff' || name === 'fulltime') {
-    for (let i = 0; i < (name === 'fulltime' ? 3 : 1); i++) {
-      tone(2350, .22, .1, now + i * .3); tone(2780, .2, .035, now + i * .3);
-    }
-  } else if (name === 'net') hiss(.45, 2600, .35, now);
-  else if (name === 'whoosh') hiss(.35, 1000, .2, now);
-  else if (name === 'cheer' || name === 'applause') {
-    hiss(1.8, 1100, .6, now);
-    for (let i = 0; i < 10; i++) hiss(.09, 1900, .2, now + i * .11);
-  } else if (name === 'groan') {
-    hiss(.9, 320, .45, now); tone(150, .7, .045, now, sfxBus, 'sine', 95);
+
+  // Arpeggio: up-and-over chord tones on every sixteenth.
+  if (build > .3) {
+    const shape = [0, 1, 2, 3, 2, 1];
+    const tone = shape[beat % shape.length];
+    const note = tone === 3 ? chord[0] + 24 : chord[tone] + 12;
+    voice(midi(note + 12), when, sixteenth * .6, { wave: 'p12', volume: song.arp * build, bus: musicBus, release: .02, echo: .1 });
+  }
+
+  // Lead: doubled and slightly detuned for width; held notes get vibrato.
+  const notes = song.lead[bar], note = notes[beat];
+  if (typeof note === 'number') {
+    let length = 1;
+    for (let k = beat + 1; k < notes.length && notes[k] === '~'; k++) length++;
+    const duration = sixteenth * length * .92, volume = song.lead_volume * (match ? .55 + .6 * intensity : 1);
+    const vibrato = length > 2 ? .007 : 0;
+    voice(midi(note), when, duration, { wave: 'p25', volume, bus: musicBus, vibrato, echo: .3, reverb: .15 });
+    voice(midi(note) * 1.004, when, duration, { wave: 'p50', volume: volume * .45, bus: musicBus, vibrato });
   }
 }
 
+// ---- Effects ------------------------------------------------------------------
+/** Ascending arpeggio stinger: notes (MIDI) spaced `gap` seconds. */
+function arp(notes, when, gap, options = {}) {
+  notes.forEach((note, i) => voice(midi(note), when + i * gap, options.length ?? gap * 1.2, {
+    wave: 'p25', volume: .09, reverb: .25, echo: .15, ...options }));
+}
+
+function cheer(amount, when, duration = 2.2) {
+  crowd.level = Math.min(.6, crowd.level + amount);
+  hiss(when, duration, { frequency: 900, q: .6, volume: .35 * amount / .4, attack: .25, reverb: .3 });
+  for (let i = 0; i < 12; i++) hiss(when + .1 + i * .09 + Math.random() * .05, .08,
+    { frequency: 1800 + Math.random() * 1200, q: 3, volume: .05 * amount / .4 });
+}
+
+const EFFECTS = {
+  // Interface
+  hover: t => voice(midi(88), t, .025, { wave: 'p12', volume: .03 }),
+  click: t => { voice(midi(79), t, .03, { wave: 'p25', volume: .06 }); voice(midi(91), t + .03, .03, { wave: 'p25', volume: .04 }); },
+  confirm: t => arp([72, 79, 84], t, .05, { volume: .07 }),
+  back: t => arp([79, 72], t, .05, { volume: .06 }),
+  // A shot
+  kickoff: t => voice(2600, t, .5, { wave: 'sine', volume: .06, vibrato: .02, release: .1 }),
+  aim: t => { voice(midi(76), t, .04, { wave: 'p50', volume: .07 }); voice(midi(83), t + .045, .06, { wave: 'p50', volume: .07 }); },
+  power: t => voice(midi(72), t, .12, { wave: 'p25', volume: .08, slide: 2 }),
+  kick: t => {
+    voice(180, t, .09, { wave: 'sine', volume: .55, slide: .3 });
+    hiss(t, .03, { frequency: 2400, volume: .3 });
+    voice(midi(60), t, .05, { wave: 'p12', volume: .05, slide: .5 });
+  },
+  whoosh: t => hiss(t + .02, .38, { frequency: 700, q: 2, volume: .16, sweep: 3.5 }),
+  bounce: t => voice(120, t, .07, { wave: 'sine', volume: .22, slide: .5 }),
+  net: t => { hiss(t, .5, { frequency: 3200, q: .8, volume: .22, sweep: .5 }); voice(90, t, .18, { wave: 'sine', volume: .25, slide: .6 }); },
+  post: t => clang(t, 620),
+  bar: t => clang(t, 470),
+  save: t => { voice(140, t, .08, { wave: 'sine', volume: .4, slide: .4 }); hiss(t, .09, { frequency: 1500, volume: .3 });
+    hiss(t + .1, .9, { frequency: 380, q: 1, volume: .18, attack: .15 }); },
+  block: t => { voice(100, t, .1, { wave: 'sine', volume: .45, slide: .45 }); hiss(t, .07, { frequency: 700, volume: .25 }); },
+  // Verdicts
+  cheer: t => cheer(.4, t),
+  // Bullseye: the stadium erupts - a long roar with a second swell, rhythmic
+  // clapping and an air horn.
+  bigCheer: t => {
+    cheer(.6, t, 4.5);
+    hiss(t + 1.3, 3.2, { frequency: 1100, q: .5, volume: .3, attack: .6, reverb: .35 });
+    for (const [bar, beats] of [[1.4, 3], [2.4, 3], [3.4, 5]]) {
+      for (let i = 0; i < beats; i++) drum.clap(t + bar + i * .19, .16, sfxBus);
+    }
+    for (const [f, delay] of [[233, 0], [293, .02], [349, .04]]) {
+      voice(f, t + .25 + delay, .7, { wave: 'sawtooth', volume: .045, slide: .97, release: .15, reverb: .3 });
+      voice(f, t + 1.05 + delay, .9, { wave: 'sawtooth', volume: .04, slide: .96, release: .2, reverb: .3 });
+    }
+  },
+  groan: t => { hiss(t, 1.1, { frequency: 330, q: 1, volume: .3, attack: .2, sweep: .7 }); crowd.level = Math.max(0, crowd.level - .03); },
+  goal: t => { drum.kick(t, .5, sfxBus); arp([60, 64, 67, 72], t, .07); drum.crash(t + .28, .14, sfxBus); },
+  target: t => { drum.kick(t, .5, sfxBus); arp([64, 67, 72, 76, 79], t, .06); drum.crash(t + .3, .16, sfxBus); },
+  bullseye: t => {
+    drum.kick(t, .6, sfxBus); arp([67, 72, 76, 79, 84, 88], t, .055, { volume: .1 });
+    drum.crash(t + .33, .2, sfxBus);
+    // Coin sparkle.
+    for (let i = 0; i < 6; i++) voice(midi(96 + (i % 3) * 3), t + .35 + i * .06, .05, { wave: 'sine', volume: .05, reverb: .3 });
+  },
+  combo: (t, n = 2) => arp([72 + n * 2, 79 + n * 2], t + .5, .06, { wave: 'p12', volume: .07 }),
+  extraLife: t => arp([76, 79, 88, 84, 86, 91], t + .45, .085, { wave: 'p50', volume: .08, length: .09 }),
+  miss: t => [67, 66, 65, 62].forEach((note, i) => voice(midi(note), t + .15 + i * .22, i === 3 ? .5 : .2,
+    { wave: 'p50', volume: .07, vibrato: i === 3 ? .02 : 0, slide: i === 3 ? .94 : 1 })),
+  loseHeart: t => { voice(midi(45), t, .25, { wave: 'p25', volume: .1, slide: .7 }); voice(midi(40), t + .12, .3, { wave: 'p12', volume: .07, slide: .7 }); },
+  warning: t => { for (let i = 0; i < 2; i++) { drum.kick(t + .9 + i * .28, .35, sfxBus); } },
+  levelUp: t => {
+    arp([60, 64, 67, 72, 67, 72, 76, 79], t, .08, { volume: .09 });
+    arp([48, 55, 60], t, .16, { wave: 'triangle', volume: .18, length: .2 });
+    drum.crash(t + .6, .2, sfxBus);
+  },
+  gameOver: t => [72, 67, 64, 60, 55].forEach((note, i) => voice(midi(note), t + i * .2, i === 4 ? .9 : .18,
+    { wave: 'p25', volume: .09, reverb: .35, vibrato: i === 4 ? .015 : 0 })),
+  newBest: t => { arp([60, 64, 67, 72, 76, 79, 84], t, .07, { volume: .09 }); arp([72, 76, 79, 84], t + .6, .12, { wave: 'p50', volume: .07, length: .3 });
+    drum.crash(t + .55, .22, sfxBus); for (let i = 0; i < 8; i++) voice(midi(96 + (i % 4) * 2), t + .8 + i * .07, .05, { wave: 'sine', volume: .05 }); },
+};
+
+/** Woodwork: inharmonic partials ringing out, like a struck metal pipe. */
+function clang(t, base) {
+  [1, 2.76, 5.4, 8.93].forEach((ratio, i) => voice(base * ratio, t, .9 / (i + 1), { wave: 'sine', volume: .12 / (i + 1),
+    release: .3, reverb: .3 }));
+  hiss(t, .04, { frequency: 4000, volume: .2 });
+}
+
+export function play(name, arg) {
+  if (!context || context.state !== 'running' || document.hidden || settings.sfx === 0 || settings.muted || adMuted) return;
+  const effect = EFFECTS[name];
+  if (!effect) return;
+  const now = context.currentTime;
+  if (now - (lastPlayed.get(name) ?? -100) < (name === 'hover' ? .06 : .08)) return;
+  lastPlayed.set(name, now);
+  played[name] = (played[name] || 0) + 1;
+  effect(now + .005, arg);
+}
+
+/** The height meter: a pulse tone that rises with power, with a chip tremolo. */
 export function setPower(value) {
   if (!context || context.state !== 'running') return;
   if (value === null) {
     if (powerTone) {
       powerTone.gain.gain.setTargetAtTime(0, context.currentTime, .02);
-      powerTone.osc.stop(context.currentTime + .1); powerTone = null;
+      powerTone.osc.stop(context.currentTime + .1);
+      powerTone.lfo.stop(context.currentTime + .1);
+      powerTone = null;
     }
     return;
   }
   if (!powerTone) {
     const osc = context.createOscillator(), gain = context.createGain();
-    osc.type = 'sine'; gain.gain.value = .025;
-    osc.connect(gain).connect(sfxBus); osc.start();
-    osc.onended = () => { osc.disconnect(); gain.disconnect(); };
-    powerTone = { osc, gain };
+    const lfo = context.createOscillator(), depth = context.createGain();
+    osc.setPeriodicWave(pulse.p25);
+    gain.gain.value = .03;
+    lfo.type = 'square'; lfo.frequency.value = 14; depth.gain.value = .02;
+    lfo.connect(depth).connect(gain.gain);
+    osc.connect(gain).connect(sfxBus);
+    osc.start(); lfo.start();
+    osc.onended = () => { osc.disconnect(); gain.disconnect(); lfo.disconnect(); depth.disconnect(); };
+    powerTone = { osc, gain, lfo };
   }
-  powerTone.osc.frequency.setTargetAtTime(220 + value * 650, context.currentTime, .04);
+  // Quantized to semitones, so the rise sounds like a chip scale, not a siren.
+  const note = Math.round(57 + value * 26);
+  powerTone.osc.frequency.setTargetAtTime(midi(note), context.currentTime, .005);
+}
+
+/** Ads: silence everything (Poki requires audio off during breaks). */
+let adMuted = false;
+/**
+ * Ads: silence everything at once (Poki requires audio off during breaks) by
+ * cutting the master gain and suspending the audio clock; afterwards resume
+ * and return to the player's own setting (SOUND OFF stays off).
+ */
+export function setMuted(on) {
+  if (adMuted === on) return;
+  adMuted = on;
+  if (!context) return;
+  setPower(null);
+  const now = context.currentTime;
+  master.gain.cancelScheduledValues(now);
+  if (on) {
+    master.gain.setValueAtTime(0, now);
+    context.suspend().catch(() => {});
+  } else {
+    master.gain.setValueAtTime(0, now);
+    master.gain.setTargetAtTime(settings.muted ? 0 : 1.5, now, .05);
+    if (!document.hidden) context.resume().catch(() => {});
+  }
+}
+
+/** The pause panel: music drops to a murmur, the power tone stops. */
+export function setPaused(on) {
+  if (!context) return;
+  setPower(null);
+  musicBus.gain.setTargetAtTime(settings.music * (on ? .25 : duck), context.currentTime, .1);
 }
 
 export function visibility() {
   if (!context) return;
   setPower(null);
   if (document.hidden) context.suspend().catch(() => {});
-  else context.resume().catch(() => {});
+  else if (!adMuted) context.resume().catch(() => {});   // an ad keeps the game silent
 }
 
-export const status = () => ({ state: context?.state || 'locked', scene, settings: { ...settings }, played: { ...played }, uiSamplesLoaded: uiBuffers.size });
+function level() {
+  if (!meter) return null;
+  meter.getFloatTimeDomainData(meterData);
+  let peak = 0, sum = 0;
+  for (const v of meterData) { peak = Math.max(peak, Math.abs(v)); sum += v * v; }
+  return { peak, rms: Math.sqrt(sum / meterData.length) };
+}
+
+export const status = () => ({ state: context?.state || 'locked', scene, intensity, settings: { ...settings },
+  played: { ...played }, level: level() });

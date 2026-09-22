@@ -37,6 +37,9 @@ try {
 
   const session = await open(report.errors);
   browser = session.browser;
+  // The arcade boots holding still for the first aim; let the arena play first.
+  await session.page.evaluate(() => { __demo.state.phase = 'IDLE'; });
+  await session.page.waitForTimeout(600);
   const { page } = session;
   const before = await page.evaluate(async () => {
     const e = await import('../js/gameEngine.js');
@@ -84,7 +87,8 @@ try {
     d.renderer.render(d.scene, d.camera);
     return heights;
   });
-  assert(report.players.every(h => h > 1.65 && h < 2.1), 'Players outside adult footballer height range');
+  // Block heads are part of the style; the crown still sits at the scanned player's height.
+  assert(report.players.every(h => h > 1.65 && h < 2.2), 'Players outside adult footballer height range');
   await page.screenshot({ path: `${CAPTURES}/stadium-scale.png` });
   await page.evaluate(() => {
     const d = __demo;

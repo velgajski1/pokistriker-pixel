@@ -5,6 +5,9 @@ let browser;
 try {
   const session = await open(report.errors);
   browser = session.browser;
+  // The arcade boots holding still for the first aim; let the arena play first.
+  await session.page.evaluate(() => { __demo.state.phase = 'IDLE'; });
+  await session.page.waitForTimeout(600);
   report.stance = await session.page.evaluate(async () => {
     const e = await import('../js/gameEngine.js');
     const THREE = await import('three');
