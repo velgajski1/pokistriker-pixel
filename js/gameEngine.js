@@ -565,36 +565,35 @@ function relaxIdle(clips) {
   clips[index] = idle;
 }
 
-/** Boot-only correction shared by every rig and both sad-walk playback paths. */
+/** One coherent gait with a subdued upper body, shared by all sad-walk paths.
+ * Start from walk, not the already-corrected imported sad performance. */
 function relaxSadWalk(clips) {
   const index = clips.findIndex(clip => clip.name === 'react_walk_sad');
   const walk = clips.find(clip => clip.name === 'walk');
   if (index < 0 || !walk) return;
-  const sad = clips[index].clone();
-  const weights = { Spine: .45, Spine1: .6, Spine2: .75,
-    LeftShoulder: 1, RightShoulder: 1, LeftArm: .8, RightArm: .8,
-    LeftForeArm: .5, RightForeArm: .5, Neck: .4, Head: .15 };
+  const sad = walk.clone();
+  sad.name = 'react_walk_sad';
+  const slump = { Spine: .04, Spine1: .05, Spine2: .06, Neck: .14, Head: .10 };
   const current = new THREE.Quaternion();
-  const relaxed = new THREE.Quaternion();
+  const average = new THREE.Quaternion();
+  const offsetRotation = new THREE.Quaternion();
+  const axis = new THREE.Vector3(1, 0, 0);
   for (const track of sad.tracks) {
-    const match = track.name.match(/(?:mixamorig:?)(\w+)\.(quaternion|position|scale)$/);
-    const weight = match && weights[match[1]];
-    if (!weight) continue;
-    const reference = walk.tracks.find(candidate => candidate.name === track.name);
-    if (!reference) continue;
-    const sample = reference.createInterpolant();
-    const size = track.getValueSize();
+    const match = track.name.match(/(?:mixamorig:?)(\w+)\.quaternion$/);
+    if (!match) continue;
+    const arm = /^(Left|Right)(Arm|ForeArm)$/.test(match[1]);
+    const pitch = slump[match[1]] || 0;
+    if (!arm && !pitch) continue;
+    if (arm) for (let i = 0; i < track.times.length; i++) {
+      current.fromArray(track.values, i * 4);
+      if (!i) average.copy(current);
+      else average.slerp(current, 1 / (i + 1));
+    }
+    offsetRotation.setFromAxisAngle(axis, pitch);
     for (let i = 0; i < track.times.length; i++) {
-      const values = sample.evaluate((track.times[i] * .75) % walk.duration);
-      const offset = i * size;
-      if (match[2] === 'quaternion') {
-        current.fromArray(track.values, offset);
-        relaxed.fromArray(values);
-        current.slerp(relaxed, weight).normalize().toArray(track.values, offset);
-      } else {
-        // No source-clip shoulder stretching or translation into the neck.
-        for (let axis = 0; axis < size; axis++) track.values[offset + axis] = values[axis];
-      }
+      current.fromArray(track.values, i * 4);
+      if (arm) current.slerp(average, .65);
+      current.multiply(offsetRotation).normalize().toArray(track.values, i * 4);
     }
   }
   clips[index] = sad;
@@ -1393,6 +1392,7 @@ export function startReaction(role, name) {
   track.duration = Math.min(4.5, track.avatar.data.clips[name].duration);
   track.avatar.passTime = -1;
   track.avatar.moveBlend = 0;
+  if (name === 'react_walk_sad') track.avatar.phase = 0;
   track.position.copy(track.avatar.model.position);
   track.quaternion.copy(track.avatar.model.quaternion);
   for (let i = 0; i < track.bones.length; i++) track.poses[i].copy(track.bones[i].quaternion);
@@ -1443,14 +1443,12 @@ function animateDefenderReaction(track, dt) {
   root.position.y = 0;
   track.actor.x = root.position.x; track.actor.z = root.position.z;
   track.actor.heading = root.rotation.y; track.actor.speed = a.speed = track.speed;
-  const walk = a.data.clips.walk, sad = a.data.clips.react_walk_sad;
-  // The supplied sad walk is a finite performance. Finish into a walking
-  // cycle, never its static end pose or an idle, for long celebrations.
-  const sadWeight = track.sad ? 1 - THREE.MathUtils.smoothstep(track.time, sad.duration - .35, sad.duration) : 0;
+  const walk = a.data.clips.walk;
+  const sadWeight = track.sad ? 1 : 0;
   for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(0);
   a.actions.react_walk_sad.setEffectiveWeight(sadWeight);
-  a.actions.react_walk_sad.time = Math.min(track.time, sad.duration);
   a.phase = (a.phase + dt * track.speed / (walk.speed * track.rig.root.scale.y * walk.duration)) % 1;
+  a.actions.react_walk_sad.time = a.phase * walk.duration;
   a.actions.walk.setEffectiveWeight(1 - sadWeight);
   a.actions.walk.time = a.phase * walk.duration;
   a.mixer.update(0);
@@ -1467,13 +1465,16 @@ function sampleReaction(track, dt) {
     const root = track.rig.root;
     setHeading(root, track.heading, dt);
     const alignment = Math.cos(track.heading - root.rotation.y);
-    const speed = alignment >= MOVE_ALIGNMENT ? .65 * THREE.MathUtils.smoothstep(track.time, 0, .3) : 0;
+    const speed = alignment >= MOVE_ALIGNMENT ? .65 * THREE.MathUtils.smoothstep(track.time, 0, .3)
+      * (1 - THREE.MathUtils.smoothstep(track.time, track.duration - .3, track.duration)) : 0;
     const dx = Math.sin(root.rotation.y) * speed * activeDt;
     const dz = Math.cos(root.rotation.y) * speed * activeDt;
     root.position.x += dx;
     root.position.z += dz;
     root.position.y = 0;
     a.speed = speed;
+    const walk = a.data.clips.walk;
+    a.phase = (a.phase + Math.hypot(dx, dz) / (walk.speed * root.scale.y * walk.duration)) % 1;
     if (track === reactions.shooter) {
       captainSpeed = speed;
       _camHome.x += dx; _camHome.z += dz;
@@ -1483,7 +1484,8 @@ function sampleReaction(track, dt) {
   const fade = THREE.MathUtils.smoothstep(track.time, track.duration, track.duration + .3);
   for (const name of ANIMATIONS) a.actions[name].setEffectiveWeight(0);
   a.actions[track.name].setEffectiveWeight(1 - fade);
-  a.actions[track.name].time = Math.min(track.time, track.duration);
+  a.actions[track.name].time = track.name === 'react_walk_sad'
+    ? a.phase * a.data.clips.walk.duration : Math.min(track.time, track.duration);
   const idle = track === reactions.keeper ? 'keeper_idle' : 'idle';
   a.actions[idle].setEffectiveWeight(fade);
   a.actions[idle].time = 0;
@@ -1611,7 +1613,8 @@ function buildSidelineStaff() {
       }
     }
     rig.arms[1].handMarker.add(flag);
-    sidelineStaff.officials.push({ rig, phase: 0, half: i, speed: 0 });
+    sidelineStaff.officials.push({ rig, phase: 0, half: i, speed: 0,
+      target: rig.root.position.z, moving: false, idleTime: 0 });
   }
   for (let i = 0; i < 4; i++) {
     const rig = { root: new THREE.Group() };
@@ -1674,14 +1677,23 @@ function updateSidelineStaff(dt) {
     const target = official.half
       ? clamp(Math.max(ball.z, second), mid, GOAL.PLANE_Z + PITCH.LENGTH)
       : clamp(Math.min(ball.z, second), GOAL.PLANE_Z, mid);
-    const gap = target - rig.root.position.z;
-    const moving = Math.abs(gap) > .35;
-    const heading = moving ? (gap > 0 ? 0 : Math.PI) : (official.half ? -Math.PI / 2 : Math.PI / 2);
+    official.target += (target - official.target) * (1 - Math.exp(-dt * 4));
+    const gap = official.target - rig.root.position.z;
+    // Separate start/stop thresholds prevent noisy ball/defender motion from
+    // repeatedly switching between running and looking into the pitch.
+    if (official.moving && Math.abs(gap) < .2) official.moving = false;
+    else if (!official.moving && Math.abs(gap) > .85) official.moving = true;
+    official.idleTime = official.moving ? 0 : official.idleTime + dt;
+    const heading = official.moving ? (gap > 0 ? 0 : Math.PI)
+      : official.idleTime > .5 ? (official.half ? -Math.PI / 2 : Math.PI / 2) : rig.root.rotation.y;
     const angle = Math.atan2(Math.sin(heading - rig.root.rotation.y), Math.cos(heading - rig.root.rotation.y));
     const turn = Math.abs(angle) < .25 ? angle : clamp(angle, -Math.PI * dt / .25, Math.PI * dt / .25);
     rig.root.rotation.y += turn;
     // Finish turning before forward locomotion; never run backwards or in place.
-    const distance = moving && Math.abs(angle - turn) < .03 ? Math.min(Math.abs(gap), dt * 4.2) : 0;
+    const wantedSpeed = official.moving && Math.abs(angle - turn) < .03
+      ? Math.min(4.2, Math.max(0, Math.abs(gap) - .15) * 3) : 0;
+    const speed = wantedSpeed > 0 ? Math.min(wantedSpeed, official.speed + dt * 7) : 0;
+    const distance = Math.min(Math.abs(gap), dt * speed);
     rig.root.position.z += Math.sign(gap) * distance;
     official.speed = dt > 0 ? distance / dt : 0;
     official.phase += distance * 5;

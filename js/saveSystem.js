@@ -25,8 +25,22 @@ const BLANK = () => ({
   lifetimeGoals: 0,
   bestRun: 0,      // most matches survived
   runs: 0,
+  records: {
+    seasons: 0, matches: 0, wins: 0, draws: 0, losses: 0,
+    titles: 0, benchings: 0, bestSeasonGoals: 0,
+    bestTrainingLevels: 0, fullyUpgradedSeasons: 0,
+  },
+  currentCareer: null,
   meta: { star: 0, subnet: 0, talent: 0, veins: 0, pet: 0, boot: 0 },
 });
+
+const CAREER_RECORD = () => ({
+  seasons: 0, goals: 0, matches: 0, wins: 0, draws: 0, losses: 0,
+  titles: 0, benchings: 0, bestSeasonGoals: 0,
+  bestTrainingLevels: 0, fullyUpgradedSeasons: 0,
+});
+
+const safeCount = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
 
 /** Reads and repairs the career record. Never throws — storage may be blocked. */
 export function load() {
@@ -35,9 +49,23 @@ export function load() {
     const raw = localStorage.getItem(KEY);
     if (!raw) return fresh;
     const data = JSON.parse(raw);
-    const out = { ...fresh, ...data, meta: { ...fresh.meta, ...(data.meta || {}) } };
+    const out = { ...fresh, ...data,
+      records: { ...fresh.records, ...(data.records || {}) },
+      meta: { ...fresh.meta, ...(data.meta || {}) } };
     // Records from before onboarding belong to returning players.
     out.tutorialComplete = data.tutorialComplete === undefined ? true : data.tutorialComplete === true;
+    for (const key of Object.keys(fresh.records)) out.records[key] = safeCount(out.records[key]);
+    // Older saves know season and goal totals, but cannot reconstruct their
+    // historical W-D-L or upgrade distributions.
+    if (!data.records) out.records.seasons = safeCount(data.runs);
+    if (data.currentCareer && typeof data.currentCareer.characterId === 'string') {
+      out.currentCareer = { ...CAREER_RECORD(), ...data.currentCareer,
+        characterId: data.currentCareer.characterId };
+      for (const key of Object.keys(CAREER_RECORD())) {
+        out.currentCareer[key] = safeCount(out.currentCareer[key]);
+      }
+    } else out.currentCareer = typeof out.characterId === 'string'
+      ? { ...CAREER_RECORD(), characterId: out.characterId } : null;
     for (const k of Object.keys(fresh.meta)) {
       out.meta[k] = Math.max(0, Math.min(5, out.meta[k] | 0));
     }

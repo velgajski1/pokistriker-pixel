@@ -31,9 +31,9 @@ try {
   assert(await page.locator('.upgrade-status .conf').count() === 1, 'Confidence must be outside panel');
   await page.screenshot({ path: '.captures/upgrade-art-training.png' });
   await page.locator('.upgrade-card button').first().click();
-  assert(await page.evaluate(() => __demo.state.run.cash === 350), 'Match upgrade purchase failed');
+  assert(await page.evaluate(() => __demo.state.run.cash === 400), 'Match upgrade purchase failed');
   await page.locator('.charm-card button').click();
-  assert(await page.evaluate(() => __demo.state.run.cash === 250 && __demo.state.run.confidence === 85), 'Charm purchase failed');
+  assert(await page.evaluate(() => __demo.state.run.cash === 300 && __demo.state.run.confidence === 70), 'Charm purchase failed');
   await page.locator('.upgrade-help summary').first().hover();
   assert(await page.locator('.upgrade-tip').first().isVisible(), 'Hover help failed');
   await page.setViewportSize({ width: 390, height: 844 });

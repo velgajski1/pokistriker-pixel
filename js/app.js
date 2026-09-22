@@ -83,6 +83,8 @@ const DEFENDER_REACTION = { sadSpeed: .65, slowMin: .7, slowMax: 1.05 };
 
 const ECONOMY = {
   GOAL_PAYOUT: 100,
+  MATCH_SALARY: 50,
+  WIN_BONUS: 50,
   BOOT_BONUS: 10,           // per Golden Boot level
   CHARM_BASE_COST: 100,
   CHARM_RESTORE: 10,
@@ -144,7 +146,7 @@ const SPOT = { MIN_RANGE: 9, MAX_RANGE: 16, MAX_LATERAL: 11,
 /** How long before a scheduled chance the move that creates it kicks off. */
 const BUILDUP_LEAD = 2.4;
 
-const TRAINING_COSTS = [75, 100, 150, 250, 400];
+const TRAINING_COSTS = [100, 150, 250, 400, 750];
 const TRAINING = [
   { key: 'poacher', icon: '🦅', name: 'POACHER INSTINCT',
     fx: '+0.2 percentage points/min to the fair-chance rate per level' },
@@ -216,7 +218,7 @@ const CHANCE_CALLS = [
 
 // ---- Application state ----------------------------------------------------
 const state = {
-  screen: 'MENU',      // MENU | CHARACTER | PREMATCH | MATCH | TRAINING | BENCHED | GAMEOVER
+  screen: 'MENU',      // MENU | STATISTICS | CHARACTER | PREMATCH | MATCH | TRAINING | BENCHED | GAMEOVER
   phase: 'SIM',        // SIM | AIM | POWER | WINDUP | FLIGHT | ENEMY_GOAL
   mode: 'career',      // career | single | practice | tutorial
   career: save.load(),
@@ -242,6 +244,7 @@ const blockers = [
   { z: 0, baseX: 0, x: 0, target: 0, side: 1, depth: 1, delay: 0, lunge: 0, down: 0, spent: false },
 ];
 let blockerCount = 0;
+let balanceSimulation = false;
 
 export const KEEPER_PROGRESS = { distanceScale: 30, perGoal: .24, perMatch: .10, careerSkillCap: .9 };
 const OPENING_KEEPER = {
@@ -307,7 +310,13 @@ const sweepSpeed = () => SHOT.BASE_SWEEP * (1 - 0.12 * train('target')) * (1 - 0
   * aimDistanceMultiplier(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z));
 const speedScale = () => (1 + 0.06 * train('legday')) * (1 + 0.05 * meta('talent'));
 const goalPayout = () => ECONOMY.GOAL_PAYOUT + ECONOMY.BOOT_BONUS * meta('boot');
-const defenseStrength = () => .85 * (1 - Math.exp(-Math.max(0, (state.mode === 'career' ? state.run.match : 1) - 1) * .10));
+const defenseStrengthForMatch = (match) => {
+  const progress = Math.max(0, Math.min(SEASON_MATCHES - 1, match - 1));
+  // Preserve the gradual curve, normalized to rating 90 at the season finale.
+  return (65 / 74) * (1 - Math.exp(-progress * .10))
+    / (1 - Math.exp(-(SEASON_MATCHES - 1) * .10));
+};
+const defenseStrength = () => defenseStrengthForMatch(state.mode === 'career' ? state.run.match : 1);
 function opponentProfile() {
   return {
     name: CLUBS[state.run.opponentColors],
@@ -321,6 +330,20 @@ const magnetMargin = () => 0.18 * train('icebath');
 const fairChanceRate = () => FAIR_CHANCE.BASE_PER_MINUTE
   + FAIR_CHANCE.PER_LEVEL_PER_MINUTE * (train('poacher') + meta('star')
     + (state.run.confidence < MORALE.SUPER_SUB_AT ? meta('subnet') : 0));
+
+const emptyCareerStats = characterId => ({
+  characterId, seasons: 0, goals: 0, matches: 0,
+  wins: 0, draws: 0, losses: 0, titles: 0, benchings: 0,
+  bestSeasonGoals: 0, bestTrainingLevels: 0, fullyUpgradedSeasons: 0,
+});
+const trainingLevelCount = run => TRAINING.reduce((sum, def) => sum + (run.training[def.key] || 0), 0);
+
+function ensureCurrentCareer(characterId) {
+  if (!state.career.currentCareer || state.career.currentCareer.characterId !== characterId) {
+    state.career.currentCareer = emptyCareerStats(characterId);
+  }
+  return state.career.currentCareer;
+}
 
 // ===========================================================================
 // Run lifecycle
@@ -347,6 +370,8 @@ function careerCheckpoint() {
   if (!['match', 'cash', 'goals', 'matchGoals', 'chancesLeft'].every(key => Number.isSafeInteger(run[key]) && run[key] >= 0)
     || run.match < 1 || run.matchGoals > run.goals || run.chancesLeft > 10
     || (run.teammateGoals !== undefined && (!Number.isSafeInteger(run.teammateGoals) || run.teammateGoals < 0))
+    || ['wins', 'draws', 'losses'].some(key => run[key] !== undefined
+      && (!Number.isSafeInteger(run[key]) || run[key] < 0))
     || (run.teammateCredit !== undefined && (!Number.isFinite(run.teammateCredit) || run.teammateCredit < 0 || run.teammateCredit > 2))
     || (run.goalByTeammate !== undefined && typeof run.goalByTeammate !== 'boolean')
     || (run.npcGoalVariant !== undefined && (!Number.isInteger(run.npcGoalVariant) || run.npcGoalVariant < 0 || run.npcGoalVariant > 3))
@@ -396,6 +421,9 @@ function enterCareer() {
   state.run.enemyCredit ??= .5;
   state.run.teammateCredit ??= Math.random();
   state.run.teammateGoals ??= 0;
+  state.run.wins ??= 0;
+  state.run.draws ??= 0;
+  state.run.losses ??= 0;
   state.run.enemyPause ??= 0;
   state.run.opponentColors = seasonOpponent(state.run.match);
   const character = CHARACTERS.find(player => player.id === state.run.characterId);
@@ -428,6 +456,9 @@ function enterCareer() {
   if (state.run.enemyPause > 0) {
     state.phase = 'ENEMY_GOAL';
     engine.startOpponentGoal(state.run.goalByTeammate === true, state.run.npcGoalVariant ?? 0);
+    if (OPPONENT_GOALS.PAUSE_SECONDS - state.run.enemyPause >= 1.3) {
+      ui.showMatchAnnouncement('GOAL!', `${state.run.goalByTeammate ? HOME_CLUB : opponentProfile().name} scored`);
+    }
     ui.setTicker(Math.floor(state.run.clock), `${state.run.goalByTeammate ? HOME_CLUB : opponentProfile().name} score!`);
     return;
   }
@@ -459,6 +490,7 @@ function startRun(mode = 'career', characterId = null) {
   ui.setCareerIdentity(character);
   if (character) {
     state.career.characterId = character.id;
+    ensureCurrentCareer(character.id);
     save.save(state.career);
   }
   engine.stopCelebration();
@@ -475,6 +507,9 @@ function startRun(mode = 'career', characterId = null) {
     enemyCredit: .5,
     teammateCredit: Math.random(),
     teammateGoals: 0,
+    wins: 0,
+    draws: 0,
+    losses: 0,
     goalByTeammate: false,
     enemyPause: 0,
     training: { poacher: 0, target: 0, legday: 0, icebath: 0 },
@@ -588,16 +623,24 @@ function kickOff() {
 function endMatch() {
   audio.play('fulltime');
   const run = state.run;
-  if (state.mode === 'career') {
+  if (state.mode === 'career' && !run.matchResult) {
     const before = run.confidence;
-    const delta = teamScore(run) > run.enemyGoals ? 5 : teamScore(run) < run.enemyGoals ? -5 : 0;
+    const result = teamScore(run) > run.enemyGoals ? 'wins' : teamScore(run) < run.enemyGoals ? 'losses' : 'draws';
+    run[result] = (run[result] || 0) + 1;
+    const delta = result === 'wins' ? 5 : result === 'losses' ? -5 : 0;
     adjustConfidence(delta);
-    run.matchResult = { before, delta, after: run.confidence };
+    const salary = ECONOMY.MATCH_SALARY;
+    const winBonus = delta > 0 ? ECONOMY.WIN_BONUS : 0;
+    run.cash += salary + winBonus;
+    run.matchResult = { before, delta, after: run.confidence, salary, winBonus,
+      goalEarnings: run.matchGoals * goalPayout() };
   }
   state.phase = 'FULL_TIME';
   fullTimeRemaining = FULL_TIME_SECONDS;
   engine.startWalkOff();
-  ui.setPrompt('FULL TIME');
+  ui.showMatchAnnouncement('FULL TIME',
+    `${HOME_CLUB} vs ${opponentProfile().name} · ${teamScore(run) > run.enemyGoals ? 'VICTORY' : teamScore(run) < run.enemyGoals ? 'DEFEAT' : 'DRAW'}`,
+    `${teamScore(run)} : ${run.enemyGoals}`);
   ui.setTicker(90, 'Full time. The players head for the tunnel.');
   checkpointCareer();
 }
@@ -612,6 +655,7 @@ function renderMatchResult() {
   checkpointCareer();
   ui.showMatchResult({ match: run.match, homeClub: HOME_CLUB, opponent: opponentProfile().name,
     goals: teamScore(run), enemyGoals: run.enemyGoals,
+    goalEarnings: run.matchGoals * goalPayout(), playerGoals: run.matchGoals,
     ...run.matchResult, confidenceMax: confidenceMax(), onNext: continueAfterMatch });
 }
 
@@ -638,6 +682,33 @@ function finishCareer(won) {
   const earned = run.goals * ECONOMY.LEGACY_PER_GOAL;
   const matches = run.match;
   const isBest = run.match > state.career.bestRun;
+  const trainingLevels = trainingLevelCount(run);
+  const fullyUpgraded = trainingLevels === TRAINING.length * MAX_LEVEL;
+  const careerStats = ensureCurrentCareer(run.characterId);
+  const records = state.career.records;
+
+  careerStats.seasons += 1;
+  careerStats.goals += run.goals;
+  careerStats.matches += matches;
+  careerStats.wins += run.wins || 0;
+  careerStats.draws += run.draws || 0;
+  careerStats.losses += run.losses || 0;
+  careerStats.titles += won ? 1 : 0;
+  careerStats.benchings += won ? 0 : 1;
+  careerStats.bestSeasonGoals = Math.max(careerStats.bestSeasonGoals, run.goals);
+  careerStats.bestTrainingLevels = Math.max(careerStats.bestTrainingLevels, trainingLevels);
+  careerStats.fullyUpgradedSeasons += fullyUpgraded ? 1 : 0;
+
+  records.seasons += 1;
+  records.matches += matches;
+  records.wins += run.wins || 0;
+  records.draws += run.draws || 0;
+  records.losses += run.losses || 0;
+  records.titles += won ? 1 : 0;
+  records.benchings += won ? 0 : 1;
+  records.bestSeasonGoals = Math.max(records.bestSeasonGoals, run.goals);
+  records.bestTrainingLevels = Math.max(records.bestTrainingLevels, trainingLevels);
+  records.fullyUpgradedSeasons += fullyUpgraded ? 1 : 0;
 
   state.career.legacy += earned;
   state.career.lifetimeGoals += run.goals;
@@ -690,6 +761,7 @@ function showCareerGameOver(summary, preview = false) {
           delete state.career.activeRun;
           delete state.career.summerBreak;
           delete state.career.characterId;
+          state.career.currentCareer = null;
           state.career.legacy = 0;
           for (const { key } of META) state.career.meta[key] = 0;
           save.save(state.career);
@@ -725,8 +797,8 @@ function adjustConfidence(delta) {
   const run = state.run;
   const previous = run.confidence;
   run.confidence = Math.max(0, Math.min(confidenceMax(), run.confidence + delta));
-  if (Math.abs(run.confidence - previous) > 1) audio.play(delta > 0 ? 'positive' : 'negative');
-  if (previous > 20 && run.confidence <= 20) audio.play('warning');
+  if (!balanceSimulation && Math.abs(run.confidence - previous) > 1) audio.play(delta > 0 ? 'positive' : 'negative');
+  if (!balanceSimulation && previous > 20 && run.confidence <= 20) audio.play('warning');
 }
 
 function pushHud() {
@@ -1002,8 +1074,10 @@ function advance() {
 }
 
 function launch() {
-  audio.play('kick');
-  audio.play('whoosh');
+  if (!balanceSimulation) {
+    audio.play('kick');
+    audio.play('whoosh');
+  }
   let theta = shot.theta;
 
   // Ice Bath: a shot already creeping toward the inside of a post gets a
@@ -1275,7 +1349,7 @@ export function substep(h) {
   stepBall(ballPos, ballVel, h);
   if (prevPos.y > TURF + 1e-4 && ballPos.y <= TURF) {
     shot.bounced = true;
-    if (Math.abs(ballVel.y) > .4) audio.play('bounce');
+    if (!balanceSimulation && Math.abs(ballVel.y) > .4) audio.play('bounce');
   }
   if (shot.reboundStart < 0 && (shot.bounced || shot.touched !== null)) shot.reboundStart = shot.flightTime;
 
@@ -1323,10 +1397,10 @@ function terminalOutcome(planeVerdict) {
 }
 
 function touch(what, shakeAmp) {
-  audio.play(what === 'keeper' ? 'save' : what === 'defender' ? 'block' : what);
+  if (!balanceSimulation) audio.play(what === 'keeper' ? 'save' : what === 'defender' ? 'block' : what);
   shot.touched = what;
   shot.contactCool = 0.05;
-  engine.shake(shakeAmp);
+  if (!balanceSimulation) engine.shake(shakeAmp);
 }
 
 /**
@@ -1482,53 +1556,173 @@ function updateFlight(dt) {
 }
 
 function resolve(outcome) {
-  audio.play(outcome === 'goal' ? 'cheer' : 'groan');
-  if (outcome === 'goal') { audio.play('net'); audio.play('reward'); }
+  if (!balanceSimulation) {
+    audio.play(outcome === 'goal' ? 'cheer' : 'groan');
+    if (outcome === 'goal') { audio.play('net'); audio.play('reward'); }
+  }
   const run = state.run;
   shot.resolved = outcome;
   if (outcome !== 'goal') adjustConfidence(MORALE.ON_MISSED_CHANCE);
-  engine.cheerCrowd(outcome === 'goal');
+  if (!balanceSimulation) engine.cheerCrowd(outcome === 'goal');
   shot.holdTimer = outcome === 'goal' ? 1.7 : .8;
-  const reactionIndex = Math.floor(Math.random() * engine.REACTIONS.length);
-  const reactionDuration = engine.startReaction(outcome === 'goal' ? 'keeper' : 'shooter', engine.REACTIONS[reactionIndex]);
-  shot.holdTimer = Math.max(shot.holdTimer, reactionDuration);
+  if (!balanceSimulation) {
+    const reactionIndex = Math.floor(Math.random() * engine.REACTIONS.length);
+    const reactionDuration = engine.startReaction(outcome === 'goal' ? 'keeper' : 'shooter', engine.REACTIONS[reactionIndex]);
+    shot.holdTimer = Math.max(shot.holdTimer, reactionDuration);
+  }
   run.chancesLeft = Math.max(0, run.chancesLeft - 1);
 
   if (outcome === 'goal') {
-    engine.startDefenderReactions(DEFENDER_REACTION);
-    let celebrationIndex = Math.floor(Math.random() * (engine.CELEBRATIONS.length - (run.lastCelebration === undefined ? 0 : 1)));
-    if (run.lastCelebration !== undefined && celebrationIndex >= run.lastCelebration) celebrationIndex++;
-    run.lastCelebration = celebrationIndex;
-    shot.holdTimer = Math.max(shot.holdTimer, engine.startCelebration(engine.CELEBRATIONS[celebrationIndex]));
+    if (!balanceSimulation) {
+      engine.startDefenderReactions(DEFENDER_REACTION);
+      let celebrationIndex = Math.floor(Math.random() * (engine.CELEBRATIONS.length - (run.lastCelebration === undefined ? 0 : 1)));
+      if (run.lastCelebration !== undefined && celebrationIndex >= run.lastCelebration) celebrationIndex++;
+      run.lastCelebration = celebrationIndex;
+      shot.holdTimer = Math.max(shot.holdTimer, engine.startCelebration(engine.CELEBRATIONS[celebrationIndex]));
+    }
     run.goals += 1;
     run.matchGoals += 1;
     if (state.mode === 'career') run.cash += goalPayout();
     adjustConfidence(MORALE.ON_GOAL);
-    engine.shake(0.5);
-    ui.flashVerdict('GOAL', 'goal');
-    ui.setTicker(Math.floor(run.clock), `${GOAL_CALLS[shot.touched] || GOAL_CALLS.clean}${state.mode === 'career' ? ` <b>+$${goalPayout()}</b>.` : ''}`);
-  } else if (outcome === 'save') {
+    if (!balanceSimulation) {
+      engine.shake(0.5);
+      ui.flashVerdict('GOAL', 'goal');
+      ui.setTicker(Math.floor(run.clock), `${GOAL_CALLS[shot.touched] || GOAL_CALLS.clean}${state.mode === 'career' ? ` <b>+$${goalPayout()}</b>.` : ''}`);
+    }
+  } else if (!balanceSimulation && outcome === 'save') {
     engine.shake(0.25);
     ui.flashVerdict('SAVED', 'save');
     ui.setTicker(Math.floor(run.clock), 'The keeper gets a strong hand to it.');
-  } else if (outcome === 'woodwork') {
+  } else if (!balanceSimulation && outcome === 'woodwork') {
     ui.flashVerdict('WOODWORK', 'save');
     ui.setTicker(Math.floor(run.clock), shot.touched === 'bar'
       ? 'Off the crossbar and away. Inches.'
       : 'Off the post and back out. Agonising.');
-  } else if (outcome === 'blocked') {
+  } else if (!balanceSimulation && outcome === 'blocked') {
     engine.shake(0.3);
     ui.flashVerdict('BLOCKED', 'save');
     ui.setTicker(Math.floor(run.clock), 'A defender throws himself in the way.');
-  } else if (outcome === 'high') {
+  } else if (!balanceSimulation && outcome === 'high') {
     ui.flashVerdict('OVER', 'miss');
     ui.setTicker(Math.floor(run.clock), 'Leant back and blazed it over the bar.');
-  } else {
+  } else if (!balanceSimulation) {
     ui.flashVerdict('MISSED', 'miss');
     ui.setTicker(Math.floor(run.clock), 'Dragged wide. The manager turns away.');
   }
-  pushHud();
-  queueMicrotask(checkpointCareer);
+  if (!balanceSimulation) {
+    pushHud();
+    queueMicrotask(checkpointCareer);
+  }
+}
+
+/** Local-only deterministic harness used by tools/balance-simulation.mjs.
+ * It drives the production shot setup, keeper/defender AI, swept collisions
+ * and goal-line verdict without waiting for presentation animations. */
+export function simulateBalanceShotForTest(config) {
+  if (!upgradeShortcutsEnabled || !state.run) throw new Error('Balance harness is only available in a local active run');
+  balanceSimulation = true;
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.setAnimationsPaused(false);
+  state.mode = 'career';
+  state.screen = 'MATCH';
+  state.phase = 'SIM';
+  const run = state.run;
+  run.match = Math.max(1, Math.min(SEASON_MATCHES, config.match | 0));
+  run.matchGoals = Math.max(0, config.goals | 0);
+  run.goals = run.matchGoals;
+  run.cash = 0;
+  run.confidence = 70;
+  run.chancesLeft = 1;
+  run.training = { poacher: 0, target: 0, legday: 0, icebath: 0, ...config.training };
+  state.career.meta = { star: 0, subnet: 0, talent: 0, veins: 0, pet: 0, boot: 0, ...config.meta };
+  origin.x = config.x;
+  origin.y = GROUND_Y;
+  origin.z = GOAL.PLANE_Z + config.range;
+  blockerCount = Math.max(0, Math.min(2, config.blockers | 0));
+  shot.keeperDepth = config.keeperDepth ?? .75;
+  engine.setupChance(origin, blockerCount, false);
+  for (let i = 0; i < blockerCount; i++) {
+    const src = engine.chance.blockers[i], b = blockers[i];
+    b.z = src.z; b.baseX = src.baseX; b.x = src.baseX;
+    b.side = 1; b.lunge = 0; b.depth = 1; b.delay = 0; b.down = 0; b.spent = false;
+  }
+  const intendedX = Math.max(-GOAL.HALF_W + .35, Math.min(GOAL.HALF_W - .35, config.targetX ?? 0));
+  shot.theta = aimAngleFor(origin, intendedX + (config.aimError ?? 0));
+  const scale = speedScale();
+  let low = 0, high = 1;
+  for (let i = 0; i < 18; i++) {
+    const mid = (low + high) / 2;
+    predictCrossing(origin, shot.theta, mid, scale, prediction);
+    if (prediction.y < (config.targetY ?? 1.35)) low = mid; else high = mid;
+  }
+  shot.power = Math.max(0, Math.min(1, (low + high) / 2 + (config.powerError ?? 0)));
+  // The previous calibration shot leaves its verdict latched just like a real
+  // highlight does until the next one is prepared. Reset it here so every
+  // sample actually advances through the production physics loop.
+  shot.resolved = null;
+  shot.keeperAbility = keeperAbility(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z),
+    run.matchGoals, run.match, true);
+  shot.defenseStrength = defenseStrength();
+  const narrow = Math.max(-2.6, Math.min(2.6, origin.x * SHOT.KEEPER_ANGLE_NARROW));
+  shot.keeperSetX = narrow + (Math.random() * 2 - 1) * shot.keeperAbility.setSpread;
+  if (shot.keeperDepth > .75) {
+    shot.keeperAbility.reaction += .25;
+    shot.keeperAbility.setSpeed *= .75;
+    shot.keeperAbility.diveSpeed *= .75;
+  }
+  shot.keeperX = shot.keeperSetX;
+  shot.keeperDive = 0; shot.keeperSide = 1; shot.diveDepth = 1;
+  engine.setKeeper(shot.keeperX, 0, 1, 0, 0, 0, null, shot.keeperDepth);
+  predictCrossing(origin, shot.theta, shot.power, scale, prediction);
+  const predicted = { x: prediction.x, y: prediction.y,
+    onTarget: classifyAtPlane(prediction.x, prediction.y) === 'GOAL' };
+  launch();
+  let steps = 0;
+  while (shot.resolved === null && steps++ < 2400) substep(PHYS_DT);
+  const result = { outcome: shot.resolved || 'unresolved', predicted,
+    match: run.match, defenseRating: opponentProfile().rating,
+    keeperSkill: shot.keeperAbility.skill, blockers: blockerCount };
+  engine.stopCelebration();
+  engine.stopReactions();
+  return result;
+}
+
+export function endBalanceSimulationForTest() {
+  balanceSimulation = false;
+}
+
+export function balanceRulesForTest() {
+  if (!upgradeShortcutsEnabled) throw new Error('Balance rules are only exposed locally');
+  return {
+    seasonMatches: SEASON_MATCHES,
+    trainingCosts: TRAINING_COSTS.slice(),
+    metaCosts: Object.fromEntries(META.map(def => [def.key,
+      Array.from({ length: MAX_LEVEL }, (_, level) => def.base * (level + 1))])),
+    economy: { ...ECONOMY }, morale: { ...MORALE }, fairChance: { ...FAIR_CHANCE },
+    defenseRatings: Array.from({ length: SEASON_MATCHES }, (_, i) =>
+      Math.round(25 + defenseStrengthForMatch(i + 1) * 74)),
+  };
+}
+
+export function completeMatchForTest({ playerGoals = 0, teammateGoals = 0, enemyGoals = 0, confidence = 70 } = {}) {
+  if (!upgradeShortcutsEnabled || state.screen !== 'MATCH' || !state.run) {
+    throw new Error('Match completion helper requires a local active match');
+  }
+  const run = state.run;
+  run.goals += Math.max(0, playerGoals - run.matchGoals);
+  run.matchGoals = playerGoals;
+  run.teammateGoals = teammateGoals;
+  run.enemyGoals = enemyGoals;
+  run.confidence = confidence;
+  run.clock = CLOCK.FULL_TIME;
+  run.simTime = 100;
+  run.schedule = [];
+  run.building = false;
+  endMatch();
+  fullTimeRemaining = 0;
+  engine.endWalkOff();
+  renderMatchResult();
 }
 
 function finishChance() {
@@ -1609,6 +1803,68 @@ function renderCharacterSelection() {
   });
 }
 
+function renderStatistics() {
+  checkpointCareer();
+  const checkpoint = careerCheckpoint();
+  const activeRun = checkpoint?.run || null;
+  const careerStats = state.career.currentCareer;
+  const sameCareer = activeRun && careerStats && activeRun.characterId === careerStats.characterId;
+  const activeResults = sameCareer
+    ? (activeRun.wins || 0) + (activeRun.draws || 0) + (activeRun.losses || 0) : 0;
+  const completedByScreen = sameCareer ? (checkpoint.screen === 'RESULTS' || checkpoint.screen === 'TRAINING'
+    ? activeRun.match : Math.max(0, activeRun.match - 1)) : 0;
+  const activeMatches = Math.max(activeResults, completedByScreen);
+  const activeTraining = sameCareer ? trainingLevelCount(activeRun) : 0;
+  const records = state.career.records;
+  const characterId = careerStats?.characterId || state.career.characterId;
+  const character = CHARACTERS.find(player => player.id === characterId);
+
+  state.screen = 'STATISTICS';
+  state.run = null;
+  state.mode = 'career';
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.setAnimationsPaused(false);
+  engine.frameAmbient();
+  ui.showHud(false);
+  ui.setDimmed(true);
+  ui.showStatistics({
+    character: character ? { name: character.name, portrait: character.portrait } : null,
+    career: careerStats ? {
+      season: careerStats.seasons + (sameCareer ? 1 : 0),
+      seasons: careerStats.seasons,
+      goals: careerStats.goals + (sameCareer ? activeRun.goals : 0),
+      matches: careerStats.matches + activeMatches,
+      wins: careerStats.wins + (sameCareer ? activeRun.wins || 0 : 0),
+      draws: careerStats.draws + (sameCareer ? activeRun.draws || 0 : 0),
+      losses: careerStats.losses + (sameCareer ? activeRun.losses || 0 : 0),
+      titles: careerStats.titles,
+      benchings: careerStats.benchings,
+      bestSeasonGoals: Math.max(careerStats.bestSeasonGoals, sameCareer ? activeRun.goals : 0),
+      bestTrainingLevels: Math.max(careerStats.bestTrainingLevels, activeTraining),
+      fullyUpgradedSeasons: careerStats.fullyUpgradedSeasons,
+    } : null,
+    allTime: {
+      seasons: records.seasons,
+      goals: state.career.lifetimeGoals + (sameCareer ? activeRun.goals : 0),
+      matches: records.matches + activeMatches,
+      wins: records.wins + (sameCareer ? activeRun.wins || 0 : 0),
+      draws: records.draws + (sameCareer ? activeRun.draws || 0 : 0),
+      losses: records.losses + (sameCareer ? activeRun.losses || 0 : 0),
+      titles: records.titles,
+      benchings: records.benchings,
+      bestSeasonGoals: Math.max(records.bestSeasonGoals, sameCareer ? activeRun.goals : 0),
+      bestTrainingLevels: Math.max(records.bestTrainingLevels, activeTraining),
+      fullyUpgradedSeasons: records.fullyUpgradedSeasons,
+      summerLevels: META.reduce((sum, def) => sum + state.career.meta[def.key], 0),
+      legacy: state.career.legacy,
+    },
+    maxTrainingLevels: TRAINING.length * MAX_LEVEL,
+    maxSummerLevels: META.length * MAX_LEVEL,
+    onBack: renderMenu,
+  });
+}
+
 function renderMenu() {
   menuMusic = 'menu';
   if (!state.career.tutorialComplete) { startRun('tutorial'); return; }
@@ -1636,6 +1892,7 @@ function renderMenu() {
       || META.some(({ key }) => state.career.meta[key] > 0),
     onSingle: () => startRun('single'),
     onPractice: () => startRun('practice'),
+    onStatistics: renderStatistics,
     onReset: () => ui.showConfirmation('RESET PROGRESS?',
       'Permanently erase your legacy points, upgrades, and career records?',
       () => { state.career = save.wipe(); renderMenu(); }, renderMenu),
@@ -1776,7 +2033,8 @@ function previewScreen(number, celebrationName = null) {
   startRun('career', state.career.characterId || CHARACTERS[0].id);
   if (number === 1) {
     renderMenu();
-    if (step % 2) ui.showConfirmation('RESET PROGRESS?', 'Preview only: your saved career is safe.', renderMenu, renderMenu);
+    if (step % 3 === 1) ui.showConfirmation('RESET PROGRESS?', 'Preview only: your saved career is safe.', renderMenu, renderMenu);
+    else if (step % 3 === 2) renderStatistics();
   } else if (number === 2) {
     delete state.career.characterId;
     renderCharacterSelection();
@@ -1811,7 +2069,9 @@ function previewScreen(number, celebrationName = null) {
     else {
       const delta = variant === 0 ? 5 : variant === 1 ? 0 : -5;
       state.run.confidence += delta;
-      state.run.matchResult = { before: 50, delta, after: state.run.confidence };
+      state.run.matchResult = { before: 50, delta, after: state.run.confidence,
+        salary: ECONOMY.MATCH_SALARY, winBonus: delta > 0 ? ECONOMY.WIN_BONUS : 0,
+        goalEarnings: state.run.matchGoals * goalPayout() };
       renderMatchResult();
     }
   } else if (number === 6) showUpgradeScreen('training');
@@ -1858,6 +2118,7 @@ function previewVictory() {
   // Sample results only: do not replace the run or award/save preview LP.
   ui.showMatchResult({ match: SEASON_MATCHES, homeClub: HOME_CLUB, opponent: CLUBS[seasonOpponent(SEASON_MATCHES)],
     goals: 2, enemyGoals: 1, before: 50, delta: 5, after: 55, confidenceMax: 100,
+    playerGoals: 2, goalEarnings: 200, salary: 50, winBonus: 50,
     onNext: () => showCareerGameOver({ version: 1, matches: SEASON_MATCHES, seasonMatches: SEASON_MATCHES,
       goals: 10, earned: 10 * ECONOMY.LEGACY_PER_GOAL, isBest: true, won: true }, true),
   });
@@ -1919,12 +2180,16 @@ function frame(dt) {
     state.run.enemyPause = Math.max(0, state.run.enemyPause - dt);
     const animationTime = OPPONENT_GOALS.PAUSE_SECONDS - state.run.enemyPause;
     if (previousTime < .65 && animationTime >= .65) { audio.play('kick'); audio.play('whoosh'); }
-    if (previousTime < 1.3 && animationTime >= 1.3) { audio.play('net'); audio.play(state.run.goalByTeammate ? 'cheer' : 'groan'); }
+    if (previousTime < 1.3 && animationTime >= 1.3) {
+      audio.play('net'); audio.play(state.run.goalByTeammate ? 'cheer' : 'groan');
+      ui.showMatchAnnouncement('GOAL!', `${state.run.goalByTeammate ? HOME_CLUB : opponentProfile().name} scored`);
+    }
     engine.updateOpponentGoal(animationTime);
     if (state.run.enemyPause === 0) {
       engine.endOpponentGoal();
       state.phase = 'SIM';
       engine.setAnimationsPaused(false);
+      ui.setPrompt('');
       ui.setTicker(Math.floor(state.run.clock), 'Play resumes.');
       checkpointCareer();
     }

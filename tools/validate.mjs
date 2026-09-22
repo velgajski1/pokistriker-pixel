@@ -11,6 +11,9 @@ try {
   const { page } = session;
   assert(await page.evaluate(() => window.__demo.striker.model === 'captain'), 'Captain did not load');
   page.setDefaultTimeout(15000);
+  await page.evaluate(() => localStorage.setItem('benched.career.v1', JSON.stringify({ tutorialComplete: true })));
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForFunction(() => window.__demo?.ready);
   report.gpu = await gpuString(page);
   await page.evaluate(() => {
     const d = window.__demo;
@@ -41,7 +44,10 @@ try {
     assert(locked.power >= 0.55 && locked.power <= 0.7, `Power outside target range: ${locked.power}`);
   };
 
-  await page.getByRole('button', { name: 'Start Career >', exact: true }).click();
+  await page.getByRole('button', { name: 'Career Mode', exact: true }).click();
+  await page.getByRole('button', { name: 'Barry Benchwarmer', exact: true }).click();
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await page.getByRole('button', { name: 'Play', exact: true }).click();
   // Exercise an early fixture without waiting for its scheduled match minute.
   await page.evaluate(() => { __demo.state.run.schedule[0] = __demo.state.run.clock + 1; });
   await phase('AIM');
@@ -65,7 +71,7 @@ try {
     const status = await page.evaluate(() => ({ done: window.__smokeFrames.done, screen: window.__demo.state.screen }));
     if (status.done) break;
     if (status.screen === 'TRAINING') {
-      await page.getByRole('button', { name: 'Proceed To Next Match >', exact: true }).click();
+      await page.getByRole('button', { name: 'Next Match >', exact: true }).click();
     } else {
       assert(status.screen === 'MATCH', `Unexpected screen: ${status.screen}`);
       await shoot();

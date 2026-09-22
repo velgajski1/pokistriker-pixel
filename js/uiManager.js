@@ -260,8 +260,33 @@ export function setTicker(minute, text) {
 }
 
 export function setPrompt(text) {
+  for (const animation of el.prompt.getAnimations()) animation.cancel();
+  el.prompt.classList.remove('match-announcement');
   el.prompt.textContent = text || '';
   el.prompt.classList.toggle('show', !!text);
+}
+
+export function showMatchAnnouncement(title, subtitle, score = '') {
+  setPrompt('');
+  const heading = document.createElement('strong');
+  heading.className = 'announcement-title';
+  heading.textContent = title;
+  const detail = document.createElement('span');
+  detail.className = 'announcement-detail';
+  detail.textContent = subtitle;
+  el.prompt.replaceChildren(heading);
+  if (score) {
+    const result = document.createElement('b');
+    result.className = 'announcement-score';
+    result.textContent = score;
+    el.prompt.append(result);
+  }
+  el.prompt.append(detail);
+  el.prompt.classList.add('show', 'match-announcement');
+  el.prompt.animate([
+    { opacity: 0, transform: 'translateY(24px) scale(.9)' },
+    { opacity: 1, transform: 'translateY(0) scale(1)' },
+  ], { duration: 550, easing: 'cubic-bezier(.16,1,.3,1)' });
 }
 
 export function flashVerdict(text, kind) {
@@ -429,11 +454,95 @@ export function showMainMenu(vm) {
     ['Career Mode', vm.onCareer],
     ['Single Match', vm.onSingle],
     ['Training Mode', vm.onPractice],
+    ['Statistics', vm.onStatistics],
   ]) {
     modes.append(action(title, callback, 'menu-option'));
   }
   if (vm.hasProgress) modes.append(action('Reset Progress', vm.onReset, 'menu-option reset-progress'));
   p.append(brand, modes);
+  mount(p);
+}
+
+export function showStatistics(vm) {
+  const p = panel();
+  p.classList.add('upgrade-panel', 'statistics-panel');
+  const heading = header('STATISTICS', 'Your career, season by season');
+  p.append(heading);
+
+  if (vm.character) {
+    const hero = document.createElement('div');
+    hero.className = 'statistics-hero';
+    const portrait = document.createElement('img');
+    portrait.src = vm.character.portrait;
+    portrait.alt = '';
+    const identity = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = vm.character.name;
+    const season = document.createElement('span');
+    season.textContent = vm.career?.season ? `Season ${vm.career.season} in progress` : 'Between seasons';
+    identity.append(name, season);
+    hero.append(portrait, identity);
+    p.append(hero);
+  }
+
+  const columns = document.createElement('div');
+  columns.className = 'statistics-columns';
+  const tile = (label, value, key) => {
+    const item = document.createElement('div');
+    item.className = 'statistics-item';
+    item.dataset.stat = key;
+    const number = document.createElement('strong');
+    number.textContent = String(value);
+    const caption = document.createElement('span');
+    caption.textContent = label;
+    item.append(number, caption);
+    return item;
+  };
+  const section = (title, values) => {
+    const block = document.createElement('section');
+    block.className = 'statistics-section';
+    const h2 = document.createElement('h2');
+    h2.textContent = title;
+    const grid = document.createElement('div');
+    grid.className = 'statistics-grid';
+    for (const value of values) grid.append(tile(value.label, value.value, value.key));
+    block.append(h2, grid);
+    return block;
+  };
+  const career = vm.career;
+  columns.append(section('CURRENT PLAYER CAREER', career ? [
+    { label: 'Goals', value: career.goals, key: 'career-goals' },
+    { label: 'Matches', value: career.matches, key: 'career-matches' },
+    { label: 'W–D–L', value: `${career.wins}–${career.draws}–${career.losses}`, key: 'career-record' },
+    { label: 'Seasons completed', value: career.seasons, key: 'career-seasons' },
+    { label: 'Titles', value: career.titles, key: 'career-titles' },
+    { label: 'Times benched', value: career.benchings, key: 'career-benchings' },
+    { label: 'Best season', value: `${career.bestSeasonGoals} goals`, key: 'career-best-season' },
+    { label: 'Best match upgrades', value: `${career.bestTrainingLevels}/${vm.maxTrainingLevels}`, key: 'career-best-training' },
+    { label: 'Fully upgraded seasons', value: career.fullyUpgradedSeasons, key: 'career-full-training' },
+  ] : [
+    { label: 'Choose a striker to begin', value: '—', key: 'career-empty' },
+  ]));
+  const all = vm.allTime;
+  columns.append(section('ALL-TIME RECORDS', [
+    { label: 'Goals', value: all.goals, key: 'all-goals' },
+    { label: 'Matches', value: all.matches, key: 'all-matches' },
+    { label: 'W–D–L', value: `${all.wins}–${all.draws}–${all.losses}`, key: 'all-record' },
+    { label: 'Seasons completed', value: all.seasons, key: 'all-seasons' },
+    { label: 'Titles', value: all.titles, key: 'all-titles' },
+    { label: 'Times benched', value: all.benchings, key: 'all-benchings' },
+    { label: 'Best season', value: `${all.bestSeasonGoals} goals`, key: 'all-best-season' },
+    { label: 'Best match upgrades', value: `${all.bestTrainingLevels}/${vm.maxTrainingLevels}`, key: 'all-best-training' },
+    { label: 'Fully upgraded seasons', value: all.fullyUpgradedSeasons, key: 'all-full-training' },
+    { label: 'Summer upgrades', value: `${all.summerLevels}/${vm.maxSummerLevels}`, key: 'all-summer-training' },
+    { label: 'Unspent LP', value: all.legacy, key: 'all-legacy' },
+  ]));
+  p.append(columns);
+
+  const foot = document.createElement('div');
+  foot.className = 'foot statistics-foot';
+  foot.append(action('Back', vm.onBack, 'accent'));
+  p.append(foot);
   mount(p);
 }
 
@@ -522,19 +631,34 @@ export function showMatchResult(vm) {
   const change = document.createElement('p');
   change.className = 'match-confidence-change';
   change.textContent = `${vm.delta > 0 ? '+' : ''}${vm.delta} trainer confidence · ${vm.delta > 0 ? 'Win bonus' : vm.delta < 0 ? 'Loss penalty' : 'No change for a draw'}`;
+  const earnings = document.createElement('div');
+  earnings.className = 'match-earnings';
+  const goalEarnings = vm.goalEarnings ?? 0, salary = vm.salary ?? 0, winBonus = vm.winBonus ?? 0;
+  for (const [label, amount] of [
+    [`Your goals (${vm.playerGoals ?? 0})`, goalEarnings], ['Salary', salary],
+    ['Win bonus', winBonus], ['Total earned', goalEarnings + salary + winBonus],
+  ]) {
+    const item = document.createElement('div');
+    const name = document.createElement('span');
+    const value = document.createElement('strong');
+    name.textContent = label;
+    value.textContent = `$${amount}`;
+    item.append(name, value);
+    earnings.append(item);
+  }
   const meter = confidenceMeter(vm.before, vm.confidenceMax, 'prematch-confidence');
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.append(action('Next', vm.onNext, 'accent big'));
   const title = header(outcome, `MATCH ${vm.match} · FULL TIME`);
-  p.append(title, opponent, score, divider(), change, meter.root, foot);
+  p.append(title, opponent, score, divider(), earnings, change, meter.root, foot);
   mount(p);
   const fillMeter = () => {
     if (meter.root.isConnected) updateConfidenceMeter(meter, vm.after, vm.confidenceMax);
   };
   if (outcome === 'VICTORY') {
-    const pieces = [title, opponent, score, change, meter.root, foot];
-    const delays = [0, 250, 500, 1000, 1400, 2100];
+    const pieces = [title, opponent, score, earnings, change, meter.root, foot];
+    const delays = [0, 250, 500, 750, 1100, 1500, 2200];
     const next = foot.querySelector('button');
     next.disabled = true;
     for (let i = 0; i < pieces.length; i++) {

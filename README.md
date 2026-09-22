@@ -43,11 +43,11 @@ and device/iframe validation are still required before submission.
 
 ## Controls
 
-The main menu offers Career Mode, Single Match, and Training Mode. Career starts
-with match one and opens Match Upgrades between matches. Meta Upgrades are available
-from the main menu. Single Match ends at a full-time results screen; Training repeats
-shots indefinitely. Both standalone modes use baseline stats and do not change saved
-career progress. Reset Progress asks for confirmation before erasing the career save.
+The main menu offers Career Mode, Single Match, Training Mode, and Statistics.
+Career starts with match one and opens Match Upgrades between matches. Single Match
+ends at a full-time results screen; Training repeats shots indefinitely. Both
+standalone modes use baseline stats and do not change saved career progress. Reset
+Progress asks for confirmation before erasing the career save.
 
 Use Main Menu or Escape to leave a mode (the current match/run is discarded).
 From the main menu: 1 starts Career, 2 starts Single Match, 3 starts Training,
@@ -105,6 +105,16 @@ at match ten or later finish as victories if confidence remains positive.
 Localhost Alt+V previews the final-match result → Next → victory → Next → meta
 upgrades flow. It checkpoints an active career but uses sample results, without
 awarding LP or replacing saved progress. Also exposed as `__demo.previewVictory()`.
+
+Winning a 16-match season offers Another Season with the same striker and permanent
+summer upgrades, or New Career with a newly selected striker and reset upgrades and
+LP. Statistics separates the current player's continuing career from all-time
+records. It tracks seasons, goals, matches, W-D-L, titles, benchings, best season,
+the highest normal-upgrade build out of 20, fully upgraded seasons, permanent-upgrade
+progress and unspent LP. In-progress season totals are included immediately. Global
+records survive New Career; the current-player record starts over. `npm run
+test:career` checks this persistence and the season transitions. `npm run balance`
+uses production shot physics to calibrate and simulate full careers.
 
 Opponents accrue goal credit at a fixed 1% per played minute, starting at 50%.
 Each full credit awards a goal during the next overhead segment, pausing play
