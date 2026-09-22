@@ -7,6 +7,9 @@ the camera cuts overhead and both teams pass, press and contest possession at
 2× speed in a lower, landscape-aligned view of the pitch. It pans and zooms into the
 normal shooting view over the next chance's 2.4-second build-up, which plays
 at normal animation speed. The match clock freezes while you aim and shoot.
+During the overhead simulation, a large lower-third minute display advances
+every match minute alongside the commentary. That lower third disappears as
+soon as the build-up or another action-camera sequence begins.
 `node tools/match-simulation.mjs` checks timing, camera transitions and the
 return overhead after a celebration. Chances still follow the career schedule;
 ambient possession changes do not award extra goals.

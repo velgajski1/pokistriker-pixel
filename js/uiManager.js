@@ -52,7 +52,7 @@ export function initAudioControls(settings, onChange, onSound) {
 
 const el = {
   dim: null, hud: null, left: null, right: null,
-  ticker: null,
+  ticker: null, matchMinute: null,
   prompt: null, verdict: null, overlay: null,
   identity: null, confidence: null, confidenceFill: null, confidenceValue: null,
 };
@@ -111,6 +111,7 @@ export function init() {
   el.left = $('hud-left');
   el.right = $('hud-right');
   el.ticker = $('ticker');
+  el.matchMinute = $('match-minute');
   el.prompt = $('phase-prompt');
   el.verdict = $('verdict');
   el.overlay = $('overlay');
@@ -254,9 +255,19 @@ export function setConfidence(value, max, mode = 'career') {
 }
 
 export function setTicker(minute, text) {
-  el.ticker.innerHTML = minute === null
-    ? text
-    : `<b>${minute}'</b> ${text}`;
+  if (minute !== null) setMatchMinute(minute);
+  el.ticker.innerHTML = text;
+}
+
+export function setMatchMinute(minute) {
+  const value = String(Math.max(0, Math.min(90, Math.floor(minute))));
+  if (el.matchMinute.dataset.minute === value) return;
+  el.matchMinute.dataset.minute = value;
+  el.matchMinute.textContent = `${value}'`;
+}
+
+export function setMatchPresentation(overhead) {
+  el.hud.classList.toggle('overhead', overhead);
 }
 
 export function setPrompt(text) {

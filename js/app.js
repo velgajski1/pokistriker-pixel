@@ -803,8 +803,10 @@ function adjustConfidence(delta) {
 
 function pushHud() {
   const run = state.run;
-  ui.setScore(run.match, Math.floor(run.clock), teamScore(run), state.mode, run.enemyGoals,
+  const minute = Math.floor(run.clock);
+  ui.setScore(run.match, minute, teamScore(run), state.mode, run.enemyGoals,
     HOME_CLUB, opponentProfile().name);
+  ui.setMatchMinute(minute);
   ui.setConfidence(run.confidence, confidenceMax(), state.mode);
 }
 
@@ -1021,7 +1023,7 @@ function beginHighlight(soft, restored = false) {
   engine.faceStrikerForSelection();
 
   state.phase = 'AIM';
-  ui.setPrompt(state.mode === 'tutorial' ? '1 / 2 · Tap / Space to lock the arrow toward goal' : 'Tap / Space to lock aim');
+  ui.setPrompt(state.mode === 'tutorial' ? '1 / 2 · Tap / Space to lock the arrow toward goal' : '');
   if (state.mode === 'tutorial') ui.setTicker(0, 'One practice shot! Aim and power are assisted while you learn.');
   queueMicrotask(checkpointCareer);
 }
@@ -2146,6 +2148,10 @@ function previewGameOver() {
 }
 
 function frame(dt) {
+  if (state.screen === 'MATCH' && state.run) {
+    ui.setMatchPresentation(state.phase === 'SIM' && engine.matchView.mode === 'overhead');
+    ui.setMatchMinute(state.run.clock);
+  }
   if (state.screen === 'CELEBRATION_PREVIEW') {
     // Keep the normal animation/camera loop, but freeze gameplay and rewards.
     engine.setAnimationsPaused(false);
