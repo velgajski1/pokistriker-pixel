@@ -529,7 +529,7 @@ export const striker = {
 };
 
 export function loadStriker() {
-  if (!strikerLoad) strikerLoad = loadCaptain();
+  if (!strikerLoad) strikerLoad = Promise.all([loadCaptain(), loadPhotographers()]).then(results => results[0]);
   return strikerLoad;
 }
 
@@ -1582,6 +1582,123 @@ function captureLaunch() {
   }
   _instep.toArray(lastLaunch.instep);
   objects.ball.position.toArray(lastLaunch.ball);
+}
+
+// Decorative staff stay out of the gameplay squad, collision and possession lists.
+export const sidelineStaff = { root: null, officials: [], photographers: [] };
+
+function buildSidelineStaff() {
+  const group = new THREE.Group();
+  group.name = 'sideline-staff';
+  sidelineStaff.root = group;
+  scene.add(group);
+  const dark = new THREE.MeshStandardMaterial({ color: 0x18232d, roughness: .7 });
+  const orange = new THREE.MeshStandardMaterial({ color: 0xff6419, side: THREE.DoubleSide });
+  const yellow = new THREE.MeshStandardMaterial({ color: 0xffea32, side: THREE.DoubleSide });
+  for (let i = 0; i < 2; i++) {
+    const rig = buildHumanoid({ ...KIT_REF, kit: 0xe2ed36, lite: true }, LOOKS[i ? 7 : 4]);
+    rig.root.position.set(i ? 35.2 : -35.2, 0, GOAL.PLANE_Z + PITCH.LENGTH * (i ? .75 : .25));
+    group.add(rig.root);
+    const flag = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(.012, .012, .64, 6), dark);
+    pole.position.y = -.25;
+    flag.add(pole);
+    for (let row = 0; row < 2; row++) {
+      for (let col = 0; col < 2; col++) {
+        const patch = new THREE.Mesh(new THREE.PlaneGeometry(.16, .14), (row + col) % 2 ? orange : yellow);
+        patch.position.set(.08 + col * .16, -.37 - row * .14, 0);
+        flag.add(patch);
+      }
+    }
+    rig.arms[1].handMarker.add(flag);
+    sidelineStaff.officials.push({ rig, phase: 0, half: i, speed: 0 });
+  }
+  for (let i = 0; i < 4; i++) {
+    const rig = { root: new THREE.Group() };
+    // Behind the goal line, well clear of both the net and the officials' lanes.
+    rig.root.position.set(i % 2 ? 7 : -7, 0, GOAL.PLANE_Z + (i < 2 ? -4.8 : PITCH.LENGTH + 4.8));
+    group.add(rig.root);
+    const heading = Math.atan2(-rig.root.position.x, (i < 2 ? 5 : 60) - rig.root.position.z);
+    rig.root.rotation.y = heading;
+    rig.root.name = `photographer-${i}`;
+    sidelineStaff.photographers.push({ rig, model: null, heading, time: i * 2.3 });
+  }
+}
+
+async function loadPhotographers() {
+  let timer;
+  try {
+    const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js');
+    const loader = new GLTFLoader();
+    const models = await Promise.race([
+      Promise.all(['standing', 'kneeling'].map(name =>
+        loader.loadAsync(`assets/photographer-${name}.glb`))),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Photographer load timed out')), 10000); }),
+    ]);
+    for (let i = 0; i < sidelineStaff.photographers.length; i++) {
+      const photographer = sidelineStaff.photographers[i];
+      const model = models[i % 2].scene.clone(true);
+      model.traverse(node => {
+        if (node.isMesh) { node.castShadow = true; node.receiveShadow = false; }
+      });
+      photographer.model = model;
+      photographer.rig.root.add(model);
+    }
+  } catch (error) {
+    // Decorative assets must not prevent the match from loading.
+    console.warn('Photographer models unavailable:', error);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function updateSidelineStaff(dt) {
+  sidelineStaff.root.visible = !celebrationReview;
+  if (celebrationReview || animationsPaused) return;
+  const ball = objects.ball.position;
+  const mid = GOAL.PLANE_Z + PITCH.LENGTH / 2;
+  for (const official of sidelineStaff.officials) {
+    const rig = official.rig;
+    // Second-last defender (including the goalkeeper), or ball if nearer goal.
+    let first = official.half ? -Infinity : Infinity;
+    let second = first;
+    const defenders = official.half ? squad.mates : squad.foes;
+    for (let i = 0; i <= defenders.length; i++) {
+      const z = (i === defenders.length ? (official.half ? squad.homeKeeper : squad.keeper) : defenders[i]).root.position.z;
+      if (official.half ? z > first : z < first) { second = first; first = z; }
+      else if (official.half ? z > second : z < second) second = z;
+    }
+    // The home striker also counts when his team is defending.
+    const strikerZ = squad.striker.root.position.z;
+    if (official.half && strikerZ > second) second = Math.min(first, strikerZ);
+    const target = official.half
+      ? clamp(Math.max(ball.z, second), mid, GOAL.PLANE_Z + PITCH.LENGTH)
+      : clamp(Math.min(ball.z, second), GOAL.PLANE_Z, mid);
+    const gap = target - rig.root.position.z;
+    const moving = Math.abs(gap) > .35;
+    const heading = moving ? (gap > 0 ? 0 : Math.PI) : (official.half ? -Math.PI / 2 : Math.PI / 2);
+    const angle = Math.atan2(Math.sin(heading - rig.root.rotation.y), Math.cos(heading - rig.root.rotation.y));
+    const turn = Math.abs(angle) < .25 ? angle : clamp(angle, -Math.PI * dt / .25, Math.PI * dt / .25);
+    rig.root.rotation.y += turn;
+    // Finish turning before forward locomotion; never run backwards or in place.
+    const distance = moving && Math.abs(angle - turn) < .03 ? Math.min(Math.abs(gap), dt * 4.2) : 0;
+    rig.root.position.z += Math.sign(gap) * distance;
+    official.speed = dt > 0 ? distance / dt : 0;
+    official.phase += distance * 5;
+    poseRun(rig, official.phase, Math.min(1, official.speed / 4.2));
+    rig.arms[1].shoulder.rotation.x *= .25;
+    rig.arms[1].elbow.rotation.x = -.12;
+    // Keep flag lowered: these visual assistants do not invent offside calls.
+  }
+  for (const photographer of sidelineStaff.photographers) {
+    const rig = photographer.rig;
+    photographer.time += dt;
+    const heading = Math.atan2(ball.x - rig.root.position.x, ball.z - rig.root.position.z);
+    const offset = Math.atan2(Math.sin(heading - photographer.heading), Math.cos(heading - photographer.heading));
+    // Small planted pivots only: never spin a kneeling character around the pitch.
+    const target = photographer.heading + clamp(offset, -.18, .18);
+    rig.root.rotation.y += (target - rig.root.rotation.y) * (1 - Math.exp(-dt * 2));
+  }
 }
 
 function buildSquad() {
@@ -3665,6 +3782,9 @@ export const chance = {
   blockers: [],           // {z, baseX, side}
 };
 
+const shotCameraHome = new THREE.Vector3();
+const shotCameraTarget = new THREE.Vector3();
+
 /** Camera: behind the striker, offset so he never masks the goalmouth. */
 function aimCameraAt(origin) {
   camera.up.set(0, 1, 0);
@@ -3677,6 +3797,20 @@ function aimCameraAt(origin) {
   // Aim low: it tilts the camera down, which lifts the ball clear of the
   // ticker and stops the shot being framed against empty stand.
   _camTargetWant.set(origin.x * 0.16, 1.1, GOAL.PLANE_Z + 1.5);
+  shotCameraHome.copy(_camHome);
+  shotCameraTarget.copy(_camTargetWant);
+}
+
+/** 90%-displacement dolly, smoothed by the existing camera rig. */
+export function followShotCamera() {
+  const ball = objects.ball.position;
+  _camHome.set(
+    shotCameraHome.x + clamp((ball.x - chance.origin.x) * .9, -10, 10),
+    shotCameraHome.y + clamp((ball.y - chance.origin.y) * .9, 0, 3),
+    Math.max(GOAL.PLANE_Z + 7, shotCameraHome.z + (ball.z - chance.origin.z) * .9));
+  // Keep the goal as the focal point rather than swinging down at the boot.
+  _camTargetWant.set(shotCameraTarget.x + clamp(ball.x * .25, -3, 3),
+    shotCameraTarget.y + clamp(ball.y * .25, 0, 2), shotCameraTarget.z);
 }
 
 /**
@@ -3845,6 +3979,7 @@ export function init(canvas) {
   buildGoal();
   buildStands();
   buildSquad();
+  buildSidelineStaff();
   cachePausePoses();
   buildBall();
   buildAimRig();
@@ -3969,6 +4104,7 @@ function tick() {
     updateNets(dt);
   }
   if (animationsPaused) holdPlayerPoses();
+  updateSidelineStaff(dt);
   captureLaunch();
 
   _camWant.copy(_camHome);

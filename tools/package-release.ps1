@@ -8,6 +8,7 @@ $releaseFiles = @(
   'js/app.js', 'js/gameEngine.js', 'js/physics.js',
   'js/uiManager.js', 'js/saveSystem.js', 'js/audio.js',
   'assets/squad.glb', 'assets/squad.json', 'assets/ball.glb',
+  'assets/photographer-standing.glb', 'assets/photographer-kneeling.glb',
   'assets/ui/bg/shooting-goal.webp',
   'assets/ui/hud/confidence-frame.png',
   'assets/ui/hud/confidence-fill.png',

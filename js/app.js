@@ -144,14 +144,15 @@ const SPOT = { MIN_RANGE: 9, MAX_RANGE: 16, MAX_LATERAL: 11,
 /** How long before a scheduled chance the move that creates it kicks off. */
 const BUILDUP_LEAD = 2.4;
 
+const TRAINING_COSTS = [75, 100, 150, 250, 400];
 const TRAINING = [
-  { key: 'poacher', icon: '🦅', name: 'POACHER INSTINCT', base: 150,
+  { key: 'poacher', icon: '🦅', name: 'POACHER INSTINCT',
     fx: '+0.2 percentage points/min to the fair-chance rate per level' },
-  { key: 'target',  icon: '🎯', name: 'TARGET PRACTICE',  base: 100,
+  { key: 'target',  icon: '🎯', name: 'TARGET PRACTICE',
     fx: '-12% aim-arrow speed per level' },
-  { key: 'legday',  icon: '🦵', name: 'LEG DAY',          base: 120,
+  { key: 'legday',  icon: '🦵', name: 'LEG DAY',
     fx: '+6% shot velocity per level' },
-  { key: 'icebath', icon: '🩹', name: 'ICE BATH',         base: 100,
+  { key: 'icebath', icon: '🩹', name: 'ICE BATH',
     fx: '+0.18m corner range and +0.09m outward pull per level' },
 ];
 
@@ -1443,7 +1444,6 @@ function updateFlight(dt) {
   engine.watchBall(dt, shot.resolved === null || continuePlay,
     continuePlay || (shot.resolved === null && (shot.bounced || shot.touched !== null)),
     BALL_PURSUIT, shot.flightTime >= .9, continuePlay);
-  if (shot.resolved === null && (shot.bounced || shot.touched !== null)) engine.followReboundCamera(dt);
   engine.faceKeeper(dt, 0);            // square up to dive along the goal line
   if (shot.flightTime > 0.12 && shot.resolved === null && shot.follow < 2.4) {
     const stride = 3.4 * dt;
@@ -1470,6 +1470,10 @@ function updateFlight(dt) {
   }
   engine.setBall(ballPos);
   engine.spinBall(ballVel.x, ballVel.z, dt);
+  if (shot.resolved === null) {
+    if (shot.bounced || shot.touched !== null) engine.followReboundCamera(dt);
+    else engine.followShotCamera();
+  }
 
   if (shot.resolved !== null) {
     shot.holdTimer -= dt;
@@ -1711,7 +1715,7 @@ function renderTraining() {
     charmAffordable: run.cash >= currentCharmCost && run.confidence < confidenceMax(),
     rows: TRAINING.map((def) => {
       const lvl = run.training[def.key];
-      const c = cost(def, lvl);
+      const c = lvl >= MAX_LEVEL ? null : TRAINING_COSTS[lvl];
       return {
         icon: def.icon, name: def.name, level: lvl, max: MAX_LEVEL, fx: def.fx,
         cost: c, currency: '$', affordable: c !== null && run.cash >= c,
