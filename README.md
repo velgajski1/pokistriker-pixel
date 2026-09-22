@@ -32,8 +32,8 @@ releases. The ZIP has `index.html` at its root and can be extracted and served
 by any static server; opening it directly with `file://` is not supported.
 
 The explicit file list in `tools/package-release.ps1` includes the five game
-modules, stylesheet, runtime WebP images, squad and ball assets, and the pinned
-Three.js dependency files and MIT license. Source PNGs, unused models, tools,
+modules, stylesheet, runtime images, squad and ball assets, and the pinned
+Three.js dependency files and MIT license. Source artwork, unused models, tools,
 captures, references and npm dependencies are excluded. Update that list when
 adding runtime assets or Three.js addons. Packaging does not run browser tests,
 minify code, or change the `window.__demo` test contract.
@@ -54,13 +54,48 @@ From the main menu: 1 starts Career, 2 starts Single Match, 3 starts Training,
 and U opens Meta Upgrades. Left/right arrows or the visible style buttons cycle
 Stadium, Daylight, Matchday, Clubhouse, and Arcade on overlay screens. The selected
 style carries between screens for the current session; reloading resets it.
-On localhost, Alt+1 opens Meta Upgrades and Alt+2 opens Match Upgrades for inspection.
+On localhost, Alt+1 opens Meta Upgrades, Alt+2 opens Match Upgrades, and Alt+G
+opens the Career Over screen for inspection.
 `node tools/game-modes.mjs` checks mode routing, repeating practice shots, save
 isolation, reset confirmation, and mobile layout.
 
 Click / tap / <kbd>Space</kbd>, three times per chance: **lock aim → set power → shoot.**
 Power sets both shot speed and elevation: ~0.4 is along the floor, ~0.85 finds
 the top corner, above ~0.92 goes over the bar.
+
+Career trainer confidence starts at 50%, gains 10% per goal, loses 5% for every
+resolved non-goal opportunity, and loses 1% at each five-minute mark. Reaching
+zero during a match does not end the career: later goals can restore confidence.
+Only zero confidence at full time ends the career. Career Over is persisted
+until the player selects Next and enters Meta Upgrades.
+At that final whistle, an angry manager slides over the frozen overhead pitch
+with “You are benched!!”. After 3.8 seconds, Career Over appears. The result and
+Legacy Points are saved before the animation, so closing during it resumes at
+Career Over without awarding points twice. Localhost Alt+G previews this sequence.
+
+Every match has two guaranteed opportunities. A deterministic fair-chance
+credit then grows by 1% per played match minute and carries between fixtures;
+at 100% it schedules one additional opportunity and subtracts 100%. There is
+no random success roll. Poacher Instinct and Star Player Status each add 0.2
+percentage points per minute per level. Below 30% confidence, Super Sub adds
+another 0.2 percentage points per minute per level.
+
+Media Charm restores 10 percentage points of trainer confidence. Its price
+increases by $100 after every use in the current run: $100, $200, $300, and so on.
+
+Career and Single Match open with an opponent preview: club name, kit-colored
+flag, and defense rating. The scoreboard tracks goals for and against in the
+current fixture; career goals remain separate for cash and Legacy Points.
+Opponents accrue goal credit at a fixed 1% per played minute, starting at 50%.
+Each full credit awards a goal during the next overhead segment, pausing play
+for 1.8 seconds. Credit carries across career fixtures; scores reset at kickoff.
+Scores, credit, the goal pause, and pre-match screens are saved with the career.
+Conceding goals does not change trainer confidence or award cash.
+
+Defense rating rises from 25 toward 99 over a career using the match progression
+curve. Existing goalkeeper progression remains active; defender speed increases
+by up to 30%, reaction delay decreases by up to 45%, and shot-reading error
+decreases by up to 65%. This changes scoring difficulty and needs playtesting.
 
 ## Layout
 

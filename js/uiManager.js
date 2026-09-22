@@ -12,14 +12,21 @@ const el = {
   dim: null, hud: null, left: null, right: null,
   ticker: null, powerWrap: null, powerBar: null, powerFill: null,
   prompt: null, verdict: null, overlay: null,
-  identity: null,
+  identity: null, confidence: null, confidenceFill: null, confidenceValue: null,
 };
 
 let verdictTimer = 0;
 const loadingStarted = performance.now();
 
 export async function preloadMenuAssets(portraits) {
-  await Promise.all(['assets/ui/bg/shooting-goal.webp', ...portraits].map(src => {
+  await Promise.all([
+    'assets/ui/bg/shooting-goal.webp',
+    'assets/ui/hud/confidence-frame.png',
+    'assets/ui/hud/confidence-fill.png',
+    'assets/ui/hud/game-over.png',
+    'assets/ui/hud/manager-angry.png',
+    ...portraits,
+  ].map(src => {
     const image = new Image();
     image.src = src;
     // Missing optional artwork must not prevent playing the game.
@@ -70,7 +77,64 @@ export function init() {
   el.overlay = $('overlay');
   el.identity = document.createElement('div');
   el.identity.className = 'career-identity hidden';
-  el.hud.append(el.identity);
+  const confidence = confidenceMeter(0, 100, 'trainer-confidence');
+  el.confidence = confidence.root;
+  el.confidenceFill = confidence.fill;
+  el.confidenceValue = confidence.value;
+  el.confidence.dataset.value = '';
+  el.confidence.classList.add('hidden');
+  el.hud.append(el.identity, el.confidence);
+}
+
+function confidenceMeter(value, max, className = '') {
+  const root = document.createElement('div');
+  root.className = `confidence-meter ${className}`.trim();
+  root.setAttribute('role', 'meter');
+  root.setAttribute('aria-label', 'Trainer confidence');
+
+  const heading = document.createElement('div');
+  heading.className = 'confidence-heading';
+  const label = document.createElement('span');
+  label.textContent = 'TRAINER CONFIDENCE';
+  const amount = document.createElement('b');
+  heading.append(label, amount);
+
+  const track = document.createElement('div');
+  track.className = 'confidence-track';
+  track.setAttribute('aria-hidden', 'true');
+  const fill = document.createElement('div');
+  fill.className = 'confidence-fill';
+  track.appendChild(fill);
+  root.append(heading, track);
+  updateConfidenceMeter({ root, fill, value: amount }, value, max);
+  return { root, fill, value: amount };
+}
+
+function updateConfidenceMeter(meter, value, max) {
+  const safeValue = Math.max(0, Math.min(max, Number(value) || 0));
+  const displayPercent = Math.min(100, safeValue);
+  const previous = Number(meter.root.dataset.meterValue);
+  const changed = meter.root.dataset.meterValue !== undefined && previous !== safeValue;
+  const from = changed && meter.fill.isConnected ? getComputedStyle(meter.fill).clipPath : null;
+  const to = `inset(0 ${(100 - displayPercent).toFixed(1)}% 0 0)`;
+  if (changed) {
+    for (const animation of meter.fill.getAnimations()) animation.cancel();
+  }
+  meter.fill.style.clipPath = to;
+  if (from && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    // Sample the visible fill before cancelling, so consecutive changes stay smooth.
+    meter.fill.animate([{ clipPath: from }, { clipPath: to }], {
+      duration: Math.abs(safeValue - previous) > 1 ? 1600 : 350,
+      easing: 'cubic-bezier(.25,.1,.25,1)',
+    });
+  }
+  meter.root.dataset.meterValue = String(safeValue);
+  meter.value.textContent = `${Math.round(safeValue)}%`;
+  meter.root.setAttribute('aria-valuemin', '0');
+  meter.root.setAttribute('aria-valuemax', String(max));
+  meter.root.setAttribute('aria-valuenow', String(Math.round(safeValue)));
+  meter.root.classList.toggle('low', safeValue < 30);
+  meter.root.classList.toggle('over', safeValue > 100);
 }
 
 export function setCareerIdentity(character) {
@@ -94,10 +158,34 @@ export function setDimmed(on) { el.dim.classList.toggle('clear', !on); }
 
 export function showHud(on) { el.hud.classList.toggle('hidden', !on); }
 
-export function setScore(match, clock, goals, mode = 'career') {
+export function setScore(match, clock, goals, mode = 'career', enemyGoals = 0) {
   el.left.textContent = mode === 'practice' ? 'TRAINING | UNLIMITED SHOTS'
     : `${mode === 'single' ? 'SINGLE MATCH' : `MATCH ${match}`} | CLOCK: ${clock}'`;
-  el.right.textContent = `GOALS: ${goals}`;
+  el.right.textContent = mode === 'practice' ? `GOALS: ${goals}` : `YOU ${goals} : ${enemyGoals} OPPONENT`;
+}
+
+export function setConfidence(value, max, mode = 'career') {
+  const visible = mode === 'career';
+  el.confidence.classList.toggle('hidden', !visible);
+  if (!visible) {
+    el.confidence.dataset.value = '';
+    return;
+  }
+
+  if (el.confidence.dataset.value === String(value)
+    && el.confidence.dataset.max === String(max)) return;
+  if (el.confidence.dataset.value === '') {
+    el.confidenceFill.style.clipPath = 'inset(0 100% 0 0)';
+    requestAnimationFrame(() => updateConfidenceMeter({
+      root: el.confidence, fill: el.confidenceFill, value: el.confidenceValue,
+    }, value, max));
+  } else {
+    updateConfidenceMeter({
+      root: el.confidence, fill: el.confidenceFill, value: el.confidenceValue,
+    }, value, max);
+  }
+  el.confidence.dataset.value = String(value);
+  el.confidence.dataset.max = String(max);
 }
 
 export function setTicker(minute, text) {
@@ -129,6 +217,7 @@ export function flashVerdict(text, kind) {
 // Overlay screens
 // ---------------------------------------------------------------------------
 export function hideOverlay() {
+  el.overlay.classList.remove('benched-overlay');
   el.overlay.classList.add('hidden');
   el.overlay.replaceChildren();
 }
@@ -140,6 +229,7 @@ function panel() {
 }
 
 function mount(node, status = null) {
+  el.overlay.classList.remove('benched-overlay');
   const styles = document.createElement('div');
   styles.className = 'theme-switcher hidden';
   const previous = action('↑', () => cycleMenuTheme(-1));
@@ -355,11 +445,38 @@ export function showSingleResult(vm) {
   p.classList.add('upgrade-panel', 'compact-panel', 'center');
   const score = document.createElement('p');
   score.className = 'result-score';
-  score.textContent = `${vm.goals} ${vm.goals === 1 ? 'GOAL' : 'GOALS'}`;
+  score.textContent = `${vm.goals} : ${vm.enemyGoals}`;
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.append(action('Main Menu', vm.onMenu), action('Play Again', vm.onReplay, 'accent'));
-  p.append(header('FULL TIME'), score, foot);
+  p.append(header('FULL TIME', vm.goals > vm.enemyGoals ? 'VICTORY' : vm.goals < vm.enemyGoals ? 'DEFEAT' : 'DRAW'), score, foot);
+  mount(p);
+}
+
+export function showPrematch(vm) {
+  const p = panel();
+  p.classList.add('upgrade-panel', 'compact-panel', 'prematch-panel', 'center');
+  const flag = document.createElement('div');
+  flag.className = 'opponent-flag';
+  flag.style.setProperty('--club-color', vm.color);
+  flag.setAttribute('aria-hidden', 'true');
+  flag.textContent = vm.name.split(' ').map(word => word[0]).join('');
+  const name = document.createElement('h2');
+  name.textContent = vm.name;
+  const defense = document.createElement('p');
+  defense.className = 'opponent-defense';
+  defense.textContent = `DEFENSE ${vm.rating} / 100`;
+  const detail = document.createElement('p');
+  detail.className = 'sub';
+  detail.textContent = 'Higher defense means faster, sharper goalkeepers and defenders.';
+  const foot = document.createElement('div');
+  foot.className = 'foot';
+  foot.append(action('Back', vm.onMenu), action('Kick Off', vm.onPlay, 'accent big'));
+  p.append(header(`MATCH ${vm.match}`, 'YOUR OPPONENT'), flag, name, defense, detail);
+  if (vm.confidence != null) {
+    p.append(confidenceMeter(vm.confidence, vm.confidenceMax, 'prematch-confidence').root);
+  }
+  p.append(foot);
   mount(p);
 }
 
@@ -402,11 +519,18 @@ export function showMenu(vm) {
 
 /** TRAINING ROOM - between-match Match Cash spending. */
 export function showTraining(vm) {
+  // Keep the actual meter when purchases rebuild the upgrade screen.
+  const previousMeter = el.overlay.querySelector('.training-confidence');
+  const confidence = previousMeter ? {
+    root: previousMeter,
+    fill: previousMeter.querySelector('.confidence-fill'),
+    value: previousMeter.querySelector('.confidence-heading b'),
+  } : confidenceMeter(vm.confidence, vm.confidenceMax, 'training-confidence');
   const p = panel();
   p.classList.add('upgrade-panel', 'training-panel', 'clean-upgrades');
   const head = document.createElement('div');
   head.className = 'center';
-  head.append(header('MATCH UPGRADES'));
+  head.append(header('MATCH UPGRADES', `FULL TIME: YOU ${vm.matchGoals} : ${vm.enemyGoals} OPPONENT`));
   p.append(head, divider());
 
   const summary = document.createElement('div');
@@ -416,16 +540,7 @@ export function showTraining(vm) {
   s2.innerHTML = `CASH: <b>$${vm.cash}</b>`;
   summary.append(s2);
 
-  const conf = document.createElement('div');
-  conf.className = `statline conf${vm.confidence < 30 ? ' low' : ''}`;
-  const cn = document.createElement('span');
-  cn.className = 'nm';
-  cn.textContent = 'CONFIDENCE';
-  const cp = document.createElement('span');
-  cp.className = 'pips';
-  cp.textContent = `${Math.round(vm.confidence)}%`;
-  conf.append(cn, cp);
-  summary.append(conf);
+  summary.append(confidence.root);
 
   const upgrades = document.createElement('div');
   upgrades.className = 'upgrade-grid';
@@ -434,7 +549,7 @@ export function showTraining(vm) {
 
   p.appendChild(divider());
 
-  // Media Charm is a flat-fee consumable, not a tiered stat.
+  // Media Charm is a progressively priced consumable, not a tiered stat.
   const charm = document.createElement('div');
   charm.className = 'statline charm-card';
   const chn = document.createElement('span');
@@ -453,7 +568,8 @@ export function showTraining(vm) {
   charmIcon.src = 'assets/ui/icons/charm.webp';
   charmIcon.alt = '';
   charmIcon.className = 'charm-icon';
-  charm.append(charmIcon, upgradeDetails('MEDIA CHARM', `Restore +${vm.charmRestore}% manager confidence`), chb);
+  charm.append(charmIcon, upgradeDetails('MEDIA CHARM',
+    `Restore +${vm.charmRestore}% trainer confidence. Each use costs $${vm.charmBaseCost} more.`), chb);
   p.appendChild(charm);
 
   const foot = document.createElement('div');
@@ -466,33 +582,62 @@ export function showTraining(vm) {
   p.append(divider(), foot);
 
   mount(p, summary);
+  updateConfidenceMeter(confidence, vm.confidence, vm.confidenceMax);
+}
+
+export function showBenched() {
+  const scene = document.createElement('div');
+  scene.className = 'benched-presentation';
+  scene.setAttribute('role', 'status');
+  const manager = document.createElement('img');
+  manager.src = 'assets/ui/hud/manager-angry.png';
+  manager.alt = 'An angry manager pointing toward the bench';
+  manager.className = 'benched-manager';
+  const message = document.createElement('div');
+  message.className = 'benched-message';
+  const title = document.createElement('strong');
+  title.textContent = 'You are benched!!';
+  const reason = document.createElement('span');
+  reason.textContent = 'FULL TIME · CONFIDENCE 0%';
+  message.append(title, reason);
+  scene.append(manager, message);
+  el.overlay.replaceChildren(scene);
+  el.overlay.classList.add('benched-overlay');
+  el.overlay.classList.remove('hidden');
 }
 
 /** BENCHED - run over, goals convert to Legacy Points. */
 export function showGameOver(vm) {
   const p = panel();
-  p.className = 'panel upgrade-panel compact-panel center';
-  p.append(header('CAREER OVER', 'MANAGER CONFIDENCE HIT ZERO'), divider());
+  p.className = 'panel upgrade-panel compact-panel game-over-panel center';
+  p.append(header('CAREER OVER', 'TRAINER CONFIDENCE HIT ZERO'), divider());
+
+  const image = document.createElement('img');
+  image.className = 'game-over-image';
+  image.src = 'assets/ui/hud/game-over.png';
+  image.alt = 'An exhausted striker sitting in front of the goal in the rain';
 
   const body = document.createElement('div');
   body.className = 'sub';
   body.innerHTML = `
-    You survived <b>${vm.matches}</b> match${vm.matches === 1 ? '' : 'es'}
-    and scored <b>${vm.goals}</b> goal${vm.goals === 1 ? '' : 's'}.<br/>
-    <br/>
-    ${vm.goals} goals &times; ${vm.rate} = <b style="color:var(--accent)">${vm.earned} LEGACY POINTS</b><br/>
-    ${vm.isBest ? '<br/><b style="color:var(--good)">NEW CAREER BEST</b>' : ''}
+    <p>You survived <b>${vm.matches}</b> match${vm.matches === 1 ? '' : 'es'}
+    and scored <b>${vm.goals}</b> goal${vm.goals === 1 ? '' : 's'}.</p>
+    <p>${vm.goals} goals &times; ${vm.rate} = <b style="color:var(--accent)">${vm.earned} LEGACY POINTS</b></p>
+    ${vm.isBest ? '<p><b style="color:var(--good)">NEW CAREER BEST</b></p>' : ''}
   `;
-  p.append(body, divider());
+  const content = document.createElement('div');
+  content.className = 'game-over-content';
+  content.append(image, body);
+  p.append(content, divider());
 
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.style.justifyContent = 'center';
-  const back = document.createElement('button');
-  back.className = 'accent big';
-  back.textContent = 'Back To Main Menu >';
-  back.addEventListener('click', vm.onMenu);
-  foot.append(action('Legacy Upgrades', vm.onUpgrades), back);
+  const next = document.createElement('button');
+  next.className = 'accent big';
+  next.textContent = 'Next >';
+  next.addEventListener('click', vm.onNext);
+  foot.appendChild(next);
   p.appendChild(foot);
 
   mount(p);

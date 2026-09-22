@@ -2978,11 +2978,11 @@ function aimCameraAt(origin) {
   const len = Math.hypot(dx, dz) || 1;
   const dirX = dx / len, dirZ = dz / len;
   _camHome.set(
-    origin.x - dirX * 9.2 - dirZ * 3.1, 5.0,
-    origin.z - dirZ * 9.2 + dirX * 3.1);
+    origin.x - dirX * 10.2 - dirZ * 3.1, 4.8,
+    origin.z - dirZ * 10.2 + dirX * 3.1);
   // Aim low: it tilts the camera down, which lifts the ball clear of the
   // ticker and stops the shot being framed against empty stand.
-  _camTargetWant.set(origin.x * 0.16, 1.25, GOAL.PLANE_Z + 1.5);
+  _camTargetWant.set(origin.x * 0.16, 1.1, GOAL.PLANE_Z + 1.5);
 }
 
 /**

@@ -21,6 +21,42 @@ html,body{
 /* The single utility visibility flag. */
 .hidden{display:none !important}
 
+/* Full-time benching plays over the frozen overhead pitch. */
+#overlay.benched-overlay[data-theme],#overlay.benched-overlay{
+  background:linear-gradient(0deg,#030913bb,transparent 75%);background-blend-mode:normal;
+  overflow:hidden;pointer-events:none;
+}
+.benched-presentation{position:relative;display:flex;align-items:center;justify-content:center;gap:clamp(8px,3vw,40px);width:100%;height:100%;padding:16px}
+.benched-manager{width:min(44vw,430px);max-height:80dvh;object-fit:contain;mask-image:linear-gradient(transparent,#000 10%,#000 89%,transparent),linear-gradient(90deg,transparent,#000 10%,#000 96%,transparent);mask-composite:intersect;transform-origin:50% 85%;animation:manager-arrives 1.35s .15s both,manager-emphasis .85s 1.5s ease-in-out infinite}
+.benched-message{max-width:48vw;animation:benched-announcement .85s .95s both;text-shadow:0 3px 0 #320d13,0 6px 20px #000}
+.benched-message strong{display:block;font:italic 900 clamp(26px,5.7vw,72px)/1.05 'Trebuchet MS',Arial,sans-serif;text-transform:uppercase;color:#fff1d6}
+.benched-message span{display:block;margin-top:14px;font:700 clamp(9px,1.4vw,14px)/1.4 Arial,sans-serif;letter-spacing:.12em;color:#ff8e91}
+@keyframes manager-arrives{
+  0%{transform:translateX(-100vw) rotate(-14deg) scale(.9);animation-timing-function:cubic-bezier(.35,0,.2,1)}
+  65%{transform:translateX(40px) rotate(7deg) scale(1.07);animation-timing-function:ease-in-out}
+  82%{transform:translateX(-18px) rotate(-4deg) scale(.98);animation-timing-function:ease-in-out}
+  93%{transform:translateX(7px) rotate(2deg) scale(1.02);animation-timing-function:ease-out}
+  100%{transform:none}
+}
+@keyframes manager-emphasis{
+  0%,100%{transform:none}
+  45%{transform:translateY(-5px) rotate(-1.5deg) scale(1.025)}
+  70%{transform:translateX(4px) rotate(1deg)}
+}
+@keyframes benched-announcement{
+  0%{opacity:0;transform:translateX(60vw) rotate(8deg) scale(.7);animation-timing-function:cubic-bezier(.3,0,.2,1)}
+  60%{opacity:1;transform:translateX(-18px) rotate(-4deg) scale(1.12);animation-timing-function:ease-in-out}
+  80%{opacity:1;transform:translateX(8px) rotate(2deg) scale(.97);animation-timing-function:ease-out}
+  100%{opacity:1;transform:none}
+}
+@media(max-width:599px) and (orientation:portrait){
+  .benched-presentation{flex-direction:column;gap:0}
+  .benched-manager{width:min(78vw,340px);max-height:52dvh}
+  .benched-message{max-width:92vw;text-align:center}
+  .benched-message strong{font-size:clamp(28px,8vw,46px)}
+}
+@media(prefers-reduced-motion:reduce){.benched-manager,.benched-message{animation:none}}
+
 /* Present in the initial HTML, covering scene construction and asset loading. */
 body.loading>:not(#preloader){visibility:hidden}
 #preloader{position:fixed;inset:0;z-index:1000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:24px;background:#070f1d;color:#f2f6ff;text-align:center}
@@ -140,12 +176,57 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
 .compact-panel.upgrade-panel{width:min(600px,94vw);margin:auto}
 .compact-panel h1{font-size:30px}
 .result-score{font-size:48px;color:#81d6ff;font-weight:800;padding:32px 0}
+.prematch-panel .opponent-flag{display:grid;place-items:center;width:150px;height:100px;margin:20px auto;background:linear-gradient(135deg,transparent 40%,#fff 40%,#fff 55%,transparent 55%),var(--club-color);border:3px solid #d4e7f5;border-radius:5px;font:bold 32px Arial,sans-serif;color:#fff;text-shadow:0 2px 5px #000,0 0 5px #000}
+.prematch-panel h2{font-size:clamp(20px,4vw,30px);letter-spacing:.03em;margin:10px 0}
+.opponent-defense{font:bold 18px Arial,sans-serif;color:#d6ff3f;margin:12px 0}
+.prematch-confidence{width:min(280px,100%);margin:12px auto 0}
+@media(max-height:580px){
+  #overlay[data-theme] .prematch-panel{margin:auto;padding:12px 20px;width:min(560px,94vw)}
+  #overlay[data-theme] .prematch-panel h1{font-size:25px}
+  .prematch-panel h1 small{margin-top:4px}
+  .prematch-panel .opponent-flag{width:100px;height:60px;margin:10px auto;font-size:24px}
+  .prematch-panel h2{font-size:22px;margin:6px 0}
+  .prematch-panel .opponent-defense{margin:6px 0;font-size:16px}
+  .prematch-panel .sub{font-size:11px;line-height:1.4}
+  .prematch-panel .foot{margin-top:10px}
+  .prematch-panel .prematch-confidence{width:min(220px,100%);margin-top:6px}
+}
 @media(max-width:480px){.main-menu.upgrade-panel{padding:22px;margin:20px auto}.main-menu .mode-card{padding:18px 14px}.mode-card strong{font-size:17px}.match-exit{top:54px}}
 
 /* Career identities use the same portraits in selection and on the HUD. */
 .career-identity{position:absolute;top:58px;left:20px;display:flex;align-items:center;gap:10px;max-width:calc(100vw - 175px);padding:5px 12px 5px 5px;background:#0b182ce6;border:1px solid #395777;border-radius:8px;font:700 12px Arial,sans-serif}
 .career-identity img{width:40px;height:40px;object-fit:cover;border-radius:5px}
 .career-identity span{overflow-wrap:anywhere}
+.confidence-meter{min-width:0}
+.confidence-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 5%;font:800 10px/1.2 Arial,sans-serif;letter-spacing:.1em;color:#b9cee2}
+.confidence-heading b{color:var(--accent);font-size:12px;letter-spacing:.04em}
+.confidence-track{position:relative;width:100%;aspect-ratio:980/141;margin-top:2px;background:#070b10 url('assets/ui/hud/confidence-frame.png') center/100% 100% no-repeat}
+.confidence-fill{position:absolute;left:4%;top:18%;bottom:18%;z-index:1;width:92%;border-radius:2px;background:#a7e52d url('assets/ui/hud/confidence-fill.png') center/100% 100% no-repeat;clip-path:inset(0 100% 0 0);box-shadow:0 0 12px #b7ff3f66;transition:filter .22s ease}
+.confidence-meter.low .confidence-heading b{color:var(--warn)}
+.confidence-meter.low .confidence-fill{opacity:.72}
+.confidence-meter.over .confidence-fill{box-shadow:0 0 16px #d6ff3fcc,0 0 5px #fff}
+.trainer-confidence{position:absolute;top:55px;left:50%;width:clamp(190px,29vw,310px);transform:translateX(-50%)}
+.training-confidence{width:min(330px,52vw);margin-left:auto}
+.game-over-panel.upgrade-panel{display:flex;flex-direction:column;align-items:center;width:min(600px,calc(100vw - 24px));max-height:calc(100dvh - 24px);margin:12px auto;padding:clamp(14px,3vh,28px);overflow:hidden}
+#overlay:has(.game-over-panel.upgrade-panel){align-items:center}
+.game-over-content{display:flex;flex-direction:column;align-items:center;width:100%;min-height:0}
+.game-over-image{display:block;width:min(430px,100%);height:auto;max-height:min(360px,42dvh);aspect-ratio:560/538;object-fit:cover;object-position:center;border:1px solid #5dc5e6;border-radius:10px;box-shadow:0 10px 30px #0008,0 0 22px #42c5ec2e}
+.game-over-panel .sub{margin-top:clamp(6px,2vh,14px)}
+.game-over-panel .sub p+p{margin-top:6px}
+.game-over-panel .foot button{min-width:min(260px,70vw)}
+@media(max-width:599px){
+  .trainer-confidence{top:98px;width:min(250px,66vw)}
+  .game-over-panel.upgrade-panel{width:calc(100vw - 16px);max-height:calc(100dvh - 16px);margin:8px auto;padding:clamp(10px,3vw,16px)}
+  .game-over-panel>h1{font-size:clamp(21px,8vw,28px);line-height:1}
+  .game-over-panel>h1 small{margin-top:5px;font-size:clamp(8px,2.6vw,10px);letter-spacing:.16em}
+  .game-over-panel>.rule{width:100%;margin:6px 0}
+  .game-over-image{width:min(300px,100%);max-height:30dvh;border-radius:7px}
+  .game-over-panel .sub{margin-top:6px;font-size:clamp(9px,3vw,12px);line-height:1.35}
+  .game-over-panel .sub p+p{margin-top:4px}
+  .game-over-panel .foot{width:100%;margin-top:4px}
+  .game-over-panel .foot button{min-width:min(220px,80vw);min-height:40px;padding:7px 14px}
+}
+@media(prefers-reduced-motion:reduce){.confidence-fill{transition:none}}
 .character-panel.upgrade-panel{width:min(1020px,94vw)}
 .character-panel h1{font-size:clamp(25px,4vw,40px)}
 .character-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
@@ -424,6 +505,9 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
   .powerbar{height:11px}
   .match-exit{top:48px;right:12px;min-height:36px;padding:7px 11px}
   .career-identity{top:47px;left:12px}
+  .trainer-confidence{top:45px;width:clamp(185px,28vw,260px)}
+  .confidence-heading{font-size:8px}
+  .confidence-heading b{font-size:10px}
   .phase-prompt{top:68%}
 
   #overlay[data-theme] .main-menu{padding:18px 20px}
@@ -460,6 +544,14 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
   #overlay[data-theme] .clean-upgrades .foot{margin-top:8px}
   .upgrade-panel .foot button{min-height:36px;padding:7px 12px}
   .compact-panel.upgrade-panel{margin:auto}
+  .game-over-panel.upgrade-panel{width:min(760px,calc(100vw - 16px));max-height:calc(100dvh - 16px);padding:10px 16px}
+  .game-over-panel>h1{font-size:clamp(22px,5vh,30px)}
+  .game-over-panel>h1 small{margin-top:4px;font-size:8px}
+  .game-over-panel>.rule{width:100%;margin:5px 0}
+  .game-over-content{display:grid;grid-template-columns:minmax(170px,.9fr) minmax(220px,1.1fr);align-items:center;gap:16px}
+  .game-over-image{width:auto;height:min(52dvh,240px);max-width:100%;max-height:none;justify-self:center;border-radius:7px}
+  .game-over-panel .sub{margin-top:0;text-align:left;font-size:clamp(9px,1.7vw,12px);line-height:1.45}
+  .game-over-panel .foot{margin-top:4px}
 }
 
 /* 1031 x 580: full labels and two portrait rows, with shorter artwork. */
@@ -495,6 +587,10 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
   .match-exit{top:35px;right:8px;min-height:30px;padding:5px 8px;font-size:9px}
   .career-identity{top:35px;left:8px;gap:5px;max-width:210px;padding:3px 7px 3px 3px;font-size:9px}
   .career-identity img{width:26px;height:26px}
+  .trainer-confidence{top:34px;width:174px}
+  .trainer-confidence .confidence-heading{font-size:7px}
+  .trainer-confidence .confidence-heading b{font-size:9px}
+  .training-confidence{width:220px}
 
   #overlay[data-theme] .main-menu{padding:7px 16px}
   #overlay[data-theme] .main-menu .menu-brand{padding-bottom:10px}
@@ -538,6 +634,12 @@ button.big{font-size:clamp(11px,2.6vw,14px);padding:13px 24px}
   .compact-panel.upgrade-panel{width:min(570px,94vw);padding:15px;margin:auto}
   .compact-panel h1{font-size:25px}
   .compact-panel .result-score{padding:14px 0;font-size:36px}
+  .game-over-panel.upgrade-panel{padding:6px 10px}
+  .game-over-panel>.rule{margin:4px 0}
+  .game-over-content{grid-template-columns:190px minmax(0,1fr);gap:10px}
+  .game-over-panel .game-over-image{width:auto;height:min(50dvh,180px)}
+  .game-over-panel .sub{margin-top:0;font-size:9px;line-height:1.35}
+  .game-over-panel .foot{margin-top:3px}
 }
 
 /* Shared small-screen selector: portraits absorb all space between title and actions. */

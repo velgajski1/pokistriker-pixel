@@ -61,24 +61,38 @@ const CLOCK = {
   TICKER_INTERVAL: 1.5,
 };
 const MATCH_PLAY = { SPEED: 2, MIN_GAP: 3.5, APPROACH: 2.4 };
+const OPPONENT_GOALS = { PER_MINUTE: .01, PAUSE_SECONDS: 1.8 };
+const BENCHED_PRESENTATION_SECONDS = 3.8;
+const CLUBS = [
+  'Puddleford Rovers', 'Brickwall Athletic', 'Ironbridge United',
+  'Northgate City', 'Kingsport FC', 'Redcastle Rangers',
+  'Stonehaven Athletic', 'Crownfield United',
+];
 const DEFENDER_REACTION = { sadSpeed: .65, slowMin: .7, slowMax: 1.05 };
 
 const ECONOMY = {
   GOAL_PAYOUT: 100,
   BOOT_BONUS: 10,           // per Golden Boot level
-  CHARM_COST: 100,
-  CHARM_RESTORE: 25,
+  CHARM_BASE_COST: 100,
+  CHARM_RESTORE: 10,
   LEGACY_PER_GOAL: 10,
 };
 
 const MORALE = {
-  START: 100,
+  START: 50,
   BASE_MAX: 100,
-  ON_GOAL: +8,
-  ON_SAVE: -10,
-  ON_MISS: -15,
-  ON_BLANK_MATCH: -12,      // a match without a single goal
+  ON_GOAL: +10,
+  ON_MISSED_CHANCE: -5,
+  MINUTES_PER_LOSS: 5,
   SUPER_SUB_AT: 30,
+};
+
+const FAIR_CHANCE = {
+  GUARANTEED_PER_MATCH: 2,
+  BASE_PER_MINUTE: .01,
+  PER_LEVEL_PER_MINUTE: .002,
+  START_CREDIT: .5,
+  LATEST_GRANT_MINUTE: 79,
 };
 
 const SHOT = {
@@ -120,15 +134,21 @@ const SPOT = { MIN_RANGE: 9, MAX_RANGE: 16, MAX_LATERAL: 11,
 const BUILDUP_LEAD = 2.4;
 
 const TRAINING = [
-  { key: 'poacher', icon: '🦅', name: 'POACHER INSTINCT', base: 150, fx: '+Odds For Extra Chance' },
-  { key: 'target',  icon: '🎯', name: 'TARGET PRACTICE',  base: 100, fx: 'Slower Arrow Sweep' },
-  { key: 'legday',  icon: '🦵', name: 'LEG DAY',          base: 120, fx: 'Faster Shot Velocity' },
-  { key: 'icebath', icon: '🩹', name: 'ICE BATH',         base: 100, fx: 'Corner Shot Magnetism' },
+  { key: 'poacher', icon: '🦅', name: 'POACHER INSTINCT', base: 150,
+    fx: '+0.2 percentage points/min to the fair-chance rate per level' },
+  { key: 'target',  icon: '🎯', name: 'TARGET PRACTICE',  base: 100,
+    fx: '-12% aim-arrow speed per level' },
+  { key: 'legday',  icon: '🦵', name: 'LEG DAY',          base: 120,
+    fx: '+6% shot velocity per level' },
+  { key: 'icebath', icon: '🩹', name: 'ICE BATH',         base: 100,
+    fx: '+0.18m corner range and +0.09m outward pull per level' },
 ];
 
 const META = [
-  { key: 'star',   name: 'STAR PLAYER STATUS', base: 40, fx: 'More chances; L5 guarantees 5 per match' },
-  { key: 'subnet', name: 'SUPER SUB',          base: 40, fx: 'Below 30% confidence, chance of a bonus chance' },
+  { key: 'star',   name: 'STAR PLAYER STATUS', base: 40,
+    fx: '+0.2 percentage points/min to the fair-chance rate per level' },
+  { key: 'subnet', name: 'SUPER SUB',          base: 40,
+    fx: 'Below 30% confidence: +0.2 percentage points/min per level' },
   { key: 'talent', name: 'NATURAL TALENT',     base: 30, fx: '+5% baseline shot velocity per level' },
   { key: 'veins',  name: 'ICE IN THE VEINS',   base: 30, fx: '-5% baseline arrow sweep per level' },
   { key: 'pet',    name: "MANAGER'S PET",      base: 35, fx: '+5% confidence ceiling, max 125%' },
@@ -184,13 +204,14 @@ const CHANCE_CALLS = [
 
 // ---- Application state ----------------------------------------------------
 const state = {
-  screen: 'MENU',      // MENU | CHARACTER | MATCH | TRAINING | GAMEOVER
-  phase: 'SIM',        // SIM | AIM | POWER | FLIGHT | RESULT
+  screen: 'MENU',      // MENU | CHARACTER | PREMATCH | MATCH | TRAINING | BENCHED | GAMEOVER
+  phase: 'SIM',        // SIM | AIM | POWER | WINDUP | FLIGHT | ENEMY_GOAL
   mode: 'career',      // career | single | practice
   career: save.load(),
   characterSelection: null,
   run: null,
   elapsed: 0,
+  benchPresentation: null,
 };
 
 // ---- Per-frame scratch. Nothing here is reallocated inside the loop. ------
@@ -243,6 +264,7 @@ export function keeperAbility(distance, goals = 0, match = 1, career = true) {
 }
 
 const shot = {
+  defenseStrength: 0,
   keeperAbility: keeperAbility(10),
   theta: 0, sweepDir: 1, power: 0, powerDir: 1,
   keeperSetX: 0, keeperX: 0, keeperTarget: 0, keeperDive: 0,
@@ -273,21 +295,28 @@ const sweepSpeed = () => SHOT.BASE_SWEEP * (1 - 0.12 * train('target')) * (1 - 0
   * aimDistanceMultiplier(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z));
 const speedScale = () => (1 + 0.06 * train('legday')) * (1 + 0.05 * meta('talent'));
 const goalPayout = () => ECONOMY.GOAL_PAYOUT + ECONOMY.BOOT_BONUS * meta('boot');
+const defenseStrength = () => 1 - Math.exp(-Math.max(0, (state.mode === 'career' ? state.run.match : 1) - 1) * .14);
+function opponentProfile() {
+  const match = state.mode === 'career' ? state.run.match : 1;
+  return {
+    name: CLUBS[(match - 1) % CLUBS.length],
+    rating: Math.round(25 + defenseStrength() * 74),
+    color: `#${OPPONENT_COLORS[state.run.opponentColors].kit.toString(16).padStart(6, '0')}`,
+  };
+}
 /** Ice Bath: how close to the inside of the post still gets pulled in. */
 const magnetMargin = () => 0.18 * train('icebath');
 
-/** Poacher's Instinct + Star Player Status decide the opportunity count. */
-function rollChances() {
-  const extraChance = Math.min(1, .5 + .1 * train('poacher') + .1 * meta('star'));
-  return Math.random() < extraChance ? 5 : 4;
-}
+const fairChanceRate = () => FAIR_CHANCE.BASE_PER_MINUTE
+  + FAIR_CHANCE.PER_LEVEL_PER_MINUTE * (train('poacher') + meta('star')
+    + (state.run.confidence < MORALE.SUPER_SUB_AT ? meta('subnet') : 0));
 
 // ===========================================================================
 // Run lifecycle
 // ===========================================================================
 /** Save at lifecycle boundaries / navigation, never on every frame. */
 function checkpointCareer() {
-  if (state.mode !== 'career' || !state.run || !['MATCH', 'TRAINING'].includes(state.screen)) return;
+  if (state.mode !== 'career' || !state.run || !['MATCH', 'TRAINING', 'PREMATCH'].includes(state.screen)) return;
   const pending = state.screen === 'MATCH' && ['AIM', 'POWER', 'WINDUP', 'FLIGHT'].includes(state.phase)
     && shot.resolved === null;
   state.career.activeRun = {
@@ -302,11 +331,19 @@ function checkpointCareer() {
 function careerCheckpoint() {
   const checkpoint = state.career.activeRun;
   const run = checkpoint?.run;
-  if (checkpoint?.version !== 1 || !['MATCH', 'TRAINING'].includes(checkpoint.screen) || !run
+  if (checkpoint?.version !== 1 || !['MATCH', 'TRAINING', 'PREMATCH'].includes(checkpoint.screen) || !run
     || !CHARACTERS.some(character => character.id === run.characterId)) return null;
   if (!['match', 'cash', 'goals', 'matchGoals', 'chancesLeft'].every(key => Number.isSafeInteger(run[key]) && run[key] >= 0)
     || run.match < 1 || run.matchGoals > run.goals || run.chancesLeft > 10
+    || (run.enemyGoals !== undefined && (!Number.isSafeInteger(run.enemyGoals) || run.enemyGoals < 0))
+    || (run.enemyCredit !== undefined && (!Number.isFinite(run.enemyCredit) || run.enemyCredit < 0 || run.enemyCredit > 2))
+    || (run.enemyPause !== undefined && (!Number.isFinite(run.enemyPause)
+      || run.enemyPause < 0 || run.enemyPause > OPPONENT_GOALS.PAUSE_SECONDS))
     || !Number.isFinite(run.confidence) || run.confidence < 0 || run.confidence > 125
+    || (run.fairChanceCredit !== undefined && (!Number.isFinite(run.fairChanceCredit)
+      || run.fairChanceCredit < 0 || run.fairChanceCredit > 2))
+    || (run.charmUses !== undefined && (!Number.isSafeInteger(run.charmUses)
+      || run.charmUses < 0 || run.charmUses > 1000))
     || !Number.isFinite(run.clock) || run.clock < 0 || run.clock > 90
     || !Array.isArray(run.schedule) || run.schedule.length > 10
     || !run.schedule.every((minute, i) => Number.isFinite(minute) && minute >= 0 && minute <= 90
@@ -330,6 +367,11 @@ function enterCareer() {
   state.mode = 'career';
   state.run = { ...checkpoint.run, training: { ...checkpoint.run.training },
     schedule: checkpoint.run.schedule.slice(), building: false, simTime: 0, tickerAt: 0 };
+  if (!Number.isFinite(state.run.fairChanceCredit)) state.run.fairChanceCredit = FAIR_CHANCE.START_CREDIT;
+  if (!Number.isSafeInteger(state.run.charmUses)) state.run.charmUses = 0;
+  state.run.enemyGoals ??= 0;
+  state.run.enemyCredit ??= .5;
+  state.run.enemyPause ??= 0;
   const character = CHARACTERS.find(player => player.id === state.run.characterId);
   engine.stopCelebration();
   engine.stopReactions();
@@ -344,7 +386,8 @@ function enterCareer() {
   engine.frameAmbient(true);
   ui.showPower(false);
   ui.setPrompt('');
-  if (state.run.confidence <= 0) { benched(); return; }
+  if (state.screen === 'TRAINING' && state.run.confidence <= 0) { benched(); return; }
+  if (state.screen === 'PREMATCH') { renderPrematch(); return; }
   if (state.screen === 'TRAINING') {
     ui.showHud(false);
     ui.setDimmed(true);
@@ -355,6 +398,11 @@ function enterCareer() {
   ui.showHud(true);
   ui.setDimmed(false);
   pushHud();
+  if (state.run.enemyPause > 0) {
+    state.phase = 'ENEMY_GOAL';
+    ui.setTicker(Math.floor(state.run.clock), `${opponentProfile().name} score!`);
+    return;
+  }
   ui.setTicker(Math.floor(state.run.clock), 'Back on the pitch. Your career continues.');
   if (checkpoint.pending) {
     origin.x = checkpoint.pending.x;
@@ -387,12 +435,16 @@ function startRun(mode = 'career', characterId = null) {
     confidence: confidenceMaxForNewRun(),
     goals: 0,
     matchGoals: 0,
+    enemyGoals: 0,
+    enemyCredit: .5,
+    enemyPause: 0,
     training: { poacher: 0, target: 0, legday: 0, icebath: 0 },
     clock: 0,
     chancesLeft: 0,
     schedule: [],
+    fairChanceCredit: FAIR_CHANCE.START_CREDIT,
+    charmUses: 0,
     tickerAt: 0,
-    superSubUsed: false,
     building: false,
     buildLine: '',
   };
@@ -401,8 +453,7 @@ function startRun(mode = 'career', characterId = null) {
 }
 
 function confidenceMaxForNewRun() {
-  // Career starts at full confidence, ceiling included.
-  return MORALE.BASE_MAX * (1 + 0.05 * meta('pet'));
+  return MORALE.START;
 }
 
 export const OPPONENT_COLORS = [
@@ -431,13 +482,15 @@ function startMatch() {
   engine.setMatchColors(OPPONENT_COLORS[colors], run.crowdColorSeed);
   run.clock = 0;
   run.matchGoals = 0;
+  run.enemyGoals = 0;
+  run.enemyPause = 0;
   run.tickerAt = 0;
-  run.superSubUsed = false;
   run.building = false;
   run.simTime = 0;
-  run.chancesLeft = rollChances();
+  run.chancesLeft = FAIR_CHANCE.GUARANTEED_PER_MATCH;
 
-  // Spread the opportunities across the 90 with a little jitter.
+  // Every match has two guaranteed opportunities. Additional opportunities
+  // are earned by the deterministic fair-chance credit during live minutes.
   const n = run.chancesLeft;
   run.schedule = [];
   for (let i = 0; i < n; i++) {
@@ -446,6 +499,23 @@ function startMatch() {
   }
   run.schedule.sort((a, b) => a - b);
 
+  if (state.mode !== 'practice') { renderPrematch(); return; }
+  kickOff();
+}
+
+function renderPrematch() {
+  state.screen = 'PREMATCH';
+  ui.showHud(false);
+  ui.setDimmed(true);
+  engine.frameAmbient();
+  ui.showPrematch({ ...opponentProfile(), match: state.run.match,
+    confidence: state.mode === 'career' ? state.run.confidence : null,
+    confidenceMax: confidenceMax(),
+    onPlay: kickOff, onMenu: renderMenu });
+  checkpointCareer();
+}
+
+function kickOff() {
   state.screen = 'MATCH';
   state.phase = 'SIM';
   ui.hideOverlay();
@@ -463,7 +533,6 @@ function startMatch() {
 function endMatch() {
   const run = state.run;
   if (state.mode === 'single') return finishSingleMatch();
-  if (run.matchGoals === 0) adjustConfidence(MORALE.ON_BLANK_MATCH);
 
   if (run.confidence <= 0) return benched();
 
@@ -485,16 +554,50 @@ function benched() {
   state.career.runs += 1;
   state.career.bestRun = Math.max(state.career.bestRun, run.match);
   delete state.career.activeRun;
+  state.career.gameOver = { version: 1, matches, goals: run.goals, earned, isBest };
   save.save(state.career);
 
+  showBenchedPresentation(state.career.gameOver);
+}
+
+function showBenchedPresentation(summary, preview = false) {
+  state.screen = 'BENCHED';
+  state.benchPresentation = { summary, preview, remaining: BENCHED_PRESENTATION_SECONDS };
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.frameAmbient(true);
+  engine.setAnimationsPaused(true);
+  ui.showHud(false);
+  ui.setDimmed(false);
+  ui.showBenched();
+}
+
+function showCareerGameOver(summary, preview = false) {
+  state.benchPresentation = null;
+  engine.setAnimationsPaused(false);
   state.screen = 'GAMEOVER';
+  state.mode = 'career';
   ui.showHud(false);
   ui.setDimmed(true);
   ui.showGameOver({
-    matches, goals: run.goals, rate: ECONOMY.LEGACY_PER_GOAL, earned, isBest,
-    onMenu: renderMenu,
-    onUpgrades: () => renderMeta(),
+    ...summary, rate: ECONOMY.LEGACY_PER_GOAL,
+    onNext: () => {
+      if (!preview) {
+        delete state.career.gameOver;
+        save.save(state.career);
+      }
+      renderMeta();
+    },
   });
+}
+
+function careerGameOver() {
+  const summary = state.career.gameOver;
+  if (!summary || summary.version !== 1 || !Number.isSafeInteger(summary.matches) || summary.matches < 1
+    || !Number.isSafeInteger(summary.goals) || summary.goals < 0
+    || summary.earned !== summary.goals * ECONOMY.LEGACY_PER_GOAL
+    || typeof summary.isBest !== 'boolean') return null;
+  return summary;
 }
 
 function adjustConfidence(delta) {
@@ -505,17 +608,55 @@ function adjustConfidence(delta) {
 
 function pushHud() {
   const run = state.run;
-  ui.setScore(run.match, Math.floor(run.clock), run.goals, state.mode);
+  ui.setScore(run.match, Math.floor(run.clock), run.matchGoals, state.mode, run.enemyGoals);
+  ui.setConfidence(run.confidence, confidenceMax(), state.mode);
 }
 
 // ===========================================================================
 // SIMULATING state
 // ===========================================================================
+function accrueFairChance(minutes) {
+  const run = state.run;
+  run.fairChanceCredit += minutes * fairChanceRate();
+  if (run.fairChanceCredit < 1 || run.clock > FAIR_CHANCE.LATEST_GRANT_MINUTE) return;
+
+  run.fairChanceCredit -= 1;
+  const leadMinutes = BUILDUP_LEAD * CLOCK.MINUTES_PER_SECOND + 1;
+  let at = Math.min(88, Math.ceil(run.clock + leadMinutes));
+  while (run.schedule.includes(at) && at < 88) at += 1;
+  run.schedule.push(at);
+  run.schedule.sort((a, b) => a - b);
+  run.chancesLeft += 1;
+  if (!run.building) {
+    ui.setTicker(Math.floor(run.clock), 'Your fair-chance meter creates another opportunity.');
+    run.tickerAt = CLOCK.TICKER_INTERVAL;
+  }
+}
+
 function updateSim(dt) {
   const run = state.run;
   run.simTime += dt;
-  const next = run.schedule[0];
+  let next = run.schedule[0];
+  const previousClock = run.clock;
   run.clock = Math.min(next ?? CLOCK.FULL_TIME, run.clock + dt * CLOCK.MINUTES_PER_SECOND);
+  run.enemyCredit += (run.clock - previousClock) * OPPONENT_GOALS.PER_MINUTE;
+  if (state.mode === 'career') {
+    const previousLosses = Math.floor(previousClock / MORALE.MINUTES_PER_LOSS);
+    const currentLosses = Math.floor(run.clock / MORALE.MINUTES_PER_LOSS);
+    if (currentLosses > previousLosses) adjustConfidence(previousLosses - currentLosses);
+  }
+  accrueFairChance(run.clock - previousClock);
+  next = run.schedule[0];
+  if (!run.building && run.enemyCredit >= 1) {
+    run.enemyCredit -= 1;
+    run.enemyGoals += 1;
+    run.enemyPause = OPPONENT_GOALS.PAUSE_SECONDS;
+    state.phase = 'ENEMY_GOAL';
+    pushHud();
+    ui.setTicker(Math.floor(run.clock), `${opponentProfile().name} score!`);
+    checkpointCareer();
+    return;
+  }
 
   if (run.clock >= CLOCK.FULL_TIME && run.simTime >= MATCH_PLAY.MIN_GAP) {
     run.clock = CLOCK.FULL_TIME;
@@ -627,6 +768,7 @@ function beginHighlight(soft, restored = false) {
   const narrow = Math.max(-2.6, Math.min(2.6, origin.x * SHOT.KEEPER_ANGLE_NARROW));
   shot.keeperAbility = keeperAbility(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z),
     run.matchGoals, run.match, state.mode === 'career');
+  shot.defenseStrength = defenseStrength();
   shot.keeperSetX = narrow + (Math.random() * 2 - 1) * shot.keeperAbility.setSpread;
   shot.keeperX = shot.keeperSetX;
   shot.keeperDive = 0;
@@ -753,12 +895,12 @@ function launch() {
   for (let i = 0; i < blockerCount; i++) {
     const b = blockers[i];
     predictCrossing(origin, theta, shot.power, speedScale(), prediction, b.z);
-    const guess = prediction.x + (Math.random() * 2 - 1) * SHOT.BLOCK_READ_ERROR;
+    const guess = prediction.x + (Math.random() * 2 - 1) * SHOT.BLOCK_READ_ERROR * (1 - .65 * shot.defenseStrength);
     b.target = Math.max(b.baseX - SHOT.BLOCK_MAX_LUNGE,
                         Math.min(b.baseX + SHOT.BLOCK_MAX_LUNGE, guess));
     b.side = Math.sign(b.target - b.baseX) || 1;
     b.depth = Math.min(1, Math.abs(b.target - b.baseX) / SHOT.BLOCK_MAX_LUNGE);
-    b.delay = SHOT.BLOCK_REACTION;
+    b.delay = SHOT.BLOCK_REACTION * (1 - .45 * shot.defenseStrength);
     b.lowSlide = prediction.y < .65 && Math.random() < .65;
     b.slideTime = -1;
     b.lunge = 0;
@@ -934,7 +1076,7 @@ export function substep(h) {
       b.delay -= h;
     } else if (!b.spent) {
       const gap = b.target - b.x;
-      const step = SHOT.BLOCK_SPEED * h;
+      const step = SHOT.BLOCK_SPEED * (1 + .3 * shot.defenseStrength) * h;
       b.x += Math.abs(gap) <= step ? gap : Math.sign(gap) * step;
       b.lunge = Math.min(b.depth, b.lunge + h / SHOT.BLOCK_LUNGE_TIME);
       if (b.lunge >= b.depth) b.spent = true;
@@ -1156,6 +1298,7 @@ function updateFlight(dt) {
 function resolve(outcome) {
   const run = state.run;
   shot.resolved = outcome;
+  if (outcome !== 'goal') adjustConfidence(MORALE.ON_MISSED_CHANCE);
   engine.cheerCrowd(outcome === 'goal');
   shot.holdTimer = outcome === 'goal' ? 1.7 : .8;
   const reactionIndex = Math.floor(Math.random() * engine.REACTIONS.length);
@@ -1177,27 +1320,22 @@ function resolve(outcome) {
     ui.flashVerdict(shot.touched ? 'IN OFF!' : 'GOAL', 'goal');
     ui.setTicker(Math.floor(run.clock), `${GOAL_CALLS[shot.touched] || GOAL_CALLS.clean}${state.mode === 'career' ? ` <b>+$${goalPayout()}</b>.` : ''}`);
   } else if (outcome === 'save') {
-    adjustConfidence(MORALE.ON_SAVE);
     engine.shake(0.25);
     ui.flashVerdict('SAVED', 'save');
     ui.setTicker(Math.floor(run.clock), 'The keeper gets a strong hand to it.');
   } else if (outcome === 'woodwork') {
-    adjustConfidence(MORALE.ON_MISS);
     ui.flashVerdict('WOODWORK', 'save');
     ui.setTicker(Math.floor(run.clock), shot.touched === 'bar'
       ? 'Off the crossbar and away. Inches.'
       : 'Off the post and back out. Agonising.');
   } else if (outcome === 'blocked') {
-    adjustConfidence(MORALE.ON_SAVE);
     engine.shake(0.3);
     ui.flashVerdict('BLOCKED', 'save');
     ui.setTicker(Math.floor(run.clock), 'A defender throws himself in the way.');
   } else if (outcome === 'high') {
-    adjustConfidence(MORALE.ON_MISS);
     ui.flashVerdict('OVER', 'miss');
     ui.setTicker(Math.floor(run.clock), 'Leant back and blazed it over the bar.');
   } else {
-    adjustConfidence(MORALE.ON_MISS);
     ui.flashVerdict('MISSED', 'miss');
     ui.setTicker(Math.floor(run.clock), 'Dragged wide. The manager turns away.');
   }
@@ -1216,10 +1354,6 @@ function finishChance() {
     return;
   }
 
-  if (run.confidence <= 0) { benched(); return; }
-
-  trySuperSub();
-
   // Cut overhead immediately, then play through the gap before the next move.
   state.phase = 'SIM';
   blockerCount = 0;
@@ -1231,23 +1365,6 @@ function finishChance() {
   run.tickerAt = 0;
   pushHud();
   queueMicrotask(checkpointCareer);
-}
-
-/** Super Sub / Safety Net: a survival roll once morale is critical. */
-function trySuperSub() {
-  const run = state.run;
-  const lvl = meta('subnet');
-  if (!lvl || run.superSubUsed) return;
-  if (run.confidence >= MORALE.SUPER_SUB_AT) return;
-  if (run.schedule.length > 0) return;   // only when nothing is left to play for
-
-  run.superSubUsed = true;
-  if (Math.random() < 0.1 * lvl) {
-    const at = Math.min(88, Math.floor(run.clock) + 4 + Math.floor(Math.random() * 10));
-    run.schedule.push(at);
-    run.chancesLeft += 1;
-    ui.setTicker(Math.floor(run.clock), 'The manager gives you one last roll of the dice...');
-  }
 }
 
 // ===========================================================================
@@ -1311,7 +1428,7 @@ function finishSingleMatch() {
   state.screen = 'GAMEOVER';
   ui.showHud(false);
   ui.setDimmed(true);
-  ui.showSingleResult({ goals: state.run.matchGoals,
+  ui.showSingleResult({ goals: state.run.matchGoals, enemyGoals: state.run.enemyGoals,
     onReplay: () => startRun('single'), onMenu: renderMenu });
 }
 
@@ -1356,16 +1473,19 @@ function renderMeta(preserveRun = false) {
 function renderTraining() {
   checkpointCareer();
   const run = state.run;
+  const currentCharmCost = ECONOMY.CHARM_BASE_COST * (run.charmUses + 1);
   ui.showTraining({
     onMenu: renderMenu,
     match: run.match,
     matchGoals: run.matchGoals,
+    enemyGoals: run.enemyGoals,
     cash: run.cash,
     confidence: run.confidence,
     confidenceMax: confidenceMax(),
-    charmCost: ECONOMY.CHARM_COST,
+    charmCost: currentCharmCost,
+    charmBaseCost: ECONOMY.CHARM_BASE_COST,
     charmRestore: ECONOMY.CHARM_RESTORE,
-    charmAffordable: run.cash >= ECONOMY.CHARM_COST && run.confidence < confidenceMax(),
+    charmAffordable: run.cash >= currentCharmCost && run.confidence < confidenceMax(),
     rows: TRAINING.map((def) => {
       const lvl = run.training[def.key];
       const c = cost(def, lvl);
@@ -1381,8 +1501,9 @@ function renderTraining() {
       };
     }),
     onCharm: () => {
-      if (run.cash < ECONOMY.CHARM_COST) return;
-      run.cash -= ECONOMY.CHARM_COST;
+      if (run.cash < currentCharmCost || run.confidence >= confidenceMax()) return;
+      run.cash -= currentCharmCost;
+      run.charmUses += 1;
       adjustConfidence(ECONOMY.CHARM_RESTORE);
       renderTraining();
     },
@@ -1411,8 +1532,41 @@ function showUpgradeScreen(screen) {
   }
 }
 
+function previewGameOver() {
+  if (!upgradeShortcutsEnabled) return;
+  checkpointCareer();
+  const pending = careerGameOver();
+  if (pending) { showBenchedPresentation(pending); return; }
+  const goals = state.run?.goals ?? 3;
+  showBenchedPresentation({
+    version: 1,
+    matches: state.run?.match ?? 2,
+    goals,
+    earned: goals * ECONOMY.LEGACY_PER_GOAL,
+    isBest: true,
+  }, true);
+}
+
 function frame(dt) {
   state.elapsed += dt;
+  if (state.screen === 'BENCHED') {
+    engine.setAnimationsPaused(true);
+    const presentation = state.benchPresentation;
+    presentation.remaining -= dt;
+    if (presentation.remaining <= 0) showCareerGameOver(presentation.summary, presentation.preview);
+    return;
+  }
+  if (state.screen === 'MATCH' && state.phase === 'ENEMY_GOAL') {
+    engine.setAnimationsPaused(true);
+    state.run.enemyPause = Math.max(0, state.run.enemyPause - dt);
+    if (state.run.enemyPause === 0) {
+      state.phase = 'SIM';
+      engine.setAnimationsPaused(false);
+      ui.setTicker(Math.floor(state.run.clock), 'Play resumes.');
+      checkpointCareer();
+    }
+    return;
+  }
   engine.setAnimationsPaused(state.screen === 'MATCH' && (state.phase === 'AIM' || state.phase === 'POWER'));
 
   // The pitch keeps playing behind the menus and the training room too.
@@ -1440,7 +1594,7 @@ async function boot() {
     crowd: engine.crowd, formation: engine.formation,
     matchView: engine.matchView,
     dimensions: { goal: GOAL, pitch: PITCH, ballRadius: BALL_R },
-    showUpgradeScreen, characters: CHARACTERS,
+    showUpgradeScreen, previewGameOver, characters: CHARACTERS,
   };
   await Promise.all([engine.loadStriker(), engine.loadBall(),
     ui.preloadMenuAssets(CHARACTERS.map(character => character.portrait))]);
@@ -1461,6 +1615,10 @@ async function boot() {
   });
   addEventListener('keydown', (e) => {
     if (!window.__demo.ready) return;
+    if (state.screen === 'BENCHED') {
+      if (!e.ctrlKey && !e.metaKey && [' ', 'Enter', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) e.preventDefault();
+      return;
+    }
     if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
     if (!e.altKey && !e.ctrlKey && !e.metaKey && !e.repeat && state.screen !== 'MATCH') {
       if (e.code === 'ArrowLeft' || e.code === 'ArrowRight'
@@ -1477,7 +1635,16 @@ async function boot() {
         }
       }
     }
-    if (e.code === 'Escape') { e.preventDefault(); renderMenu(); return; }
+    if (e.code === 'Escape') {
+      e.preventDefault();
+      if (state.screen !== 'GAMEOVER' || state.mode !== 'career') renderMenu();
+      return;
+    }
+    if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyG') {
+      e.preventDefault();
+      if (!e.repeat) previewGameOver();
+      return;
+    }
     if (upgradeShortcutsEnabled && e.altKey && !e.ctrlKey && !e.metaKey
       && (e.code === 'Digit1' || e.code === 'Digit2')) {
       e.preventDefault();
@@ -1488,7 +1655,9 @@ async function boot() {
     if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); advance(); }
   });
 
-  renderMenu();
+  const pendingGameOver = careerGameOver();
+  if (pendingGameOver) showCareerGameOver(pendingGameOver);
+  else renderMenu();
   ui.setMatchExit(renderMenu);
   await new Promise(resolve => {
     const afterRender = engine.scene.onAfterRender;
