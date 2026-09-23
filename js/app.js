@@ -206,6 +206,16 @@ const SPEED_SCALE = 1;
 // ===========================================================================
 // Run lifecycle
 // ===========================================================================
+function setGameplayActive(active) {
+  engine.setGameplayActive(active);
+  ui.setGameplayActive(active);
+  audio.setScene(active ? 'match' : 'menu');
+  if (!active) {
+    audio.setFocus(false);
+    audio.setPower(null);
+  }
+}
+
 /** A fresh run. Boot starts one straight away: no menus before the first shot. */
 function startRun() {
   engine.stopCelebration();
@@ -222,6 +232,7 @@ function startRun() {
   ui.hideOverlay();
   ui.showHud(true);
   ui.setDimmed(false);
+  setGameplayActive(true);
   audio.play('kickoff');
   pushHud();
   beginChance();
@@ -250,6 +261,7 @@ async function continueRun() {
   ui.hideOverlay();
   ui.showHud(true);
   ui.setDimmed(false);
+  setGameplayActive(true);
   audio.play('extraLife');
   pushHud();
   beginChance();
@@ -265,6 +277,7 @@ function pause() {
   engine.setAnimationsPaused(true);
   ui.setDimmed(true);
   ui.showPause({ onResume: resume, onRestart: restart });
+  setGameplayActive(false);
 }
 
 async function resume() {
@@ -274,6 +287,7 @@ async function resume() {
   state.paused = false;
   audio.setPaused(false);
   ui.setDimmed(false);
+  setGameplayActive(true);
   poki.gameplayStart();
 }
 
@@ -315,6 +329,7 @@ function gameOver() {
   engine.frameAmbient();
   ui.showHud(false);
   ui.setDimmed(true);
+  setGameplayActive(false);
   audio.play(isBest && run.score > 0 ? 'newBest' : 'gameOver');
   ui.showGameOver({ score: run.score, best: state.best, isBest, level: run.level, goals: run.goals,
     bullseyes: run.bullseyes, bestCombo: run.bestCombo,
@@ -1067,13 +1082,10 @@ export function endArcadeSimulationForTest() {
 // Frame loop and boot
 // ===========================================================================
 function frame(dt) {
-  audio.setScene(state.screen === 'MATCH' ? 'match' : 'menu');
-  audio.setFocus(state.screen === 'MATCH' && (state.phase === 'AIM' || state.phase === 'POWER'));
-  audio.setPower(state.screen === 'MATCH' && state.phase === 'POWER' ? shot.power : null);
+  audio.setFocus(state.phase === 'AIM' || state.phase === 'POWER');
+  audio.setPower(state.phase === 'POWER' ? shot.power : null);
   state.elapsed += dt;
-  if (state.paused) { engine.setAnimationsPaused(true); return; }
-  // The pitch keeps playing behind the game-over panel.
-  if (state.screen !== 'MATCH') { engine.setAnimationsPaused(false); engine.runAmbient(dt); return; }
+  if (state.paused || state.screen !== 'MATCH') return;
 
   switch (state.phase) {
     case 'AIM':    updateAim(dt); break;
@@ -1120,6 +1132,7 @@ async function boot() {
       target: aimTarget, arcade: ARCADE, prediction,
       crowd: engine.crowd, formation: engine.formation,
       matchView: engine.matchView, pixel: engine.pixelLook,
+      renderState: engine.renderState,
       dimensions: { goal: GOAL, pitch: PITCH, ballRadius: BALL_R },
       striker: engine.striker, players: engine.players, lastLaunch: engine.lastLaunch,
       poki: { pause, resume, playing: poki.isPlaying },

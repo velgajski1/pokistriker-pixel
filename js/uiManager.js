@@ -94,8 +94,6 @@ export async function finishLoading() {
   const remaining = 450 - (performance.now() - loadingStarted);
   if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining));
   document.body.classList.remove('loading');
-  el.overlay.inert = false;
-  el.hud.inert = false;
   $('preloader').classList.add('hidden');
 }
 
@@ -111,7 +109,16 @@ export function showLoadingError() {
 /** Dims the arena behind the menus; play clears it. */
 export function setDimmed(on) { el.dim.classList.toggle('clear', !on); }
 
-export function showHud(on) { el.hud.classList.toggle('hidden', !on); }
+export function showHud(on) {
+  el.hud.classList.toggle('hidden', !on);
+  if (!on) el.hud.inert = true;
+}
+
+/** Only one UI layer participates in focus, clicks and accessibility at once. */
+export function setGameplayActive(on) {
+  el.hud.inert = !on;
+  el.overlay.inert = on;
+}
 
 let lastScore = -1;
 export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProgress, best }) {
@@ -168,6 +175,7 @@ export function showLevelUp(level) {
 
 // ---- Panels ---------------------------------------------------------------
 export function hideOverlay() {
+  el.overlay.inert = true;
   el.overlay.classList.add('hidden');
   el.overlay.replaceChildren();
 }
@@ -175,6 +183,8 @@ export function hideOverlay() {
 function mount(panel) {
   el.overlay.replaceChildren(panel);
   el.overlay.classList.remove('hidden');
+  el.overlay.inert = false;
+  el.hud.inert = true;
   panel.querySelector('.primary')?.focus({ preventScroll: true });
 }
 

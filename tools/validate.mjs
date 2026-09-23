@@ -20,6 +20,11 @@ try {
   assert(await page.evaluate(() => __demo.state.screen === 'MATCH' && __demo.state.phase === 'AIM'),
     'Boot must go straight into the first chance');
   assert(await page.evaluate(() => !__demo.poki.playing()), 'gameplayStart must wait for the first input');
+  assert(await page.evaluate(() => __demo.renderState.gameplayActive
+    && !document.getElementById('hud').inert && document.getElementById('overlay').inert),
+    'Gameplay must own the render loop and input layer');
+  const drawCalls = await page.evaluate(() => __demo.renderer.info.render.calls);
+  assert(drawCalls < 200, `Aim view draw calls must stay below 200 (${drawCalls})`);
 
   /** waitForFunction that says what it was waiting for when it times out. */
   const until = (label, fn, arg) => page.waitForFunction(fn, arg, { polling: 'raf' })
@@ -84,9 +89,20 @@ try {
   await page.keyboard.press('Escape');
   assert(await page.evaluate(() => __demo.state.paused && !__demo.poki.playing()), 'Esc must pause and stop gameplay');
   assert(await page.getByRole('button', { name: 'RESUME', exact: true }).isVisible(), 'Pause must offer RESUME');
+  assert(await page.evaluate(() => !__demo.renderState.gameplayActive
+    && document.getElementById('hud').inert && !document.getElementById('overlay').inert),
+    'Pause menu must disable gameplay and own the input layer');
+  await page.waitForTimeout(80);
+  const pausedFrame = await page.evaluate(() => __demo.renderState.frames);
+  await page.waitForTimeout(160);
+  assert(await page.evaluate(frame => __demo.renderState.frames === frame, pausedFrame),
+    'Pause menu must not keep rendering the arena');
   await page.screenshot({ path: `${CAPTURES}/${name}-pause.png` });
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !__demo.state.paused);
+  assert(await page.evaluate(() => __demo.renderState.gameplayActive
+    && !document.getElementById('hud').inert && document.getElementById('overlay').inert),
+    'Resume must return input and rendering to gameplay');
 
   // Early levels: aimed shots should go in against the rookie keeper.
   let goals = 0;
@@ -141,6 +157,9 @@ try {
   assert(wide.outcome !== 'goal', 'A shot outside the posts must not score');
   await page.waitForFunction(() => __demo.state.screen === 'GAMEOVER', null, { timeout: 8000 });
   assert(await page.evaluate(() => !__demo.poki.playing()), 'Game over must stop gameplay');
+  assert(await page.evaluate(() => !__demo.renderState.gameplayActive
+    && document.getElementById('hud').inert && !document.getElementById('overlay').inert),
+    'Game-over menu must disable gameplay and own the input layer');
   await page.screenshot({ path: `${CAPTURES}/${name}-gameover.png` });
   const saved = await page.evaluate(() => ({ best: Number(localStorage.getItem('blockstriker.best.v1')),
     score: __demo.state.run.score }));

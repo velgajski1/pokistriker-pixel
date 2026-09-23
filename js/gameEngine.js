@@ -6,8 +6,8 @@
  * the rest of the session. Nothing is disposed or rebuilt at runtime.
  *
  * Two modes share the same actors:
- *   AMBIENT   - a live match plays out behind the dimmer: players hold shape,
- *               the ball is passed around, the referee follows the play.
+ *   AMBIENT   - a live match links chances: players hold shape, the ball is
+ *               passed around, and the referee follows the play.
  *   CHANCE    - the squad snaps into a shooting scenario at an arbitrary spot
  *               on the pitch and the camera cuts in behind the striker.
  *
@@ -38,6 +38,10 @@ export { renderer, scene, camera };
 let frameCb = null;
 let shakeAmp = 0;
 let started = false;
+let renderPending = true;
+
+/** Render-loop state exposed to the smoke tests and performance tooling. */
+export const renderState = { gameplayActive: true, frames: 0 };
 
 export const objects = { ball: null, arrow: null, guide: null, elevation: null };
 
@@ -484,7 +488,6 @@ function dressBlocks(model, rig, parts) {
     mesh.matrixAutoUpdate = false;
     mesh.matrix.copy(part.local);
     mesh.castShadow = true;
-    mesh.frustumCulled = false;
     model.getObjectByName(part.bone).add(mesh);
     meshes[part.name] = mesh;
   }
@@ -1722,25 +1725,20 @@ function buildField() {
 
 function buildGoal() {
   const goalMeshes = [];
+  const frameParts = [];
   const frame = new THREE.MeshStandardMaterial({ color: 0xf4f7fa, roughness: 0.4 });
   // Square section, same width as the collision cylinder.
   const postGeo = new THREE.BoxGeometry(GOAL.POST_R * 2, GOAL.BAR_Y, GOAL.POST_R * 2);
   for (const sx of [-1, 1]) {
     const p = new THREE.Mesh(postGeo, frame);
-    p.position.set(sx * GOAL.POST_X, GOAL.BAR_Y / 2, GOAL.PLANE_Z);
-    p.name = 'goal-post';
-    p.castShadow = true;
-    scene.add(p);
-    goalMeshes.push(p);
+    p.position.set(sx * GOAL.POST_X, GOAL.BAR_Y / 2, 0);
+    frameParts.push(p);
   }
   const bar = new THREE.Mesh(
     new THREE.BoxGeometry(GOAL.POST_R * 2, GOAL.POST_X * 2 + GOAL.POST_R * 2, GOAL.POST_R * 2), frame);
   bar.rotation.z = Math.PI / 2;
-  bar.position.set(0, GOAL.BAR_Y, GOAL.PLANE_Z);
-  bar.name = 'goal-crossbar';
-  bar.castShadow = true;
-  scene.add(bar);
-  goalMeshes.push(bar);
+  bar.position.set(0, GOAL.BAR_Y, 0);
+  frameParts.push(bar);
 
   const net = new THREE.LineBasicMaterial({
     color: 0xe5e9df, transparent: true, opacity: 0.64, depthWrite: false,
@@ -1766,17 +1764,35 @@ function buildGoal() {
     const rail = new THREE.Mesh(new THREE.BoxGeometry(.05, direction.length(), .05), frame);
     rail.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
     rail.position.copy(a).add(b).multiplyScalar(.5);
-    rail.name = 'goal-support';
-    scene.add(rail); goalMeshes.push(rail);
+    frameParts.push(rail);
   };
   for (const side of [-1, 1]) {
     const x = side * GOAL.POST_X;
-    support(x, .025, GOAL.PLANE_Z, x, .025, GOAL.PLANE_Z - depth);
-    support(x, .025, GOAL.PLANE_Z - depth, x, GOAL.BAR_Y, GOAL.PLANE_Z - depth);
-    support(x, GOAL.BAR_Y, GOAL.PLANE_Z, x, GOAL.BAR_Y, GOAL.PLANE_Z - depth);
+    support(x, .025, 0, x, .025, -depth);
+    support(x, .025, -depth, x, GOAL.BAR_Y, -depth);
+    support(x, GOAL.BAR_Y, 0, x, GOAL.BAR_Y, -depth);
   }
-  support(-GOAL.POST_X, .025, GOAL.PLANE_Z - depth, GOAL.POST_X, .025, GOAL.PLANE_Z - depth);
-  support(-GOAL.POST_X, GOAL.BAR_Y, GOAL.PLANE_Z - depth, GOAL.POST_X, GOAL.BAR_Y, GOAL.PLANE_Z - depth);
+  support(-GOAL.POST_X, .025, -depth, GOAL.POST_X, .025, -depth);
+  support(-GOAL.POST_X, GOAL.BAR_Y, -depth, GOAL.POST_X, GOAL.BAR_Y, -depth);
+
+  // Posts, bar and supports never move independently, so submit each goal as
+  // one mesh instead of eleven meshes (and one shadow draw instead of three).
+  const frameGeometry = [];
+  for (const part of frameParts) {
+    part.updateMatrix();
+    frameGeometry.push(part.geometry.clone().applyMatrix4(part.matrix));
+  }
+  const goalFrame = new THREE.Mesh(joinCrowdParts(frameGeometry), frame);
+  goalFrame.name = 'goal-frame';
+  goalFrame.position.z = GOAL.PLANE_Z;
+  goalFrame.castShadow = true;
+  scene.add(goalFrame);
+  const farFrame = goalFrame.clone();
+  farFrame.geometry = goalFrame.geometry.clone();
+  farFrame.name = 'far-goal-frame';
+  farFrame.position.z = GOAL.PLANE_Z + PITCH.LENGTH;
+  farFrame.rotation.y = Math.PI;
+  scene.add(farFrame);
 
   // Panel order must match physics.NET_PANELS: back, left, right, roof.
   const back = grid(GOAL.HALF_W * 2, GOAL.HEIGHT, 42, 14);
@@ -2360,24 +2376,25 @@ export function loadBall() { return Promise.resolve(); }
 const target = { group: null, ring: null, bull: null, fill: null, heart: null, collected: 0, time: 0 };
 const HEART_PIXELS = ['.XX.XX.', 'XXXXXXX', 'XXXXXXX', '.XXXXX.', '..XXX..', '...X...'];
 const TARGET_BAR = .09;
+const targetBar = new THREE.Object3D();
 
 function blockFrame(material) {
-  const frame = new THREE.Group();
-  for (let i = 0; i < 4; i++) {
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(1, 1, TARGET_BAR), material);
-    bar.userData.side = i;
-    frame.add(bar);
-  }
-  return frame;
+  return new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, TARGET_BAR), material, 4);
 }
 
 /** Sizes a frame's four bars around a square of the given half-width. */
 function sizeFrame(frame, half) {
-  for (const bar of frame.children) {
-    const side = bar.userData.side, horizontal = side < 2;
-    bar.scale.set(horizontal ? half * 2 + TARGET_BAR : TARGET_BAR, horizontal ? TARGET_BAR : half * 2, 1);
-    bar.position.set(horizontal ? 0 : (side === 2 ? -half : half), horizontal ? (side === 0 ? half : -half) : 0, 0);
+  for (let side = 0; side < 4; side++) {
+    const horizontal = side < 2;
+    targetBar.scale.set(horizontal ? half * 2 + TARGET_BAR : TARGET_BAR,
+      horizontal ? TARGET_BAR : half * 2, 1);
+    targetBar.position.set(horizontal ? 0 : (side === 2 ? -half : half),
+      horizontal ? (side === 0 ? half : -half) : 0, 0);
+    targetBar.updateMatrix();
+    frame.setMatrixAt(side, targetBar.matrix);
   }
+  frame.instanceMatrix.needsUpdate = true;
+  frame.computeBoundingSphere();
 }
 
 function buildTarget() {
@@ -3890,6 +3907,7 @@ function resizePixelPass() {
 const _pixelBuffer = new THREE.Vector2();
 
 function renderFrame() {
+  renderState.frames++;
   if (!pixelLook.enabled) { renderer.render(scene, camera); return; }
   if (pixelRows() !== pixelRowsUsed) resizePixelPass();
   renderer.setRenderTarget(pixelTarget);
@@ -3963,6 +3981,15 @@ function resize() {
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
   if (pixelLook.enabled) resizePixelPass();
+  renderPending = true;
+}
+
+/** Menus own the page while gameplay is inactive; draw their backdrop once. */
+export function setGameplayActive(active) {
+  active = !!active;
+  if (renderState.gameplayActive === active) return;
+  renderState.gameplayActive = active;
+  renderPending = true;
 }
 
 let animationsPaused = false;
@@ -4054,7 +4081,23 @@ function tick() {
   // Single delta source: every consumer scales its displacement against this.
   const dt = Math.min(clock.getDelta(), 0.05);
   matchFrameDt = 0;
+  if (!renderState.gameplayActive) {
+    if (renderPending) {
+      renderPending = false;
+      renderFrame();
+    }
+    return;
+  }
   if (frameCb) frameCb(dt);
+  // A frame callback may open pause/game-over. Freeze immediately and leave a
+  // single current backdrop for the DOM menu instead of simulating behind it.
+  if (!renderState.gameplayActive) {
+    if (renderPending) {
+      renderPending = false;
+      renderFrame();
+    }
+    return;
+  }
   if (!animationsPaused && !opponentGoal.active && !walkOff.active) {
     crowdTime.value += dt;
     crowdCheer.value = Math.max(0, crowdCheer.value - dt * .18);
