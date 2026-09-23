@@ -30,10 +30,14 @@ export const ARCADE = {
   HEARTS: 3,                 // hearts at the start of a run
   MAX_HEARTS: 5,             // extra lives can take you this far
   GOALS_PER_LEVEL: 3,
+  EARLY_GOALS: 2,
+  EARLY_LEVELS: 3,
   POINTS: { bullseye: 300, target: 200, goal: 100 },
   MAX_COMBO: 5,              // consecutive target hits multiply the points
   HEART_ODDS: .2,            // chance a target carries an extra life (never twice running)
-  RAMP_LEVELS: 20,           // difficulty eases in over roughly this many levels (slow on purpose)
+  RAMP_LEVELS: 32,           // a gradual climb in keeper skill, range and timing difficulty
+  SOFTEN_AFTER: 5,
+  LATE_LEVEL_SCALE: .5,      // each level past 5 adds half a level of difficulty
   // The keeper is good from the first shot and better later (this share of the
   // elite profile, level 1 -> late), and dives at everything - but a shot that
   // crosses inside the target always beats him (see keeperBeaten).
@@ -48,11 +52,16 @@ export const ARCADE = {
   KEEPER_MOMENT: { odds: 0, skill: .35 },   // off: the keeper is always good now
 };
 
+export const goalsForLevel = level => level <= ARCADE.EARLY_LEVELS ? ARCADE.EARLY_GOALS : ARCADE.GOALS_PER_LEVEL;
+export const ADAPTIVE = { SHOTS: 2, KEEPER_SCALE: .65, SPEED: .85, COMBO_STEP: .025, COMBO_MAX: .1 };
+export const timingFactor = (combo = 0, assisted = false) => assisted ? ADAPTIVE.SPEED
+  : 1 + Math.min(ADAPTIVE.COMBO_MAX, Math.max(0, combo - 1) * ADAPTIVE.COMBO_STEP);
+
 /**
  * Special chances. Golden balls, moving targets and free kicks turn up at
  * random from their first level (never two specials running); a boss keeper
- * guards the first chance of every fifth level; every fourth level opens with
- * a three-shot bonus round where misses are free.
+ * opens level 4, then every fifth level from 10; every fourth level from 8
+ * opens with a three-shot bonus round where misses are free.
  */
 const SPECIALS = {
   golden: { from: 2, odds: .12, points: 2, label: 'GOLDEN BALL', note: 'DOUBLE POINTS', ring: 0xfff27a, bull: 0xffb000 },
@@ -93,11 +102,11 @@ const TARGET = {
 const SHOT = {
   BASE_SWEEP: 12.0,         // metres/sec ACROSS the goal plane when fully ramped
   EASY_SWEEP: 1.14,         // ...and this fraction of it at level 1
-  HARD_SWEEP: 2.3,          // ...rising towards this multiple late in a run
-  BOUNCE_BOOST: .1,         // the arrow and the meter speed up this much at every turn...
-  MAX_BOOST: .5,            // ...up to this much: waiting for the perfect moment gets harder
+  HARD_SWEEP: 2,            // ...rising towards this multiple late in a run
+  BOUNCE_BOOST: .05,        // the arrow and the meter speed up this much at every turn...
+  MAX_BOOST: .2,            // ...with a modest cap so waiting remains manageable
   AIM_SPAN: 5.2,            // the arrow sweeps this far past the goal centre
-  POWER_CYCLE: [1.4, 2.6],  // power oscillations per second: level 1 -> late in a run
+  POWER_CYCLE: [1.4, 2.2],  // power oscillations per second: level 1 -> late in a run
   // The height meter is the height on the goal line, bottom to top, at any
   // distance: the top quarter goes over the bar, so a late press misses high.
   METER_HEIGHT: [.05, 3.3],
@@ -128,15 +137,19 @@ const KEEPER_ROOKIE = { reaction: .3, diveSpeed: 2.6, setSpeed: 1.2, readError: 
 const KEEPER_ELITE = { reaction: .065, diveSpeed: 10, setSpeed: 5.5, readError: .06, heightError: .045,
   setSpread: .10, diveTime: .18, catchSpeed: 18, parryBias: .82 };
 
-/** 0 at level 1, approaching 1 as the run goes on. */
-export const levelRamp = level => 1 - Math.exp(-Math.max(0, level - 1) / ARCADE.RAMP_LEVELS);
+export const difficultyLevel = level => Math.min(level, ARCADE.SOFTEN_AFTER)
+  + Math.max(0, level - ARCADE.SOFTEN_AFTER) * ARCADE.LATE_LEVEL_SCALE;
+
+/** 0 at level 1; slower growth after level 5, without a difficulty jump. */
+export const levelRamp = level => 1 - Math.exp(-Math.max(0, difficultyLevel(level) - 1) / ARCADE.RAMP_LEVELS);
 
 /** Keeper ability for a level; distance adds a little on top for long shots. */
-export function keeperAbility(level, distance = 10, special = null, moment = false) {
+export function keeperAbility(level, distance = 10, special = null, moment = false, assisted = false) {
   const ramp = ARCADE.KEEPER_FLOOR + (ARCADE.KEEPER_CAP - ARCADE.KEEPER_FLOOR) * levelRamp(level);
   let skill = Math.min(ARCADE.KEEPER_CAP, ramp + Math.max(0, distance - 12) * .01 * ramp);
   if (moment) skill = Math.max(skill, ARCADE.KEEPER_MOMENT.skill);
   if (special === 'boss') skill = Math.min(1, skill + BOSS_SKILL);
+  if (assisted) skill *= ADAPTIVE.KEEPER_SCALE;
   const ability = { skill, level };
   for (const key of Object.keys(KEEPER_ROOKIE)) {
     ability[key] = KEEPER_ROOKIE[key] + (KEEPER_ELITE[key] - KEEPER_ROOKIE[key]) * skill;
@@ -149,11 +162,13 @@ export function keeperAbility(level, distance = 10, special = null, moment = fal
 /** Defenders: none early on, then one, then two; slow at first, sharper later. */
 export function defenceFor(level, range, random = Math.random) {
   // The first levels are striker against keeper: no defenders until level 5.
-  const strength = Math.max(0, Math.min(1, (level - 5) / 6));
+  const difficulty = difficultyLevel(level);
+  const strength = Math.max(0, Math.min(1, (difficulty - 5) / 6));
   let blockers = 0;
-  if (level >= 10) blockers = range > 13 ? (random() < .55 ? 2 : 1) : 1;
-  else if (level >= 7) blockers = 1;
-  else if (level >= 5) blockers = random() < .4 ? 1 : 0;
+  // Gradual exposure: 40% at level 5, 55% at 7, guaranteed only at 13.
+  if (level >= 5) blockers = random() < Math.min(1, .4 + (difficulty - 5) * .15) ? 1 : 0;
+  // A second defender arrives much later, with odds that also build gradually.
+  if (difficulty >= 11 && range > 13 && random() < Math.min(.55, (difficulty - 10) * .1)) blockers = 2;
   return { blockers, strength };
 }
 
@@ -169,11 +184,6 @@ export function chooseChanceOrigin(target, level = 1, random = Math.random) {
   target.z = GOAL.PLANE_Z + range;
 }
 
-export const DISTANCE_AIM = { baseRange: 10, increasePerMetre: .05, maxMultiplier: 2.5 };
-export function aimDistanceMultiplier(distance) {
-  return Math.min(DISTANCE_AIM.maxMultiplier,
-    1 + Math.max(0, distance - DISTANCE_AIM.baseRange) * DISTANCE_AIM.increasePerMetre);
-}
 
 /** How a goal went in, keyed by the last thing that touched the ball. */
 const GOAL_CALLS = {
@@ -239,6 +249,8 @@ let blockerCount = 0;
 let balanceSimulation = false;
 
 const shot = {
+  tutorial: false, tutorialTime: 0,
+  assisted: false, timingFactor: 1,
   defenseStrength: 0,
   keeperBeaten: false,       // the shot crosses inside the target: the keeper's dive cannot reach it
   sweepBoost: 1, powerBoost: 1,   // timing mode: speed-ups earned by waiting (see SHOT.BOUNCE_BOOST)
@@ -265,9 +277,9 @@ const shot = {
 export const aimSpeedFactor = level => SHOT.EASY_SWEEP + (SHOT.HARD_SWEEP - SHOT.EASY_SWEEP) * levelRamp(level);
 export const powerCycle = level => SHOT.POWER_CYCLE[0] + (SHOT.POWER_CYCLE[1] - SHOT.POWER_CYCLE[0]) * levelRamp(level);
 /** The aim arrow's speed across the goal line, m/s, before its bounce bonus. */
-export const sweepSpeedAt = (level, distance) => SHOT.BASE_SWEEP * aimSpeedFactor(level) * aimDistanceMultiplier(distance);
+export const sweepSpeedAt = level => SHOT.BASE_SWEEP * aimSpeedFactor(level);
 export const BOUNCE = { STEP: SHOT.BOUNCE_BOOST, MAX: SHOT.MAX_BOOST };
-const sweepSpeed = () => sweepSpeedAt(state.run.level, Math.hypot(origin.x, origin.z - GOAL.PLANE_Z)) * shot.sweepBoost;
+const sweepSpeed = () => sweepSpeedAt(state.run.level) * shot.sweepBoost * shot.timingFactor;
 const SPEED_SCALE = 1;
 
 // ===========================================================================
@@ -301,8 +313,9 @@ function startRun(mode = 'arcade', level = 1) {
     score: 0, hearts: ARCADE.HEARTS + (boosted ? 1 : 0), level, goals: 0, levelGoals: 0,
     combo: 0, bestCombo: 0, shots: 0, targetHits: 0, bullseyes: 0,
     lastCelebration: undefined, kit: -1, heartOffered: false, extraLives: 0, continued: false,
-    special: null, lastSpecial: null, bonusLeft: 0, bossPending: false, paidScore: 0, missionsDone: [],
-    opening: mode !== 'daily' && ++sessionRuns === 1, scriptedMoment: false,
+    special: null, lastSpecial: null, bonusLeft: 0, bossPending: !daily && level === 4, paidScore: 0, missionsDone: [],
+    opening: mode !== 'daily' && ++sessionRuns === 1 && level === 1, scriptedMoment: false,
+    assistShots: 0, introPending: null, freeMiss: false, recoveryHeart: false,
     tally: progress.newTally(),
   };
   applyLevelLook();
@@ -523,12 +536,12 @@ function pushHud() {
   const special = run.special ? SPECIALS[run.special]
     : shot.keeperMoment && state.phase !== 'IDLE' ? HOT_KEEPER : null;
   ui.setArcadeHud({ score: run.score, hearts: run.hearts, maxHearts: Math.max(ARCADE.HEARTS, run.hearts), level: run.level,
-    combo: run.combo, levelProgress: run.levelGoals / ARCADE.GOALS_PER_LEVEL, levelSteps: ARCADE.GOALS_PER_LEVEL,
+    combo: run.combo, levelProgress: run.levelGoals / goalsForLevel(run.level), levelSteps: goalsForLevel(run.level),
     best: state.best, rank: progress.rankFor(run.level).name, progress: progress.gameProgress().percent,
     daily: run.daily ? { shot: Math.min(run.shots + 1, progress.DAILY_SHOTS), of: progress.DAILY_SHOTS } : null,
     special: special && { label: run.special === 'bonus'
       ? `${special.label} ${special.shots - run.bonusLeft}/${special.shots}` : special.label,
-      note: special.note, kind: run.special || 'keeper' } });
+      note: run.freeMiss ? `${special.note} · FREE MISS` : special.note, kind: run.special || 'keeper' } });
 }
 
 /** Results of the last finished run, kept so the locker can return to them. */
@@ -614,8 +627,16 @@ function prepareChance() {
 /** Which special, if any, this chance is. Never two random specials running. */
 function planSpecial(run) {
   let special = null;
+  run.freeMiss = false;
   run.scriptedMoment = false;
+  if (shot.tutorial) { run.freeMiss = true; return null; }
   if (state.forceSpecial) { special = state.forceSpecial; state.forceSpecial = null; }   // test hook
+  else if (run.introPending) {
+    special = run.introPending;
+    run.introPending = null;
+    run.freeMiss = true;
+  }
+  else if (run.bossPending && run.level === 4) { run.bossPending = false; special = 'boss'; }
   else if (run.opening && run.shots < OPENING.length) {
     special = OPENING[run.shots] === 'moment' ? null : OPENING[run.shots];
     run.scriptedMoment = OPENING[run.shots] === 'moment';
@@ -681,6 +702,8 @@ export function chooseTarget(out, level, keeperX, random = Math.random) {
 
 function beginChance() {
   const run = state.run;
+  shot.tutorial = shotMode === 'timing' && !run.daily && run.startLevel === 1 && run.shots === 0;
+  shot.tutorialTime = 0;
   engine.stopCelebration();
   engine.stopReactions();
   engine.settlePlayers();   // never carry a celebration or reaction pose into the aim
@@ -707,6 +730,8 @@ function beginChance() {
   shot.powerBoost = 1;
   shot.power = 0;
   shot.powerDir = 1;
+  shot.assisted = !run.daily && run.assistShots > 0;
+  shot.timingFactor = shot.tutorial ? .5 : run.daily ? 1 : timingFactor(run.combo, shot.assisted);
   shot.swing = 0;
   shot.windup = 0;
   shot.resolved = null;
@@ -725,7 +750,7 @@ function beginChance() {
   shot.keeperMoment = !run.special && (run.scriptedMoment
     || (!(run.opening && run.shots < OPENING.length) && run.random() < ARCADE.KEEPER_MOMENT.odds));
   shot.keeperAbility = keeperAbility(run.level, Math.hypot(origin.x, origin.z - GOAL.PLANE_Z), run.special,
-    shot.keeperMoment);
+    shot.keeperMoment, shot.assisted);
   shot.keeperSetX = run.special === 'bonus' ? (run.random() < .5 ? -1 : 1) * (GOAL.HALF_W + 1.3)
     : narrow + (run.random() * 2 - 1) * shot.keeperAbility.setSpread;
   shot.keeperX = shot.keeperSetX;
@@ -734,13 +759,21 @@ function beginChance() {
   shot.diveDepth = 1;
   engine.setKeeper(shot.keeperX, 0, 1, 0, 0, 0, null, shot.keeperDepth);
   chooseTarget(aimTarget, run.level, shot.keeperSetX, run.random);
+  if (shot.tutorial) {
+    shot.aimX = aimTarget.x;
+    shot.theta = aimAngleFor(origin, shot.aimX);
+    engine.setAim(shot.theta);
+  }
   // A moving target needs room to travel on its side of the keeper.
   if (run.special === 'moving' && aimTarget.maxX - aimTarget.minX < MOVING_TARGET.minTravel) {
-    run.special = run.lastSpecial = 'golden';
+    if (run.freeMiss) {
+      // The guaranteed introduction uses the roomier side of the keeper.
+      chooseTarget(aimTarget, run.level, shot.keeperSetX, () => shot.keeperSetX >= 0 ? 0 : .999999);
+    } else run.special = run.lastSpecial = 'golden';
   }
   aimTarget.phase = run.random() * Math.PI * 2;
   // Now and then the target carries an extra life; never on two targets running.
-  aimTarget.heart = !run.daily && run.special !== 'bonus' && !run.heartOffered
+  aimTarget.heart = !shot.tutorial && !run.daily && run.special !== 'bonus' && !run.heartOffered
     && run.hearts < ARCADE.MAX_HEARTS && run.random() < ARCADE.HEART_ODDS;
   run.heartOffered = aimTarget.heart;
   engine.setTarget(aimTarget.x, aimTarget.y, aimTarget.ring, aimTarget.bull, aimTarget.heart);
@@ -756,23 +789,34 @@ function beginChance() {
   prepareShotMode();
   state.phase = 'AIM';
   ui.clearVerdict();
-  ui.setPrompt(shotPrompt(run));
+  if (shot.tutorial) ui.showTutorialStep(1);
+  else ui.setPrompt(shotPrompt(run));
   pushHud();
 }
 
 /** Keeps the arena alive while you are aiming. */
 function updateAim(dt) {
+  if (shot.tutorial) {
+    // Smooth, visible travel; both axes stay inside the round target together.
+    shot.tutorialTime += dt;
+    shot.aimX = aimTarget.x + aimTarget.ring * .6 * Math.sin(shot.tutorialTime * .9);
+    shot.theta = aimAngleFor(origin, shot.aimX);
+    engine.setAim(shot.theta);
+    return;
+  }
   // Triangle sweep across the goalmouth, delta-scaled.
-  const span = SHOT.AIM_SPAN;
+  const low = -SHOT.AIM_SPAN;
+  const high = SHOT.AIM_SPAN;
   shot.aimX += shot.sweepDir * sweepSpeed() * dt;
-  if (shot.aimX > span)  { shot.aimX = 2 * span - shot.aimX; shot.sweepDir = -1; bounceBoost('sweepBoost'); }
-  if (shot.aimX < -span) { shot.aimX = -2 * span - shot.aimX; shot.sweepDir = 1; bounceBoost('sweepBoost'); }
+  if (shot.aimX > high) { shot.aimX = 2 * high - shot.aimX; shot.sweepDir = -1; bounceBoost('sweepBoost'); }
+  if (shot.aimX < low) { shot.aimX = 2 * low - shot.aimX; shot.sweepDir = 1; bounceBoost('sweepBoost'); }
   shot.theta = aimAngleFor(origin, shot.aimX);
   engine.setAim(shot.theta);
 }
 
 /** Timing mode: the meter's height on the goal line. */
-const meterHeight = power => SHOT.METER_HEIGHT[0] + (SHOT.METER_HEIGHT[1] - SHOT.METER_HEIGHT[0]) * power;
+const meterHeight = power => shot.tutorial ? aimTarget.y + (power - .5) * aimTarget.ring * 1.2
+  : SHOT.METER_HEIGHT[0] + (SHOT.METER_HEIGHT[1] - SHOT.METER_HEIGHT[0]) * power;
 
 /** Timing mode's launch: the arrow's line, the meter's height, and pace rising with the meter. */
 function timingVelocity(theta, power, out) {
@@ -782,11 +826,12 @@ function timingVelocity(theta, power, out) {
 
 /** Every turn of the arrow or the meter makes it a little faster, up to the cap. */
 function bounceBoost(key) {
+  if (shot.tutorial) return;
   shot[key] = Math.min(1 + SHOT.MAX_BOOST, shot[key] + SHOT.BOUNCE_BOOST);
 }
 
 function updatePower(dt) {
-  shot.power += shot.powerDir * powerCycle(state.run.level) * shot.powerBoost * dt;
+  shot.power += shot.powerDir * powerCycle(state.run.level) * shot.powerBoost * shot.timingFactor * dt;
   if (shot.power > 1) { shot.power = 1; shot.powerDir = -1; bounceBoost('powerBoost'); }
   if (shot.power < 0) { shot.power = 0; shot.powerDir = 1; bounceBoost('powerBoost'); }
 
@@ -796,17 +841,18 @@ function updatePower(dt) {
 }
 
 // ===========================================================================
-// Shot modes. Three ways to take a shot, one launch: each mode ends in a
+// Shot modes. Four ways to take a shot, one launch: each mode ends in a
 // launch velocity (and, for flick, a sideways curve), then the same windup,
 // flight, keeper and scoring.
 //   flick  - swipe up from anywhere: direction aims, length sets the height,
 //            speed sets the pace, a bent swipe curls the ball.
-//   aim    - a crosshair on the goal follows the pointer (or the arrow keys)
-//            and sways; hold to charge pace (the sway grows), release to shoot.
+//   aim    - press a point on the goal, then hold to charge pace; the crosshair
+//            drifts farther from that frozen point, so overcharging misses.
 //   timing - the original sweeping arrow and height meter, two presses.
-// ?shot=flick|aim|timing picks one (default: timing); on localhost Alt+9 cycles them.
+//   drag   - classic direction + power: hold to charge, drag the crosshair, release.
+// ?shot=flick|aim|timing|drag picks one (default: timing); on localhost Alt+9 cycles them.
 // ===========================================================================
-export const SHOT_MODES = ['flick', 'aim', 'timing'];
+export const SHOT_MODES = ['flick', 'aim', 'timing', 'drag'];
 const DEFAULT_SHOT_MODE = 'timing';   // releases: the two-tap shot
 const _shotParam = new URLSearchParams(location.search).get('shot');
 let shotMode = SHOT_MODES.includes(_shotParam) ? _shotParam : DEFAULT_SHOT_MODE;
@@ -824,17 +870,27 @@ const FLICK = {
   DEAD: .035,             // a bend below this is a straight shot
 };
 const FREE_AIM = {
-  SWAY: [.12, .42],       // sway radius, metres: level 1 -> late in a run
   CHARGE_TIME: .8,        // seconds to full charge
-  SPREAD: 1.4,            // how much a full charge widens the sway
+  DRIFT_MAX: 4.8,         // full charge moves beyond the goal, metres
+  DRIFT_CURVE: 2.4,       // accurate early, increasingly unstable near full charge
+  DRIFT_SPEED: 4.2,       // radians/sec around the pressed point
+  DRIFT_Y: .75,           // slightly flatter vertically than horizontally
   SPEED: [25, 40],
   KEYS: 2.6,              // m/s the arrow keys move the crosshair
+};
+const HOLD_DRAG = {
+  CHARGE_TIME: .9,        // classic power bar: empty -> full
+  AIM_X: 8,               // goal metres moved by a full-screen horizontal drag
+  AIM_Y: 4,               // goal metres moved by a full-screen vertical drag
+  SPEED: [24, 41],        // horizontal ball speed, m/s
+  KEYS: 3.2,              // keyboard alternative while Space is held
 };
 const SWIPE_SAMPLES = 96;
 const swipe = { active: false, count: 0, x: new Float32Array(SWIPE_SAMPLES), y: new Float32Array(SWIPE_SAMPLES),
   t: new Float32Array(SWIPE_SAMPLES) };
-const aimPoint = { x: 0, y: 1.2, swayX: 0, swayY: 0, time: 0 };
+const aimPoint = { x: 0, y: 1.2, swayX: 0, swayY: 0, time: 0, driftSide: 1 };
 const aimKeys = { left: false, right: false, up: false, down: false };
+const holdDrag = { active: false, startX: 0, startY: 0, aimX: 0, aimY: 1.2 };
 const launchVelocity = { x: 0, y: 0, z: 0 };
 let charge = 0;
 
@@ -850,21 +906,24 @@ function shotPrompt(run) {
   if (run.shots > 2) return '';
   if (shotMode === 'flick') return run.shots === 0 ? 'SWIPE UP TOWARD THE GOAL TO SHOOT' : 'BEND YOUR SWIPE TO CURL THE BALL';
   if (shotMode === 'aim') return run.shots === 0
-    ? `${ui.pressWord() === 'TAP' ? 'TOUCH' : 'POINT'} TO AIM, HOLD FOR POWER, RELEASE TO SHOOT` : '';
+    ? `${ui.pressWord() === 'TAP' ? 'TOUCH' : 'POINT'} TO AIM, HOLD BRIEFLY FOR POWER · OVERCHARGING MISSES` : '';
+  if (shotMode === 'drag') return run.shots === 0 ? 'HOLD FOR POWER · DRAG TO AIM · RELEASE TO SHOOT' : '';
   return run.shots === 0 ? `${ui.pressWord()} TO LOCK YOUR AIM ON THE TARGET` : '';
 }
 
 /** A chance begins: show the mode's aiming aids. */
 function prepareShotMode() {
   swipe.active = false;
+  holdDrag.active = false;
   charge = 0;
   shot.preset = false;
   shot.curve = 0;
   ui.setCharge(null);
   engine.showAimRig(shotMode === 'timing', false);
-  engine.showCrosshair(shotMode === 'aim');
-  if (shotMode === 'aim') {
+  engine.showCrosshair(shotMode === 'aim' || shotMode === 'drag');
+  if (shotMode === 'aim' || shotMode === 'drag') {
     aimPoint.x = aimTarget.x; aimPoint.y = aimTarget.y;
+    aimPoint.swayX = 0; aimPoint.swayY = 0; aimPoint.time = 0;
     engine.setCrosshair(aimPoint.x, aimPoint.y, 0);
   }
 }
@@ -925,9 +984,9 @@ function flickShot() {
 }
 
 // ---- Free aim ---------------------------------------------------------------------
-/** The crosshair: pointer or keys, plus a sway that grows with level and charge. */
+/** The crosshair stays on the pressed point at first, then spirals away as charge grows. */
 function updateFreeAim(dt) {
-  if (aimKeys.left || aimKeys.right || aimKeys.up || aimKeys.down) {
+  if (state.phase === 'AIM' && (aimKeys.left || aimKeys.right || aimKeys.up || aimKeys.down)) {
     aimPoint.x += ((aimKeys.right ? 1 : 0) - (aimKeys.left ? 1 : 0)) * FREE_AIM.KEYS * dt;
     aimPoint.y += ((aimKeys.up ? 1 : 0) - (aimKeys.down ? 1 : 0)) * FREE_AIM.KEYS * dt;
   }
@@ -937,19 +996,75 @@ function updateFreeAim(dt) {
     charge = Math.min(1, charge + dt / FREE_AIM.CHARGE_TIME);
     shot.power = charge;
     ui.setCharge(charge);
+    aimPoint.time += dt;
+    const drift = FREE_AIM.DRIFT_MAX * Math.pow(charge, FREE_AIM.DRIFT_CURVE);
+    aimPoint.swayX = Math.cos(aimPoint.time * FREE_AIM.DRIFT_SPEED) * drift * aimPoint.driftSide;
+    aimPoint.swayY = Math.sin(aimPoint.time * FREE_AIM.DRIFT_SPEED) * drift * FREE_AIM.DRIFT_Y;
+  } else {
+    aimPoint.swayX = 0;
+    aimPoint.swayY = 0;
   }
-  aimPoint.time += dt;
-  const ramp = levelRamp(state.run.level);
-  const sway = (FREE_AIM.SWAY[0] + (FREE_AIM.SWAY[1] - FREE_AIM.SWAY[0]) * ramp) * (1 + FREE_AIM.SPREAD * charge);
-  aimPoint.swayX = Math.sin(aimPoint.time * 1.7) * sway;
-  aimPoint.swayY = Math.sin(aimPoint.time * 2.3 + 1) * sway * .7;
   engine.setCrosshair(aimPoint.x + aimPoint.swayX, aimPoint.y + aimPoint.swayY, charge * .6);
+}
+
+function startFreeAimCharge() {
+  audio.play('aim');
+  charge = 0;
+  shot.power = 0;
+  aimPoint.swayX = 0; aimPoint.swayY = 0; aimPoint.time = 0;
+  aimPoint.driftSide = state.run.random() < .5 ? -1 : 1;
+  engine.setCrosshair(aimPoint.x, aimPoint.y, 0);
+  state.phase = 'POWER';
 }
 
 function releaseFreeAim() {
   if (state.phase !== 'POWER' || shotMode !== 'aim') return;
   velocityTo(origin, aimPoint.x + aimPoint.swayX, aimPoint.y + aimPoint.swayY,
     FREE_AIM.SPEED[0] + (FREE_AIM.SPEED[1] - FREE_AIM.SPEED[0]) * charge, launchVelocity, 0);
+  commitShot(0);
+}
+
+// ---- Hold + drag ---------------------------------------------------------------
+function clampDragAim() {
+  aimPoint.x = Math.max(-GOAL.HALF_W - 1.2, Math.min(GOAL.HALF_W + 1.2, aimPoint.x));
+  aimPoint.y = Math.max(.15, Math.min(GOAL.HEIGHT + .8, aimPoint.y));
+}
+
+function startHoldDrag(clientX = 0, clientY = 0, pointer = false) {
+  holdDrag.active = pointer;
+  holdDrag.startX = clientX; holdDrag.startY = clientY;
+  holdDrag.aimX = aimPoint.x; holdDrag.aimY = aimPoint.y;
+  charge = 0;
+  shot.power = 0;
+  audio.play('aim');
+  ui.setCharge(0);
+  state.phase = 'POWER';
+}
+
+function moveHoldDrag(clientX, clientY) {
+  if (!holdDrag.active) return;
+  aimPoint.x = holdDrag.aimX + (clientX - holdDrag.startX) / innerWidth * HOLD_DRAG.AIM_X;
+  aimPoint.y = holdDrag.aimY - (clientY - holdDrag.startY) / innerHeight * HOLD_DRAG.AIM_Y;
+  clampDragAim();
+}
+
+function updateHoldDrag(dt) {
+  charge = Math.min(1, charge + dt / HOLD_DRAG.CHARGE_TIME);
+  shot.power = charge;
+  ui.setCharge(charge);
+  if (aimKeys.left || aimKeys.right || aimKeys.up || aimKeys.down) {
+    aimPoint.x += ((aimKeys.right ? 1 : 0) - (aimKeys.left ? 1 : 0)) * HOLD_DRAG.KEYS * dt;
+    aimPoint.y += ((aimKeys.up ? 1 : 0) - (aimKeys.down ? 1 : 0)) * HOLD_DRAG.KEYS * dt;
+    clampDragAim();
+  }
+  engine.setCrosshair(aimPoint.x, aimPoint.y, charge * .35);
+}
+
+function releaseHoldDrag() {
+  if (state.phase !== 'POWER' || shotMode !== 'drag') return;
+  holdDrag.active = false;
+  velocityTo(origin, aimPoint.x, aimPoint.y,
+    HOLD_DRAG.SPEED[0] + (HOLD_DRAG.SPEED[1] - HOLD_DRAG.SPEED[0]) * charge, launchVelocity, 0);
   commitShot(0);
 }
 
@@ -965,9 +1080,9 @@ function shotPointerDown(e) {
     ui.drawSwipe(swipe.x, swipe.y, swipe.count);
   } else if (shotMode === 'aim' && state.phase === 'AIM') {
     engine.pointerToGoal(e.clientX, e.clientY, aimPoint);
-    audio.play('aim');
-    charge = 0;
-    state.phase = 'POWER';
+    startFreeAimCharge();
+  } else if (shotMode === 'drag' && state.phase === 'AIM') {
+    startHoldDrag(e.clientX, e.clientY, true);
   }
 }
 
@@ -975,8 +1090,11 @@ function shotPointerMove(e) {
   if (shotMode === 'flick' && swipe.active) {
     swipeSample(e);
     ui.drawSwipe(swipe.x, swipe.y, swipe.count);
-  } else if (shotMode === 'aim' && shotInputOpen() && (e.pointerType === 'mouse' || e.buttons)) {
+  } else if (shotMode === 'aim' && state.phase === 'AIM' && shotInputOpen()
+    && (e.pointerType === 'mouse' || e.buttons)) {
     engine.pointerToGoal(e.clientX, e.clientY, aimPoint);
+  } else if (shotMode === 'drag' && holdDrag.active && shotInputOpen()) {
+    moveHoldDrag(e.clientX, e.clientY);
   }
 }
 
@@ -987,21 +1105,27 @@ function shotPointerUp(e) {
     ui.fadeSwipe();
     if (shotInputOpen()) flickShot();
   } else if (shotMode === 'aim') releaseFreeAim();
+  else if (shotMode === 'drag' && holdDrag.active) releaseHoldDrag();
 }
 
 /** Space and the arrow keys, for the modes that use them. */
 function shotKey(e, down) {
   const arrow = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[e.code];
-  if (shotMode === 'aim' && arrow) { aimKeys[arrow] = down; return true; }
+  if ((shotMode === 'aim' || shotMode === 'drag') && arrow) { aimKeys[arrow] = down; return true; }
   if (e.code !== 'Space' && e.code !== 'Enter') return false;
   if (shotMode === 'timing' || state.phase === 'FLIGHT') { if (down && !e.repeat) advance(); return true; }
   if (shotMode === 'aim') {
     if (down && !e.repeat && shotInputOpen() && state.phase === 'AIM') {
       poki.gameplayStart();
-      audio.play('aim');
-      charge = 0;
-      state.phase = 'POWER';
+      startFreeAimCharge();
     } else if (!down) releaseFreeAim();
+    return true;
+  }
+  if (shotMode === 'drag') {
+    if (down && !e.repeat && shotInputOpen() && state.phase === 'AIM') {
+      poki.gameplayStart();
+      startHoldDrag();
+    } else if (!down) releaseHoldDrag();
     return true;
   }
   if (down && !e.repeat && shotInputOpen()) ui.setPrompt('SWIPE UP TOWARD THE GOAL TO SHOOT');
@@ -1018,7 +1142,8 @@ function advance() {
     audio.play('aim');
     state.phase = 'POWER';
     engine.showAimRig(true, true);
-    ui.setPrompt(state.run.shots === 0 ? `${ui.pressWord()} AGAIN TO SET THE HEIGHT` : '');
+    if (shot.tutorial) ui.showTutorialStep(2);
+    else ui.setPrompt(state.run.shots === 0 ? `${ui.pressWord()} AGAIN TO SET THE HEIGHT` : '');
     return;
   }
   if (state.phase === 'POWER') {
@@ -1591,8 +1716,11 @@ export function precisionTier(crossX, crossY, target) {
 export function scoreShot(run, outcome, tier, heart = false, special = null) {
   run.shots += 1;
   const bonus = special === 'bonus';
+  run.recoveryHeart = false;
+  if (!run.daily) run.assistShots = outcome === 'goal'
+    ? Math.max(0, (run.assistShots || 0) - 1) : ADAPTIVE.SHOTS;
   if (outcome !== 'goal') {
-    if (!bonus && !run.daily) run.hearts = Math.max(0, run.hearts - 1);
+    if (!bonus && !run.daily && !run.freeMiss) run.hearts = Math.max(0, run.hearts - 1);
     if (!bonus) run.combo = 0;
     return { points: 0, levelUp: false, extraLife: false };
   }
@@ -1608,19 +1736,30 @@ export function scoreShot(run, outcome, tier, heart = false, special = null) {
   run.score += points;
   const extraLife = !run.daily && ((heart && onTarget) || special === 'boss') && run.hearts < ARCADE.MAX_HEARTS;
   if (extraLife) { run.hearts += 1; run.extraLives += 1; }
-  const levelUp = !run.daily && !bonus && run.levelGoals >= ARCADE.GOALS_PER_LEVEL;
-  if (levelUp) { run.level += 1; run.levelGoals = 0; }
+  const levelUp = !run.daily && !bonus && run.levelGoals >= goalsForLevel(run.level);
+  if (levelUp) {
+    run.level += 1; run.levelGoals = 0;
+    if (run.level === 2 || run.level === 3) {
+      run.introPending = run.level === 2 ? 'golden' : 'moving';
+      if (run.hearts < ARCADE.HEARTS) {
+        run.hearts++;
+        run.recoveryHeart = true;
+      }
+    }
+  }
   return { points, levelUp, extraLife };
 }
 
 /** What a level-up banner says underneath the level. */
 function levelNote(run, rankUp) {
-  if (rankUp) return `NEW RANK: ${progress.rankFor(run.level).name}`;
+  if (run.level === 2 || run.level === 3) return `${run.level === 2
+    ? 'GOLDEN SHOTS UNLOCKED · x2' : 'MOVING TARGETS UNLOCKED · x1.5'}${run.recoveryHeart ? ' · +1 HEART' : ''}`;
+  if (rankUp) return `NEW RANK: ${progress.rankFor(run.level).name}${run.bossPending ? ' · BOSS KEEPER' : ''}`;
   if (run.bonusLeft) return 'BONUS ROUND: MISSES ARE FREE';
   if (run.bossPending) return 'A BOSS KEEPER IS WAITING';
   const level = run.level;
   return level === 2 ? 'THE KEEPER IS WAKING UP' : level === 5 ? 'DEFENDERS INCOMING'
-    : level === 7 ? 'A DEFENDER EVERY TIME' : level === 10 ? 'DOUBLE DEFENCE'
+    : level === 13 ? 'A DEFENDER EVERY TIME' : level === 17 ? 'DOUBLE DEFENCE'
       : level % 3 === 0 ? 'SMALLER TARGETS' : 'THEY ARE GETTING BETTER';
 }
 
@@ -1687,10 +1826,10 @@ function resolve(outcome) {
     const label = { save: shot.keeperMoment ? 'WHAT A SAVE!' : 'SAVED!', blocked: 'BLOCKED!', woodwork: shot.touched === 'bar' ? 'CROSSBAR!' : 'POST!',
       high: 'OVER!', wide: 'WIDE!' }[outcome];
     ui.flashVerdict(label, 'miss', special === 'bonus' ? 'FREE MISS' : run.daily
-      ? `SHOT ${run.shots}/${progress.DAILY_SHOTS}` : run.hearts > 0 ? '-1 HEART' : 'OUT OF HEARTS');
+      ? `SHOT ${run.shots}/${progress.DAILY_SHOTS}` : run.freeMiss ? 'FREE MISS' : run.hearts > 0 ? '-1 HEART' : 'OUT OF HEARTS');
     audio.play('groan');
     audio.play('miss');
-    if (special !== 'bonus' && !run.daily) audio.play('loseHeart');
+    if (special !== 'bonus' && !run.daily && !run.freeMiss) audio.play('loseHeart');
     if (run.hearts === 1 && !run.daily) audio.play('warning');
   }
   pushHud();
@@ -1710,8 +1849,8 @@ function finishChance() {
     audio.play('levelUp');
     poki.measure('level', String(run.level - 1), 'complete');
     poki.measure('level', String(run.level), 'start');
-    if (run.level % SPECIALS.bonus.every === 0) run.bonusLeft = SPECIALS.bonus.shots;
-    if (run.level % SPECIALS.boss.every === 0) run.bossPending = true;
+    if (run.level > 4 && run.level % SPECIALS.bonus.every === 0) run.bonusLeft = SPECIALS.bonus.shots;
+    if (run.level === 4 || (run.level > 5 && run.level % SPECIALS.boss.every === 0)) run.bossPending = true;
     const rankUp = progress.rankFor(run.level) !== progress.rankFor(run.level - 1);
     ui.showLevelUp(`LEVEL ${run.level}`, levelNote(run, rankUp));
   }
@@ -1803,6 +1942,7 @@ const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname
 /** Deterministic shot for tools/balance-simulation.mjs: production setup, keeper
  * and defender AI, swept collisions and goal-line verdict, no presentation. */
 export function simulateArcadeShotForTest(config) {
+  shot.tutorial = false;
   if (!localHost) throw new Error('The balance harness is only available locally');
   balanceSimulation = true;
   engine.stopCelebration();
@@ -1833,7 +1973,7 @@ export function simulateArcadeShotForTest(config) {
   aimTarget.x = config.targetX ?? 0; aimTarget.y = config.targetY ?? 1.35;
   aimTarget.ring = config.ring ?? TARGET.RING_HALF[0]; aimTarget.bull = config.bull ?? TARGET.BULL_HALF[0];
   shot.keeperAbility = keeperAbility(level, Math.hypot(origin.x, config.range), null,
-    config.moment ?? Math.random() < ARCADE.KEEPER_MOMENT.odds);
+    config.moment ?? Math.random() < ARCADE.KEEPER_MOMENT.odds, config.assisted ?? false);
   const narrow = Math.max(-2.6, Math.min(2.6, origin.x * SHOT.KEEPER_ANGLE_NARROW));
   shot.keeperSetX = narrow + (Math.random() * 2 - 1) * shot.keeperAbility.setSpread;
   shot.keeperX = shot.keeperSetX;
@@ -1869,7 +2009,8 @@ function frame(dt) {
   if (state.phase === 'AIM' || state.phase === 'POWER') updateMovingTarget(dt);
   switch (state.phase) {
     case 'AIM':    if (shotMode === 'timing') updateAim(dt); else if (shotMode === 'aim') updateFreeAim(dt); break;
-    case 'POWER':  if (shotMode === 'timing') updatePower(dt); else if (shotMode === 'aim') updateFreeAim(dt); break;
+    case 'POWER':  if (shotMode === 'timing') updatePower(dt); else if (shotMode === 'aim') updateFreeAim(dt);
+      else if (shotMode === 'drag') updateHoldDrag(dt); break;
     case 'WINDUP': updateWindup(dt); break;
     case 'FLIGHT': updateFlight(dt); break;
   }
@@ -1912,7 +2053,7 @@ async function boot() {
       renderer: engine.renderer, scene: engine.scene, camera: engine.camera,
       state, shot, ball: engine.objects.ball, ready: false, audio: audio.status,
       ballState: { position: ballPos, velocity: ballVel },
-      target: aimTarget, arcade: ARCADE, prediction,
+      target: aimTarget, arcade: ARCADE, prediction, goalsForLevel,
       crowd: engine.crowd, formation: engine.formation,
       matchView: engine.matchView, pixel: engine.pixelLook,
       renderState: engine.renderState,

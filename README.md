@@ -3,7 +3,7 @@
 A blocky arcade football shooter for the browser. Each chance puts a target on
 the goal: lock the aim arrow on it, set the height, and shoot. Precision scores,
 consecutive target hits build a combo, and anything that is not a goal costs a
-heart. Every three goals the level rises: the keeper and defence, useless at
+heart. Every two goals through level 3, then every three, the level rises: the keeper and defence, useless at
 first, get sharper, the arrow speeds up and the target shrinks. Special chances
 (golden balls, moving targets, free kicks, boss keepers, bonus rounds) break up
 a run; XP, unlocks, missions, checkpoints and a daily challenge carry over
@@ -21,6 +21,7 @@ game mode and interface are new.
 npm install          # Playwright, for the browser checks only
 npm start            # static server on http://localhost:5174
 npm run check        # arcade smoke test (needs the server running)
+node tools/early-retention.mjs # early hearts, specials, pacing and adaptive difficulty
 npm run check:hooks  # special chances, missions, XP and locker, checkpoints, daily, persistence
 npm run check:ads    # every ad break against a stub Poki SDK
 npm run check:shots  # flick and free-aim shots with the real mouse, and the Alt+9 switch
@@ -46,17 +47,25 @@ look a team-mate or opponent already has swaps theirs, so nobody is on the
 pitch twice.
 Every run opens with the camera further behind the striker, easing into the
 aim view over 1.5 s. How a shot is taken depends on the shot mode
-(`?shot=flick|aim|timing`; on localhost Alt+9 cycles them; releases default to
+(`?shot=flick|aim|timing|drag`; on localhost Alt+9 cycles them; releases default to
 the two-tap timing shot, `DEFAULT_SHOT_MODE` in `js/app.js`):
 
 | Mode | Shot |
 |---|---|
 | Flick | Swipe up from anywhere. The swipe's direction sets where the ball crosses the line (5.5 m across per unit of sideways-over-up slope), its length the height (up to 2.9 m), its speed the pace (25-40 m/s). A swipe that bows to one side curls the ball back the other way, up to 14 m/s^2 sideways; the launch is corrected so a curler still finishes where it was aimed, but the keeper and a wall read it as a straight shot. No aim preview. |
-| Free aim | A crosshair on the goal follows the pointer (or the arrow keys) and sways, more at higher levels. Hold (click, touch, Space) to charge pace; the sway grows with the charge. Release to shoot at the crosshair. |
+| Free aim | Press a point on the goal and hold (click, touch, Space) to charge pace. The pressed point is fixed, but the crosshair randomly spirals left or right and increasingly far from it as charge builds: a quick release is accurate and an overcharged shot will almost certainly miss. Release to shoot at the visible crosshair. |
 | Timing | The original: the first press locks the sweeping aim arrow, the second sets the height from the pulsing meter. The meter is the height on the goal line (5 cm at the bottom to 3.3 m at the top, at any distance), so a late press misses high. |
+| Classic drag | Hold to fill the power bar, drag horizontally and vertically to aim the crosshair, then release to shoot. Arrow keys aim while Space is held as a keyboard alternative. |
 
 A press during the replay skips it. Esc or P (or the II button)
 pauses; the SOUND button in the corner switches all sound on or off.
+
+The first shot of each level-1 arcade run in timing mode is a guided tutorial:
+two prominent Rubik-font instruction panels, a gentle sinusoidal aim sweep
+and half-speed height meter with no bounce acceleration. Both aim and height
+travel up to 60% of the target radius from its centre, safely inside the ring. Either
+tap timing hits the target. The shot has no special, heart pickup or miss
+penalty; normal controls resume on shot 2. Daily and checkpoint runs skip it.
 
 ## Poki
 
@@ -97,7 +106,7 @@ hook `window.__demo` and the balance harness exist only on localhost.
 | Points | Bullseye 300, target ring 200, plain goal 100, times the combo, times a special chance's multiplier. |
 | Combo | Consecutive goals inside the target ring, up to x5. A plain goal or a miss resets it. |
 | Extra life | About one target in five carries a block heart (never two in a row, not at 5 hearts). A goal inside the ring collects it. |
-| Level | Up every 3 goals: new opponent kit and pitch, and everything below gets harder. |
+| Level | Up every 2 goals through level 3, then every 3. Entering levels 2 and 3 restores one heart up to 3 (never removes extra hearts). Each opens with a guaranteed golden/moving shot respectively; that introductory shot costs no heart if missed. |
 | Target | A round archery face (white, black, blue and red bands, a gold bullseye); specials paint it in their colours. Scored by distance from the centre: inside the bullseye, inside the ring, or a plain goal; a ball up to 12 cm outside a painted ring still counts as inside it (`TARGET.LENIENCY`). Radius 0.7 m at level 1, shrinking toward 0.45 m; the bullseye 0.34 m toward 0.2 m. Always clear of the keeper: the ring's edge stays 1.05 m from where he sets himself, the bullseye 1.7 m. |
 | On target beats the keeper | A shot that crosses inside the ring, or up to 0.4 m outside it ("through his fingers"), always scores. The keeper still dives at it, full stretch, but every physics step keeps his real limbs 12 cm clear of the ball ("JUST PAST HIS FINGERTIPS!"). A defender's touch cancels it. `npm run check:keeper` checks both over thousands of shots. |
 | Pause after a shot | 2.6 s after a goal (up to 4.2 s while the celebration plays), 1 s after a miss. A tap skips it. |
@@ -108,39 +117,47 @@ of `js/app.js`.
 
 ### Difficulty
 
-`levelRamp(level) = 1 - exp(-(level - 1) / ARCADE.RAMP_LEVELS)`, 0 at level 1
-and approaching 1. `RAMP_LEVELS` is 20, a slow climb: the ramp is 0.14 at
-level 4, 0.30 at level 8, 0.48 at level 14.
+`levelRamp(level) = 1 - exp(-(difficultyLevel(level) - 1) / ARCADE.RAMP_LEVELS)`.
+Difficulty matches the displayed level through 5; each later level adds only
+half a difficulty level. `RAMP_LEVELS` is 32: the ramp is 0.09 at level 4,
+0.16 at level 8 and 0.23 at level 14. This softens keeper, timing, target-size
+and shot-distance growth together.
 
 - **Keeper:** good from the first shot: 55% of the way from a rookie to the
   original game's elite keeper at level 1, rising to 90% (`ARCADE.KEEPER_FLOOR`,
   `KEEPER_CAP`). He reads and dives at everything, so shots outside the target
   are usually saved; only the target beats him.
   Long shots add a little on top.
-- **Defenders:** none before level 5 (the first levels are striker against
-  keeper); sometimes one from level 5, always one from level 7, up to two on
-  longer chances from level 10. Their reactions and lunges
-  are slow at first and tighten over the run.
+- **Defenders:** ordinary chances have none before level 5, then a 40% chance
+  of one, rising 7.5 percentage points per level (55% at 7, guaranteed at 13).
+  Longer chances can have two from level 17, initially 10% and gradually rising
+  to 55%. Reaction and lunge strength also use the slower difficulty curve.
+  Special free kicks retain their two-man wall.
 - **Aim (timing mode):** the arrow sweeps at 114% of the base speed at level 1,
-  rising toward 230%; the height meter cycles from 1.4 to 2.6 per second. Every
-  turn of the arrow or the meter speeds it up another 10%, up to +50%, so
-  waiting for the perfect moment makes the shot harder. Long chances still
-  sweep faster (1x within 10 m, up to 2.5x).
+  rising toward 200%; the height meter cycles from 1.4 to 2.2 per second. Every
+  turn of the arrow or the meter speeds it up another 5%, capped at +20%.
+  Shot distance does not affect arrow speed: it sweeps in goal-plane metres.
 - **Chances:** from 9-13 m and fairly central at level 1, out to 25 m and wide.
+- **Quiet recovery:** a miss refreshes two shots of assistance: keeper skill is
+  multiplied by 0.65 and both timing indicators run 15% slower. Each resolved
+  goal consumes one assisted shot; another miss refreshes the two-shot window.
+  Combos speed timing up 2.5% per step above x1, capped at 10%. Assistance takes
+  priority. These adjustments are fixed at chance setup and are not announced
+  in the HUD. Daily challenges use neither adjustment.
 
-Measured with `node tools/balance-simulation.mjs 300` (production shot code,
-shots aimed at the real target with a Gaussian 0.45 m aim and 0.035 power error;
-the arrow speed is not modelled, so real play gets harder than this faster):
+Measured with `npm run balance -- 240` (240 shots per level and scenario,
+production physics, 50 ms timing spread and 0-3 indicator bounces). Conversion
+percentages after halving difficulty growth past level 5 and smoothing defender frequency:
 
-| Level | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 14 |
-|---|---|---|---|---|---|---|---|---|---|
-| Conversion % | 90 | 87 | 74 | 65 | 54 | 48 | 28 | 24 | 20 |
-| Bullseye % | 50 | 46 | 36 | 27 | 23 | 18 | 9 | 7 | 6 |
-| Saved % | 10 | 12 | 22 | 26 | 35 | 43 | 57 | 64 | 61 |
+| Level | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 10 | 14 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Baseline | 91.3 | 86.3 | 89.6 | 86.3 | 85 | 79.6 | 74.2 | 81.7 | 73.3 | 70.4 |
+| Recovery | 96.7 | 91.7 | 93.3 | 91.7 | 87.9 | 90.4 | 87.9 | 82.5 | 82.9 | 82.1 |
+| x5 combo | 87.1 | 84.2 | 77.1 | 84.6 | 73.8 | 76.3 | 72.1 | 75.4 | 73.8 | 67.5 |
 
-Out of date: measured before the faster arrow, the bounce speed-up and the
-weaker keeper cap; re-measure with `npm run balance`, which now models a player's
-timing (a 50 ms spread times the arrow and meter speed after 0-3 bounces).
+These are independent shot-conversion estimates, not measured player retention
+or full-run survival rates. Specials and changes between assistance states
+are covered by the gameplay checks rather than this simulation.
 
 
 
@@ -154,14 +171,17 @@ first run of a session opens with a showcase instead (players who see one
 repeated shot leave): a plain chance, a golden ball, a plain one, then a moving
 target. The HUD
 shows a coloured tag and the target takes the special's colours.
+The guaranteed introductions at levels 2 and 3 take priority over the opening
+showcase and random specials. Their HUD tag says FREE MISS; the protection
+applies to that one shot, while later specials use normal heart rules.
 
 | Special | When | Rule |
 |---|---|---|
 | Golden ball | from level 2, 12% | gold ball and target, double points |
 | Moving target | from level 3, 10% | the target slides across its side of the goal until the kick, x1.5 points |
 | Free kick | from level 5, 10% | 17-22 m out, a two-man wall 9.15 m from the ball that jumps as you strike, x2 points |
-| Boss keeper | first chance of every 5th level | a slightly bigger keeper (1.08x) in black and gold, no extra skill, his collision grows with him; beat him for x3 points and a heart |
-| Bonus round | first three chances of every 4th level | the keeper stands aside, misses are free, x2 points; combo and level progress untouched |
+| Boss keeper | first chance of level 4 (including its checkpoint), then levels 10, 15, 20... | a slightly bigger keeper (1.08x) in black and gold, no extra skill, his collision grows with him; beat him for x3 points and a heart |
+| Bonus round | first three chances of every 4th level from level 8 | the keeper stands aside, misses are free, x2 points; combo and level progress untouched |
 
 ## Progression
 
@@ -215,10 +235,11 @@ shows a coloured tag and the target takes the special's colours.
 - **Pitch and stadium.** Turf is one texel per 0.25 m with the markings painted
   in as whole tiles; square goal posts; daytime sky with drifting block clouds;
   pixel lettering on the advertising boards.
-- **Interface.** Pixelify Sans for text and Press Start 2P for numbers and
-  headlines (both SIL OFL, `assets/fonts/`), bevelled stone and grass buttons,
-  pixel-drawn hearts, square corners throughout. `js/uiManager.js` owns every
-  DOM write.
+- **Interface.** Bundled Rubik text (SIL OFL, `assets/fonts/`), high-contrast
+  panels and simple buttons; pixel art stays in hearts and character portraits.
+  HUD regions use flow layout; menus scroll instead of shrinking their text.
+  Desktop checks include Poki's 640x360, 836x470 and 1031x580 frames.
+  `js/uiManager.js` owns every DOM write.
 - **Sound.** Everything is synthesized with Web Audio (`js/audio.js`), no
   samples: pulse-wave and triangle chip voices, noise drums, a reverb send and a
   lead echo. A C-major title anthem for the menus, and four match songs, one
@@ -274,14 +295,20 @@ tools/              Playwright checks and Blender asset scripts
   cloth pinned at the rim, integrating at 240 Hz.
 - **Advertising boards rebound the ball** with swept collision boxes.
 - **Two quality tiers.** Touch devices and CPUs with 4 cores or fewer run low
-  quality: at most 1.5x device pixels without anti-aliasing, 1024 px hard
-  shadows refreshed every other frame, only the body blocks (head, torso,
-  hips, legs) casting shadows, and every other crowd seat filled with 6-box
-  fans. At 1920x1080 that is about 135 draw calls and 0.28M triangles per
-  frame, against 345 and 1.28M on high. In both tiers the resolution steps
-  down by 0.25x (to 0.75x at least, never back up) whenever the median frame
-  misses 45 fps. `?quality=low|high` overrides the detection; `?stats=1` shows
-  fps, tier, resolution, draw calls and triangles.
+  quality: at most 1.25x device pixels (stepping down to 0.6x) without
+  anti-aliasing, no shadow map (a blob shadow under each player and the ball
+  instead), Lambert lighting instead of physically based materials, no
+  linesmen or photographers, and every other crowd seat filled with 6-box fans.
+  On both tiers each player is one skinned mesh (every box bound wholly to its
+  bone: one draw instead of about 13, culled off screen with padded bounds),
+  the crowd is one instanced mesh per pose with per-fan colours picked by a
+  vertex slot (3 draws), and crowd boxes have no back or bottom faces (never
+  seen). Low quality at 844x390: about 58 draw calls and 0.19M triangles per
+  frame (was about 148 and 0.28M); high: about 0.86M triangles. In both tiers
+  the resolution steps down by 0.25x whenever the median frame misses 45 fps
+  (never back up). `?quality=low|high` overrides the detection; `?stats=1`
+  shows fps, tier, resolution, draw calls, triangles and CPU ms for update and
+  draw. `node tools/perf-mobile.mjs [cpuSlowdown]` profiles a throttled phone.
 - **Framerate independence.** All displacement scales against one
   `clock.getDelta()`; the physics accumulator makes 30, 60 and 144 Hz agree.
 - **Consistent metre scale.** Pitch 105 x 68 m, goal 7.32 x 2.44 m, ball radius

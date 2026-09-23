@@ -133,14 +133,14 @@ try {
   } else report.warnings.push(`Extra-life shot was ${heartShot.outcome}/${heartShot.tier}; not asserted`);
 
   // Level-up on the last goal of a level.
-  await page.evaluate(() => { __demo.state.run.levelGoals = __demo.arcade.GOALS_PER_LEVEL - 1; });
+  await page.evaluate(() => { __demo.state.run.levelGoals = __demo.goalsForLevel(__demo.state.run.level) - 1; });
   let levelled = false;
   for (let i = 0; i < 4 && !levelled; i++) {
     await phase('AIM');
     // Test the level-up rule, not the keeper: shoot from level 1, one goal short of a new level.
     const before = await page.evaluate(() => {
       const run = __demo.state.run;
-      run.hearts = __demo.arcade.MAX_HEARTS; run.level = 1; run.levelGoals = __demo.arcade.GOALS_PER_LEVEL - 1;
+      run.hearts = __demo.arcade.MAX_HEARTS; run.level = 1; run.levelGoals = __demo.goalsForLevel(1) - 1;
       return run.level;
     });
     const result = await shoot();
@@ -152,7 +152,7 @@ try {
 
   // Game over: last heart, a shot far wide, then the saved best.
   await phase('AIM');
-  await page.evaluate(() => { __demo.state.run.hearts = 1; });
+  await page.evaluate(() => { __demo.state.run.hearts = 1; __demo.state.run.freeMiss = false; });
   const wide = await shoot({ offTarget: true });
   assert(wide.outcome !== 'goal', 'A shot outside the posts must not score');
   await page.waitForFunction(() => __demo.state.screen === 'GAMEOVER', null, { timeout: 8000 });

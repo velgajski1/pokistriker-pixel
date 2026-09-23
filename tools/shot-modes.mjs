@@ -84,31 +84,96 @@ try {
 
   // ---- Free aim --------------------------------------------------------------
   await load('aim');
-  const goalLeft = await page.evaluate(async () => {
+  const goalPoint = async () => page.evaluate(async () => {
     const T = await import('three'), d = __demo;
     const p = new T.Vector3(-2, 1.2, d.dimensions.goal.PLANE_Z).project(d.camera);
     return { x: (p.x + 1) / 2 * innerWidth, y: (1 - p.y) / 2 * innerHeight };
   });
+  let goalLeft = await goalPoint();
+  // A short hold remains close to the point that was pressed.
   await page.mouse.move(goalLeft.x, goalLeft.y);
-  await page.waitForTimeout(200);
   await page.mouse.down();
-  await page.waitForTimeout(450);
-  await page.screenshot({ path: '.captures/shot-aim-charge.png' });
-  const charged = await page.evaluate(() => __demo.shot.power);
+  await page.waitForTimeout(70);
+  const quickCharge = await page.evaluate(() => __demo.shot.power);
   await page.mouse.up();
   r = await launched();
-  check('Aim: holding charges', charged > .3 && charged <= 1, charged.toFixed(2));
-  check('Aim: the shot goes where the crosshair was (within the sway)', Math.abs(r.x + 2) < .9 && r.curve === 0, JSON.stringify(r));
+  check('Aim: a brief hold stays accurate', quickCharge > 0 && quickCharge < .2 && Math.abs(r.x + 2) < .3,
+    JSON.stringify({ charge: quickCharge, shot: r }));
+  await skipHold();
+
+  // Near full charge the visible crosshair has drifted outside the goal.
+  goalLeft = await goalPoint();
+  await page.evaluate(() => { window.__shotModeRandom = __demo.state.run.random; __demo.state.run.random = () => 1; });
+  await page.mouse.move(goalLeft.x, goalLeft.y);
+  await page.mouse.down();
+  await page.waitForFunction(() => __demo.shot.power >= .99);
+  await page.screenshot({ path: '.captures/shot-aim-charge.png' });
+  const overcharged = await page.evaluate(() => {
+    const p = __demo.scene.getObjectByName('aim-crosshair').position;
+    return { charge: __demo.shot.power, x: p.x, y: p.y,
+      drift: Math.hypot(p.x + 2, p.y - 1.2), halfW: __demo.dimensions.goal.HALF_W, height: __demo.dimensions.goal.HEIGHT };
+  });
+  await page.mouse.up();
+  r = await launched();
+  check('Aim: holding charges', overcharged.charge >= .99 && overcharged.charge <= 1, overcharged.charge.toFixed(2));
+  check('Aim: overcharging creates a large visible error', overcharged.drift > 3.5, JSON.stringify(overcharged));
+  check('Aim: a full charge is outside the goal', Math.abs(overcharged.x) > overcharged.halfW
+    || overcharged.y < 0 || overcharged.y > overcharged.height, JSON.stringify(overcharged));
+  check('Aim: the shot follows the drifted crosshair', Math.abs(r.x - overcharged.x) < .6 && r.curve === 0,
+    JSON.stringify({ crosshair: overcharged.x, shot: r }));
+  await skipHold();
+
+  // The opposite random branch mirrors the overcharge to the other side.
+  goalLeft = await goalPoint();
+  await page.evaluate(() => { __demo.state.run.random = () => 0; });
+  await page.mouse.move(goalLeft.x, goalLeft.y);
+  await page.mouse.down();
+  await page.waitForFunction(() => __demo.shot.power >= .99);
+  const opposite = await page.evaluate(() => {
+    const p = __demo.scene.getObjectByName('aim-crosshair').position;
+    return { x: p.x, y: p.y };
+  });
+  await page.mouse.up();
+  await page.evaluate(() => { __demo.state.run.random = window.__shotModeRandom; });
+  check('Aim: overcharge randomly escapes left or right', (overcharged.x + 2) * (opposite.x + 2) < 0,
+    JSON.stringify({ first: overcharged, opposite }));
+  await skipHold();
+
+  // ---- Classic hold + drag ---------------------------------------------------
+  await load('drag');
+  const dragBefore = await page.evaluate(() => {
+    const p = __demo.scene.getObjectByName('aim-crosshair').position;
+    return { x: p.x, y: p.y };
+  });
+  await page.mouse.move(430, 540);
+  await page.mouse.down();
+  await page.mouse.move(770, 300, { steps: 8 });
+  await page.waitForFunction(() => __demo.shot.power >= .5);
+  const dragged = await page.evaluate(() => {
+    const p = __demo.scene.getObjectByName('aim-crosshair').position;
+    return { x: p.x, y: p.y, charge: __demo.shot.power };
+  });
+  await page.screenshot({ path: '.captures/shot-drag-charge.png' });
+  await page.mouse.up();
+  r = await launched();
+  check('Drag: holding fills the power bar', dragged.charge >= .5 && dragged.charge <= 1, dragged.charge.toFixed(2));
+  check('Drag: the gesture moves aim right and up', dragged.x > dragBefore.x + .8 && dragged.y > dragBefore.y + .5,
+    JSON.stringify({ before: dragBefore, after: dragged }));
+  check('Drag: release shoots through the visible crosshair', Math.abs(r.x - dragged.x) < .6 && r.curve === 0,
+    JSON.stringify({ crosshair: dragged.x, shot: r }));
   await skipHold();
 
   // ---- Alt+9 cycles the modes ----------------------------------------------------
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.waitForFunction(() => window.__demo?.ready);
+  check('Timing remains the release default', await page.evaluate(() => __demo.shotMode === 'timing'));
   const modes = [];
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 4; i++) {
     await page.keyboard.press('Alt+Digit9');
     await page.waitForTimeout(150);
     modes.push(await page.evaluate(() => __demo.shotMode));
   }
-  check('Alt+9 cycles aim -> timing -> flick -> aim', modes.join(',') === 'timing,flick,aim', modes.join(','));
+  check('Alt+9 cycles timing -> drag -> flick -> aim -> timing', modes.join(',') === 'drag,flick,aim,timing', modes.join(','));
 } catch (error) {
   report.checks.push({ label: String(error).split('\n')[0], ok: false });
 }

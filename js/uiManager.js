@@ -9,7 +9,8 @@
 
 const $ = (id) => document.getElementById(id);
 const el = {};
-let verdictTimer = 0, bannerTimer = 0, toastTimer = 0;
+let noticeTimer = 0, activeNotice = null;
+const noticeQueue = [];
 const loadingStarted = performance.now();
 
 // ---- Pixel art ------------------------------------------------------------
@@ -70,11 +71,18 @@ export function init() {
   el.verdict = $('verdict');
   el.banner = $('banner');
   el.overlay = $('overlay');
-  // A rotated phone or a resized window refits whichever panel is open.
-  addEventListener('resize', () => {
-    const panel = el.overlay.firstElementChild;
-    if (panel && !el.overlay.classList.contains('hidden')) fitPanel(panel);
-  });
+  // Flow layout keeps changing scores, specials and controls in separate regions.
+  const top = node('div', 'hud-top');
+  el.controls = node('div', 'hud-controls');
+  el.controls.append(el.hearts);
+  top.append(el.score.parentElement, el.level.parentElement, el.controls, el.special);
+  const notices = node('div', 'hud-notices');
+  notices.append(el.verdict, el.banner, el.toast);
+  const bottom = node('div', 'hud-bottom');
+  bottom.append(el.charge, el.prompt);
+  el.hud.prepend(top, notices, bottom);
+  // Menus scroll internally; gameplay still prevents page scrolling.
+  el.overlay.addEventListener('wheel', e => e.stopPropagation(), { passive: true });
 }
 
 /** One button: SOUND ON / SOUND OFF. `onToggle(muted)` applies and saves it. */
@@ -124,7 +132,13 @@ export function setDimmed(on) { el.dim.classList.toggle('clear', !on); }
 
 export function showHud(on) {
   el.hud.classList.toggle('hidden', !on);
-  if (!on) el.hud.inert = true;
+  if (!on) {
+    el.hud.inert = true;
+    clearTimeout(noticeTimer);
+    if (activeNotice) activeNotice.element.classList.remove('show');
+    activeNotice = null;
+    noticeQueue.length = 0;
+  }
 }
 
 /** Only one UI layer participates in focus, clicks and accessibility at once. */
@@ -141,9 +155,6 @@ export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProg
   rank = '', daily = null, special = null, progress = null }) {
   if (score !== lastScore) {
     el.score.textContent = String(score).padStart(6, '0');
-    if (lastScore >= 0 && score > lastScore) {
-      el.score.animate([{ transform: 'scale(1.25)' }, { transform: 'scale(1)' }], { duration: 260, easing: 'steps(4)' });
-    }
     lastScore = score;
   }
   el.best.textContent = `BEST ${String(Math.max(best, score)).padStart(6, '0')}`;
@@ -182,8 +193,48 @@ export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProg
 }
 
 export function setPrompt(text) {
+  el.prompt.classList.remove('tutorial');
   el.prompt.textContent = text || '';
   el.prompt.classList.toggle('show', !!text);
+}
+
+export function showTutorialStep(step) {
+  const tap = matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click or press Space';
+  el.prompt.replaceChildren(
+    node('span', 'tutorial-step', `YOUR FIRST SHOT · STEP ${step} OF 2`),
+    node('strong', 'tutorial-title', step === 1 ? 'Aim at the target' : 'Set the shot height'),
+    node('span', 'tutorial-instruction', step === 1
+      ? `${tap} to stop the moving arrow.` : `${tap} again to stop the height marker and shoot.`));
+  el.prompt.classList.add('show', 'tutorial');
+}
+
+// Show notices sequentially so simultaneous rewards never overlap or get clipped.
+function nextNotice() {
+  clearTimeout(noticeTimer);
+  if (activeNotice) activeNotice.element.classList.remove('show');
+  activeNotice = noticeQueue.shift() || null;
+  if (!activeNotice) return;
+  activeNotice.element.classList.add('show');
+  noticeTimer = setTimeout(nextNotice, activeNotice.duration);
+}
+
+function showNotice(element, duration, priority = false) {
+  const queued = noticeQueue.findIndex(notice => notice.element === element);
+  if (queued >= 0) noticeQueue.splice(queued, 1);
+  if (activeNotice?.element === element) {
+    element.classList.add('show');
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(nextNotice, duration);
+    return;
+  }
+  if (priority && activeNotice) {
+    activeNotice.element.classList.remove('show');
+    noticeQueue.unshift(activeNotice);
+    activeNotice = null;
+  }
+  if (priority) noticeQueue.unshift({ element, duration });
+  else noticeQueue.push({ element, duration });
+  if (!activeNotice) nextNotice();
 }
 
 /** A shot's verdict: big label, points line, optional detail. */
@@ -191,14 +242,13 @@ export function flashVerdict(label, kind, points = '', detail = '') {
   el.verdict.replaceChildren(node('strong', '', label));
   if (points) el.verdict.append(node('b', '', points));
   if (detail) el.verdict.append(node('span', '', detail));
-  el.verdict.className = `verdict show ${kind}`;
-  clearTimeout(verdictTimer);
-  verdictTimer = setTimeout(() => { el.verdict.className = 'verdict'; }, 1600);
+  el.verdict.className = `verdict ${kind}`;
+  showNotice(el.verdict, 1600, true);
 }
 
 /** A new chance: the last shot's verdict goes, so it never covers the special tag. */
 export function clearVerdict() {
-  clearTimeout(verdictTimer);
+  if (activeNotice?.element === el.verdict) nextNotice();
   el.verdict.className = 'verdict';
 }
 
@@ -206,9 +256,8 @@ export function clearVerdict() {
 export function showLevelUp(title, note = '') {
   el.banner.replaceChildren(node('strong', '', title));
   if (note) el.banner.append(node('span', '', note));
-  el.banner.className = 'banner show';
-  clearTimeout(bannerTimer);
-  bannerTimer = setTimeout(() => { el.banner.className = 'banner'; }, 2200);
+  el.banner.className = 'banner';
+  showNotice(el.banner, 2200);
 }
 
 /** The flick shot's trail: the finger's path so far (client pixels), then a fade on release. */
@@ -226,15 +275,12 @@ export function setCharge(value) {
   if (value !== null) el.charge.style.setProperty('--fill', `${Math.round(value * 100)}%`);
 }
 
-/** A mission finished mid-run: a small gold plate that slides in and out. */
+/** A mission finished mid-run, queued behind the shot result. */
 export function toast(text, reward = '') {
   el.toast.replaceChildren(node('strong', '', text));
   if (reward) el.toast.append(node('b', '', reward));
   el.toast.className = 'toast';
-  void el.toast.offsetWidth;   // restart the animation for back-to-back toasts
-  el.toast.className = 'toast show';
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.toast.className = 'toast'; }, 2800);
+  showNotice(el.toast, 2800);
 }
 
 // ---- Panels ---------------------------------------------------------------
@@ -249,17 +295,8 @@ function mount(panel) {
   el.overlay.classList.remove('hidden');
   el.overlay.inert = false;
   el.hud.inert = true;
-  fitPanel(panel);
+  panel.tabIndex = -1;
   panel.querySelector('.primary')?.focus({ preventScroll: true });
-}
-
-/** Panels never scroll or clip: one that is taller or wider than the screen scales down to fit. */
-const PANEL_GUTTER = 32;
-function fitPanel(panel) {
-  panel.style.scale = '';
-  const scale = Math.min(1, (innerHeight - PANEL_GUTTER) / panel.offsetHeight,
-    (innerWidth - PANEL_GUTTER) / panel.offsetWidth);
-  if (scale < 1) panel.style.scale = String(scale);
 }
 
 function logo() {
@@ -323,7 +360,7 @@ export const pressWord = () => matchMedia('(pointer: coarse)').matches ? 'TAP' :
 export function initPauseButton(onPause) {
   const b = button('II', onPause, 'pause-button');
   b.setAttribute('aria-label', 'Pause');
-  el.hud.append(b);
+  el.controls.append(b);
 }
 
 /**

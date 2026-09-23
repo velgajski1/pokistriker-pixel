@@ -518,6 +518,8 @@ function dressBlocks(model, rig, parts) {
 }
 
 const _partBind = new THREE.Matrix4();
+const _bodyScale = new THREE.Vector3();
+const BODY_BOUNDS_PAD = 1.6;   // metres: arms, dives and celebrations beyond the rest pose
 /**
  * (Re)builds a player's box mesh from the parts its look shows (hair pieces
  * differ). With the mesh bound to the skeleton at an identity bind matrix, a
@@ -550,9 +552,13 @@ function buildBlockMesh(rig) {
   const mesh = new THREE.SkinnedMesh(merged, rig.blocks.material);
   mesh.name = 'block-body';
   mesh.castShadow = true;
-  mesh.frustumCulled = false;   // bounds follow the bones, not the bind pose
   rig.blocks.owner.add(mesh);
   mesh.bind(skeleton, new THREE.Matrix4());
+  // Culling bounds: the body as posed now, padded for dives and celebrations,
+  // measured once (a skinned mesh would otherwise keep its first pose's bounds).
+  mesh.updateMatrixWorld(true);
+  mesh.computeBoundingSphere();
+  mesh.boundingSphere.radius += BODY_BOUNDS_PAD / mesh.getWorldScale(_bodyScale).x;
   rig.blocks.mesh = mesh;
 }
 
@@ -586,9 +592,9 @@ export function setMatchColors(theme, seed) {
   keeperKit = theme.keeper;
   recolourKit(squad.keeper, keeperBoss ? KIT_BOSS : keeperKit);
   const tint = new THREE.Color();
+  // Fans: seven in ten wear the visitors' colours, the rest the home kit.
   for (const mesh of crowd.batches) {
-    const part = mesh.userData.part;
-    if (part !== 0 && part !== 5 && part !== 6) continue;
+    const { fanShirt, fanScarf, fanAccent } = mesh.userData.colours;
     for (let i = 0; i < mesh.count; i++) {
       const hash = (Math.imul(i + 1 + mesh.userData.pose * 917, 1664525) + seed) >>> 0;
       const awayFan = hash % 10 < 7;
@@ -596,11 +602,11 @@ export function setMatchColors(theme, seed) {
       const accent = awayFan ? theme.accent : homeKit.accent ?? homeKit.shorts;
       const shirt = hash % 17 === 0 ? 0xd9d5c9 : hash % 13 === 0 ? 0x30343a
         : hash % 5 === 0 ? accent : primary;
-      tint.setHex(part === 0 ? shirt : part === 5 ? primary : accent);
-      if (part === 0) tint.multiplyScalar(.78 + ((hash >>> 8) % 23) / 100);
-      mesh.setColorAt(i, tint);
+      tint.setHex(shirt).multiplyScalar(.78 + ((hash >>> 8) % 23) / 100).toArray(fanShirt.array, i * 3);
+      tint.setHex(primary).toArray(fanScarf.array, i * 3);
+      tint.setHex(accent).toArray(fanAccent.array, i * 3);
     }
-    mesh.instanceColor.needsUpdate = true;
+    fanShirt.needsUpdate = fanScarf.needsUpdate = fanAccent.needsUpdate = true;
   }
   if (supporterFlagMap) {
     const canvas = supporterFlagMap.image, paint = canvas.getContext('2d');
@@ -1612,7 +1618,7 @@ async function loadPhotographers() {
 }
 
 function updateSidelineStaff(dt) {
-  sidelineStaff.root.visible = !celebrationReview;
+  sidelineStaff.root.visible = !celebrationReview && !LOW_QUALITY;   // scenery: off on low quality
   if (celebrationReview || animationsPaused) return;
   const ball = objects.ball.position;
   const mid = GOAL.PLANE_Z + PITCH.LENGTH / 2;
@@ -2135,14 +2141,34 @@ export function cheerCrowd(goal) { crowdCheer.value = goal ? 1 : 0.35; }
 
 // All spectators share a handful of meshes. Their motion happens on the GPU;
 // only two uniforms change per frame, with no per-person JS work or uploads.
+/**
+ * The crowd: one instanced mesh per pose. Each vertex carries its colour slot
+ * (shirt, skin, hair, trousers, arms, scarf, scarf squares, shoes and eyes);
+ * each fan carries its own shirt, skin, hair and scarf colours; the shader
+ * picks the colour by slot. Three draws for the whole crowd.
+ */
+const CROWD_TROUSERS = new THREE.Color(0x252b39), CROWD_DARK = new THREE.Color(0x281713);
+const FAN_COLOURS = ['fanShirt', 'fanSkin', 'fanHair', 'fanScarf', 'fanAccent'];
 function crowdMaterial() {
   const material = new THREE.MeshLambertMaterial({ emissive: 0x101318 });
   material.onBeforeCompile = shader => {
     shader.uniforms.crowdTime = crowdTime;
     shader.uniforms.crowdCheer = crowdCheer;
-    shader.vertexShader = 'uniform float crowdTime;\nuniform float crowdCheer;\n' + shader.vertexShader;
+    shader.uniforms.crowdTrousers = { value: CROWD_TROUSERS };
+    shader.uniforms.crowdDark = { value: CROWD_DARK };
+    shader.vertexShader = `uniform float crowdTime;
+uniform float crowdCheer;
+uniform vec3 crowdTrousers, crowdDark;
+attribute float slot;
+attribute vec3 fanShirt, fanSkin, fanHair, fanScarf, fanAccent;
+varying vec3 vFan;
+` + shader.vertexShader;
+    shader.fragmentShader = 'varying vec3 vFan;\n' + shader.fragmentShader.replace('#include <color_fragment>',
+      '#include <color_fragment>\n  diffuseColor.rgb *= vFan;');
     shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `
       #include <begin_vertex>
+      vFan = slot < .5 ? fanShirt : slot < 1.5 ? fanSkin : slot < 2.5 ? fanHair : slot < 3.5 ? crowdTrousers
+        : slot < 4.5 ? fanSkin : slot < 5.5 ? fanScarf : slot < 6.5 ? fanAccent : crowdDark;
       float phase = dot(instanceMatrix[3].xz, vec2(3.17, 5.71));
       float wave = sin(crowdTime * (2.0 + 0.4 * sin(phase)) + phase);
       float upper = smoothstep(0.5, 1.9, position.y);
@@ -2151,8 +2177,25 @@ function crowdMaterial() {
       transformed.z += sin(crowdTime * 2.7 + phase) * upper * 0.025;
     `);
   };
-  material.customProgramCacheKey = () => 'stadium-supporter-v1';
+  material.customProgramCacheKey = () => 'stadium-supporter-v2';
   return material;
+}
+
+/**
+ * A crowd box without its back and bottom faces: fans always face the pitch
+ * and are seen from the pitch, so those faces are never on screen. A third
+ * fewer triangles for the whole crowd.
+ */
+function fanBox(w, h, d) {
+  const box = new THREE.BoxGeometry(w, h, d);
+  const keep = [];
+  for (const group of box.groups) {
+    if (group.materialIndex === 3 || group.materialIndex === 5) continue;   // -y (bottom), -z (back)
+    for (let i = group.start; i < group.start + group.count; i++) keep.push(box.index.array[i]);
+  }
+  box.setIndex(keep);
+  box.clearGroups();
+  return box;
 }
 
 /** Boot-only geometry assembly for the three supporter poses. */
@@ -2176,7 +2219,7 @@ function joinCrowdParts(parts) {
 function supporterParts(pose) {
   if (LOW_QUALITY) return supporterPartsLow(pose);
   const P = CROWD_PX;
-  const box = (w, h, d, x, y, z = 0) => new THREE.BoxGeometry(w * P, h * P, d * P).translate(x * P, y * P, z * P);
+  const box = (w, h, d, x, y, z = 0) => fanBox(w * P, h * P, d * P).translate(x * P, y * P, z * P);
   const sleeves = [], arms = [], trousers = [], dark = [];
   for (const side of [-1, 1]) {
     const up = pose === 2 || (pose === 1 && side === 1);
@@ -2203,7 +2246,7 @@ function supporterParts(pose) {
  */
 function supporterPartsLow(pose) {
   const P = CROWD_PX;
-  const box = (w, h, d, x, y, z = 0) => new THREE.BoxGeometry(w * P, h * P, d * P).translate(x * P, y * P, z * P);
+  const box = (w, h, d, x, y, z = 0) => fanBox(w * P, h * P, d * P).translate(x * P, y * P, z * P);
   const arms = [];
   for (const side of [-1, 1]) {
     const up = pose === 2 || (pose === 1 && side === 1);
@@ -2413,32 +2456,45 @@ function buildStands() {
   for (let pose = 0; pose < 3; pose++) {
     const fans = supporters[pose];
     crowd.count += fans.length;
-    const parts = supporterParts(pose);
-    for (let part = 0; part < parts.length; part++) {
-      if (!parts[part]) continue;
-      const mesh = new THREE.InstancedMesh(parts[part], material, fans.length);
-      mesh.name = 'crowd-' + pose + '-' + part;
-      mesh.userData.part = part;
-      mesh.userData.pose = pose;
-      for (let i = 0; i < fans.length; i++) {
-        const fan = fans[i];
-        transform.position.set(fan.x, fan.y, fan.z);
-        transform.rotation.set(0, fan.angle, 0);
-        transform.scale.set(fan.build, fan.height, fan.build);
-        transform.updateMatrix();
-        mesh.setMatrixAt(i, transform.matrix);
-        tint.setHex(part === 0 ? fan.shirt : part === 1 || part === 4 ? fan.skin
-          : part === 2 ? fan.hair : part === 3 ? 0x252b39 : part === 5 ? 0xcf333e
-            : part === 6 ? 0xf0ca57 : 0x281713);
-        mesh.setColorAt(i, tint);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.instanceColor.needsUpdate = true;
-      mesh.computeBoundingSphere();
-      mesh.boundingSphere.radius += .4; // animated displacement
-      scene.add(mesh);
-      crowd.batches.push(mesh);
+    // Every colour part of the pose in one geometry, each vertex tagged with its slot.
+    const pieces = [];
+    supporterParts(pose).forEach((part, slot) => {
+      if (!part) return;
+      const piece = part.index ? part.toNonIndexed() : part;
+      if (piece !== part) part.dispose();
+      piece.deleteAttribute('uv');
+      piece.setAttribute('slot', new THREE.Float32BufferAttribute(new Float32Array(piece.attributes.position.count).fill(slot), 1));
+      pieces.push(piece);
+    });
+    const geometry = mergeGeometries(pieces);
+    for (const piece of pieces) piece.dispose();
+    const colours = {};
+    for (const name of FAN_COLOURS) {
+      colours[name] = new THREE.InstancedBufferAttribute(new Float32Array(fans.length * 3), 3);
+      geometry.setAttribute(name, colours[name]);
     }
+    const mesh = new THREE.InstancedMesh(geometry, material, fans.length);
+    mesh.name = 'crowd-' + pose;
+    mesh.userData.pose = pose;
+    mesh.userData.colours = colours;
+    for (let i = 0; i < fans.length; i++) {
+      const fan = fans[i];
+      transform.position.set(fan.x, fan.y, fan.z);
+      transform.rotation.set(0, fan.angle, 0);
+      transform.scale.set(fan.build, fan.height, fan.build);
+      transform.updateMatrix();
+      mesh.setMatrixAt(i, transform.matrix);
+      tint.setHex(fan.shirt).toArray(colours.fanShirt.array, i * 3);
+      tint.setHex(fan.skin).toArray(colours.fanSkin.array, i * 3);
+      tint.setHex(fan.hair).toArray(colours.fanHair.array, i * 3);
+      tint.setHex(0xcf333e).toArray(colours.fanScarf.array, i * 3);
+      tint.setHex(0xf0ca57).toArray(colours.fanAccent.array, i * 3);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.boundingSphere.radius += .4; // animated displacement
+    scene.add(mesh);
+    crowd.batches.push(mesh);
   }
   buildSupporterFlags();
   for (let i = 0; i < festivalParts.length; i++) {
