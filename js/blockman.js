@@ -286,3 +286,21 @@ export function blockPartVisible(name, look) {
   if (name === 'bun') return look.style === 'bun';
   return true;
 }
+
+/*
+ * Front view of a painted skin for menus: 16 x 32 texels, each part's front
+ * face placed as it stands (the player's right arm on the viewer's left).
+ */
+const SPRITE = [['armR', 0, 8], ['armL', 12, 8], ['torso', 4, 8], ['hips', 4, 17], ['thighR', 4, 20], ['thighL', 8, 20],
+  ['shinR', 4, 25], ['shinL', 8, 25], ['bootR', 4, 30], ['bootL', 8, 30], ['head', 4, 0], ['hat', 4, 0]];
+export function frontSprite(skin, out = document.createElement('canvas')) {
+  out.width = 16; out.height = 32;
+  const paint = out.getContext('2d');
+  paint.imageSmoothingEnabled = false;
+  paint.clearRect(0, 0, 16, 32);
+  for (const [name, x, y] of SPRITE) {
+    const [w, h, d, u0, v0] = LAYOUT[name];
+    paint.drawImage(skin, u0 + d, v0 + d, w, h, x, y, w, h);
+  }
+  return out;
+}

@@ -6,10 +6,11 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $releaseFiles = @(
   'index.html', 'style.css',
   'js/app.js', 'js/gameEngine.js', 'js/physics.js',
-  'js/uiManager.js', 'js/saveSystem.js', 'js/audio.js', 'js/blockman.js', 'js/voxel.js', 'js/poki.js',
+  'js/uiManager.js', 'js/saveSystem.js', 'js/audio.js', 'js/blockman.js', 'js/voxel.js', 'js/poki.js', 'js/progress.js',
   'assets/squad.glb', 'assets/squad.json',
   'assets/fonts/pixelify-sans.woff2', 'assets/fonts/press-start-2p.woff2',
   'assets/fonts/OFL-PixelifySans.txt', 'assets/fonts/OFL-PressStart2P.txt',
+  'assets/fonts/rubik.woff2', 'assets/fonts/OFL-Rubik.txt',
   'vendor/three/build/three.module.min.js',
   'vendor/three/examples/jsm/loaders/GLTFLoader.js',
   'vendor/three/examples/jsm/utils/SkeletonUtils.js',
@@ -36,6 +37,19 @@ foreach ($relativePath in $releaseFiles) {
   Copy-Item -LiteralPath $sourcePath -Destination $targetPath
   $rawBytes += (Get-Item -LiteralPath $sourcePath).Length
 }
+# Release builds ship no dev tooling: drop every /* @dev */ ... /* @end-dev */
+# block (the Alt+number screen previews) and fail if any of it is left.
+$utf8 = New-Object System.Text.UTF8Encoding $false
+foreach ($relativePath in $releaseFiles | Where-Object { $_ -like 'js/*.js' }) {
+  $targetPath = Join-Path $releaseRoot $relativePath
+  $text = [System.IO.File]::ReadAllText($targetPath)
+  $text = [regex]::Replace($text, '(?s)/\* @dev \*/.*?/\* @end-dev \*/', '')
+  foreach ($leftover in @('@dev', '@end-dev', 'previewScreen', 'devTag')) {
+    if ($text.Contains($leftover)) { throw "Dev code left in release ${relativePath}: $leftover" }
+  }
+  [System.IO.File]::WriteAllText($targetPath, $text, $utf8)
+}
+
 # Archive directory contents, not the enclosing folder: index.html is at root.
 # Entries are written one by one with forward slashes: Windows PowerShell's
 # Compress-Archive stores 'js\app.js', which Linux hosts (Poki) unpack as a flat

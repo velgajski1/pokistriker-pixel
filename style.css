@@ -1,7 +1,8 @@
 /* BLOCK STRIKER - pixel typefaces, square corners, bevelled blocks.
-   Pixelify Sans (variable 400-700) for text, Press Start 2P for numbers.
-   Both SIL OFL: assets/fonts/OFL-*.txt. */
+   Pixelify Sans (variable 400-700) for HUD text, Press Start 2P for numbers,
+   Rubik (variable 400-800) for menu text. All SIL OFL: assets/fonts/OFL-*.txt. */
 @font-face{font-family:'Pixelify Sans';src:url('assets/fonts/pixelify-sans.woff2') format('woff2');font-weight:400 700;font-display:swap}
+@font-face{font-family:'Rubik';src:url('assets/fonts/rubik.woff2') format('woff2');font-weight:400 800;font-display:swap}
 @font-face{font-family:'Press Start 2P';src:url('assets/fonts/press-start-2p.woff2') format('woff2');font-display:swap}
 
 :root{
@@ -13,11 +14,12 @@
   --gold:#ffd23f; --gold-dark:#b8860b; --red:#e8322b; --sky:#8fcaff;
   --text-shadow:calc(var(--px) * 1) calc(var(--px) * 1) 0 var(--shadow);
   --digits:'Press Start 2P',monospace;
+  --ui:'Rubik',system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0;border-radius:0}
 html,body{height:100%;overflow:hidden;background:var(--sky);color:var(--ink);
   font-family:'Pixelify Sans',monospace;font-weight:600;-webkit-font-smoothing:none;
-  image-rendering:pixelated;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+  image-rendering:pixelated;user-select:none;-webkit-user-select:none;touch-action:none;overscroll-behavior:none}
 button{font:inherit;color:inherit}
 .hidden{display:none !important}
 #pitch{position:fixed;inset:0;width:100%;height:100%;display:block}
@@ -36,7 +38,8 @@ button{font:inherit;color:inherit}
   box-shadow:inset var(--px) var(--px) 0 #9be070,inset calc(var(--px) * -1) calc(var(--px) * -2) 0 var(--grass-dark)}
 .block-button.primary:hover,.block-button.primary:focus-visible{background:#6fc64a;color:#ffffa0}
 
-#overlay{position:fixed;inset:0;display:grid;place-items:center;padding:16px;z-index:20}
+/* Flex centring keeps a panel centred even while it is scaled down to fit (see fitPanel). */
+#overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:16px;z-index:20}
 .panel{width:min(92vw,calc(var(--px) * 150));padding:calc(var(--px) * 10);display:grid;justify-items:center;
   gap:calc(var(--px) * 6);background:#00000099;border:var(--px) solid #000;
   box-shadow:inset var(--px) var(--px) 0 #ffffff33,inset calc(var(--px) * -1) calc(var(--px) * -1) 0 #00000066;
@@ -168,4 +171,197 @@ body.loading .audio-toggle{display:none}
   .over-panel{gap:calc(var(--px) * 3);padding:calc(var(--px) * 6)}
   .over-title{font-size:calc(var(--px) * 13)}
   .over-score{font-size:calc(var(--px) * 9)}
+}
+
+/* ---- Rank, special chances and mission toasts ------------------------------ */
+.rank{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 3.5);color:#ffe98a;
+  padding:var(--px) calc(var(--px) * 2);background:#00000090}
+.special-tag{display:grid;justify-items:center;gap:var(--px);margin-top:calc(var(--px) * 2);
+  padding:calc(var(--px) * 2) calc(var(--px) * 5);border:var(--px) solid #000;background:var(--gold);color:#3a2600;
+  text-shadow:none;visibility:hidden;box-shadow:inset var(--px) var(--px) 0 #fff3a0,inset calc(var(--px) * -1) calc(var(--px) * -1) 0 var(--gold-dark)}
+.special-tag.show{visibility:visible;animation:pop .3s steps(3)}
+.special-tag strong{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 4.5)}
+.special-tag span{font-size:calc(var(--px) * 4.5)}
+.special-tag.moving{background:#54e0ff;box-shadow:inset var(--px) var(--px) 0 #c4f6ff,inset calc(var(--px) * -1) calc(var(--px) * -1) 0 #2c8fb0}
+.special-tag.freekick{background:#e8e8e8;box-shadow:inset var(--px) var(--px) 0 #fff,inset calc(var(--px) * -1) calc(var(--px) * -1) 0 #8a8a8a}
+.special-tag.boss{background:#8b3dff;color:#fff;text-shadow:var(--text-shadow);box-shadow:inset var(--px) var(--px) 0 #c9a2ff,inset calc(var(--px) * -1) calc(var(--px) * -1) 0 #4a1c94}
+.special-tag.bonus{background:#8dff5a;box-shadow:inset var(--px) var(--px) 0 #d6ffc2,inset calc(var(--px) * -1) calc(var(--px) * -1) 0 #3f9c28}
+.toast{position:absolute;left:calc(var(--px) * 5);bottom:calc(var(--px) * 22);display:grid;gap:var(--px);max-width:min(70vw,calc(var(--px) * 120));
+  padding:calc(var(--px) * 3) calc(var(--px) * 5);background:#000000c0;border:var(--px) solid #000;border-left:calc(var(--px) * 3) solid var(--gold);
+  visibility:hidden}
+.toast.show{visibility:visible;animation:slide 2.8s steps(8) both}
+@keyframes slide{0%{transform:translateX(-110%)}8%,88%{transform:none}100%{transform:translateX(-110%)}}
+.toast strong{font-size:calc(var(--px) * 5)}
+.toast b{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 4);color:var(--gold)}
+
+/* ---- Locker ------------------------------------------------------------------ */
+.locker-panel{width:min(96vw,calc(var(--px) * 270))}
+.locker-title{color:var(--gold);text-shadow:0 calc(var(--px) * 2) 0 var(--gold-dark),calc(var(--px) * 2) calc(var(--px) * 3) 0 #0008}
+.locker{display:grid;grid-template-columns:repeat(auto-fill,minmax(calc(var(--px) * 40),1fr));gap:calc(var(--px) * 2);width:100%}
+.locker-item{position:relative;display:grid;justify-items:center;gap:var(--px);padding:calc(var(--px) * 2);cursor:pointer;
+  background:var(--panel);color:#1f1f1f;border:var(--px) solid #000;font:inherit;
+  box-shadow:inset var(--px) var(--px) 0 var(--panel-light),inset calc(var(--px) * -1) calc(var(--px) * -1) 0 var(--panel-dark)}
+.locker-item:hover:not(:disabled),.locker-item:focus-visible{outline:none;background:#dfe7ff}
+.locker-item:disabled{cursor:default}
+.locker-item.locked{background:#6d6d6d;color:#2a2a2a}
+.locker-item.equipped{background:#9be070}
+.swatch{display:grid;place-items:center;width:calc(var(--px) * 12);height:calc(var(--px) * 12);border:var(--px) solid #000;
+  background:#999;color:var(--gold);font-style:normal;font-size:calc(var(--px) * 8);text-shadow:var(--text-shadow);
+  box-shadow:inset calc(var(--px) * -4) 0 0 var(--accent,transparent)}
+.locker-item.celebration .swatch{background:#3b2d6b}
+.locker-item.ball .swatch{border-radius:50%}
+.item-type{font-size:calc(var(--px) * 3);letter-spacing:.2em;color:#555}
+.item-name{font-size:calc(var(--px) * 4);text-align:center;line-height:1.1}
+.item-state{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 3);white-space:nowrap}
+
+/* Short landscape screens (phones on their side): everything a notch smaller. */
+@media (max-height:500px){
+  .panel{padding:calc(var(--px) * 6);gap:calc(var(--px) * 4)}
+  .over-title{font-size:calc(var(--px) * 13)}
+  .over-score{font-size:calc(var(--px) * 10)}
+  .block-button{padding:calc(var(--px) * 3) calc(var(--px) * 8);font-size:calc(var(--px) * 7)}
+  .block-button.small{font-size:calc(var(--px) * 4.5);padding:calc(var(--px) * 2) calc(var(--px) * 3)}
+  .locker{grid-template-columns:repeat(8,1fr)}
+  .locker-item .item-type{display:none}
+  .swatch{width:calc(var(--px) * 8);height:calc(var(--px) * 8);font-size:calc(var(--px) * 5)}
+  .item-name{font-size:calc(var(--px) * 3.5)}
+  .locker-title{font-size:calc(var(--px) * 11)}
+}
+
+/* Landscape: eight across, so all 23 locker items fit in three rows. */
+@media (min-aspect-ratio:1/1){ .locker{grid-template-columns:repeat(8,1fr)} }
+
+/* ---- Collection progress (locker) and striker select ----------------------- */
+.collection{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:calc(var(--px) * 4);width:100%;
+  font-size:calc(var(--px) * 5);letter-spacing:.12em}
+.collection b{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 4);color:var(--gold)}
+.select-panel{width:min(96vw,calc(var(--px) * 230))}
+.strikers{display:grid;grid-template-columns:repeat(auto-fill,minmax(calc(var(--px) * 38),1fr));gap:calc(var(--px) * 3);width:100%}
+.striker-card{position:relative;display:grid;justify-items:center;gap:var(--px);padding:calc(var(--px) * 3) calc(var(--px) * 2);
+  cursor:pointer;font:inherit;color:#1f1f1f;background:var(--panel);border:var(--px) solid #000;
+  box-shadow:inset var(--px) var(--px) 0 var(--panel-light),inset calc(var(--px) * -1) calc(var(--px) * -1) 0 var(--panel-dark)}
+.striker-card:hover,.striker-card:focus-visible{outline:none;background:#dfe7ff}
+.striker-card.selected{background:var(--gold);box-shadow:inset var(--px) var(--px) 0 #fff3a0,inset calc(var(--px) * -1) calc(var(--px) * -1) 0 var(--gold-dark),
+  0 0 0 var(--px) #000,0 0 0 calc(var(--px) * 2) var(--gold)}
+.striker-card .sprite{width:calc(var(--px) * 18);height:calc(var(--px) * 36);image-rendering:pixelated;
+  filter:drop-shadow(var(--px) var(--px) 0 #0006)}
+.striker-card strong{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 4)}
+.striker-card span{font-size:calc(var(--px) * 3.5);text-align:center;line-height:1.1;color:#4a4a4a}
+.select-hint{font-size:calc(var(--px) * 4.5);color:#d8e6ff;letter-spacing:.1em}
+@media (min-aspect-ratio:1/1){ .strikers{grid-template-columns:repeat(5,1fr)} }
+
+/* ---- Menus: readable text -----------------------------------------------------
+   Rubik (SIL OFL, assets/fonts/) for everything you read in a menu; the pixel
+   faces stay for titles, big numbers and the HUD. */
+#overlay .panel{font-family:var(--ui);font-weight:500;-webkit-font-smoothing:antialiased;image-rendering:auto}
+#overlay .block-button{font-family:var(--ui);font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.block-button.small{min-width:0;position:relative;padding:calc(var(--px) * 3) calc(var(--px) * 4);font-size:calc(var(--px) * 5)}
+.block-button.glow{background:#b88a1c;box-shadow:inset var(--px) var(--px) 0 #ffe07a,inset calc(var(--px) * -1) calc(var(--px) * -2) 0 #6b4d0c}
+.block-button em,.locker-item em{position:absolute;right:calc(var(--px) * -3);top:calc(var(--px) * -4);padding:0 calc(var(--px) * 1.5);
+  font-style:normal;font-family:var(--ui);font-weight:700;font-size:calc(var(--px) * 3.5);line-height:1.4;color:#fff;
+  background:var(--red);border:var(--px) solid #000;text-shadow:none}
+.bar{display:block;height:calc(var(--px) * 3);background:#ffffff1f;border-radius:calc(var(--px) * 2);overflow:hidden;
+  background-image:linear-gradient(90deg,#8be35a 0 var(--fill),transparent 0)}
+
+/* ---- Results (game over / daily) ----------------------------------------------- */
+.results-panel{width:min(94vw,calc(var(--px) * 150));gap:calc(var(--px) * 5);justify-items:stretch;
+  background:#0c1622e8;padding:calc(var(--px) * 8)}
+.r-hero{display:grid;justify-items:center;gap:calc(var(--px) * 2);text-align:center}
+.r-title{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 8);letter-spacing:.06em;color:#ff5b52;
+  text-shadow:0 var(--px) 0 #6e140f}
+.r-title.best{color:var(--gold);text-shadow:0 var(--px) 0 var(--gold-dark)}
+.r-score{font-family:var(--digits);font-size:calc(var(--px) * 15);line-height:1.1;color:#fff;
+  text-shadow:0 calc(var(--px) * 1.5) 0 #000a}
+.r-gap{font-size:calc(var(--px) * 6);font-weight:700;color:var(--gold)}
+.r-streak{font-size:calc(var(--px) * 5);font-weight:700;color:#ffb35c}
+.r-meta{font-size:calc(var(--px) * 4.5);color:#9fb3c8;line-height:1.5}
+.r-card{display:grid;gap:calc(var(--px) * 2.5);padding:calc(var(--px) * 4) calc(var(--px) * 5);
+  background:#ffffff0d;border:var(--px) solid #ffffff1a;border-radius:calc(var(--px) * 2)}
+.r-row{display:flex;justify-content:space-between;align-items:baseline;gap:calc(var(--px) * 4);font-size:calc(var(--px) * 5);color:#dce6f0}
+.r-xp{font-size:calc(var(--px) * 7);font-weight:800;color:var(--gold)}
+.r-small{font-size:calc(var(--px) * 4);color:#8ea3b8}
+.r-unlocked{justify-self:start;padding:calc(var(--px) * 1.5) calc(var(--px) * 4);font-size:calc(var(--px) * 4.5);font-weight:700;
+  color:#2b1d00;background:var(--gold);border-radius:calc(var(--px) * 1.5);animation:pop .4s steps(3)}
+.r-label{font-size:calc(var(--px) * 4);font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#8ea3b8}
+.r-actions{display:grid;gap:calc(var(--px) * 3)}
+.r-actions .block-button{width:100%}
+.r-more{display:grid;grid-template-columns:repeat(3,1fr);gap:calc(var(--px) * 2.5)}
+.r-more .block-button:nth-child(4){grid-column:1 / -1}
+.r-boost{text-align:center;color:var(--gold)}
+
+/* Missions (results and pause): a tick, the task, a slim bar, the count. */
+.missions{display:grid;gap:calc(var(--px) * 2);width:100%;list-style:none}
+.missions li{display:grid;grid-template-columns:calc(var(--px) * 5) 1fr calc(var(--px) * 16) auto;align-items:center;
+  gap:calc(var(--px) * 3);font-size:calc(var(--px) * 4.5);color:#e8eef5}
+.missions .tick{width:calc(var(--px) * 5);height:calc(var(--px) * 5);border:var(--px) solid #ffffff40;border-radius:var(--px);
+  font-style:normal;font-size:calc(var(--px) * 3.5);line-height:calc(var(--px) * 4);text-align:center;color:#0c1622}
+.missions b{font-weight:700;font-size:calc(var(--px) * 4);color:#8ea3b8;justify-self:end;white-space:nowrap}
+.missions li.done{grid-template-columns:calc(var(--px) * 5) 1fr auto;color:#b8f59a}
+.missions li.done .tick{background:#8be35a;border-color:#8be35a}
+.missions li.done b{color:var(--gold)}
+.pause-panel .missions{width:calc(var(--px) * 130);max-width:100%}
+.section-title{justify-self:start;font-size:calc(var(--px) * 4);font-weight:700;letter-spacing:.14em;color:#8ea3b8}
+
+/* Landscape: the result and progress on the left, missions and actions on the right. */
+@media (min-aspect-ratio:1/1){
+  .results-panel{width:min(96vw,calc(var(--px) * 250));grid-template-columns:1fr 1fr;column-gap:calc(var(--px) * 10);
+    grid-template-areas:"hero actions" "progress actions" "tasks actions";align-items:start}
+  .r-actions{align-self:center}
+  .r-hero{grid-area:hero}.r-progress{grid-area:progress}.r-missions{grid-area:tasks}.r-actions{grid-area:actions}
+}
+/* Game progress: results card and locker header. */
+.game-progress{display:grid;gap:calc(var(--px) * 2);width:100%;padding-top:calc(var(--px) * 3);border-top:var(--px) solid #ffffff1a}
+.locker-panel .game-progress{padding-top:0;border-top:0}
+.gp-percent{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 5);color:#8be35a}
+.game-progress .bar{background-image:linear-gradient(90deg,#54e0ff 0 var(--fill),transparent 0)}
+.gp-parts{text-align:center}
+/* HUD: overall game progress under the best score. */
+.hud-progress{display:grid;gap:var(--px);padding:var(--px) calc(var(--px) * 2) calc(var(--px) * 1.5);background:#00000090}
+.hud-progress b{font-family:var(--digits);font-weight:400;font-size:calc(var(--px) * 3);color:#9fe8ff}
+.hud-progress i{display:block;height:var(--px);background:#ffffff26;background-image:linear-gradient(90deg,#54e0ff 0 var(--fill,0%),transparent 0)}
+/* Locker tabs and locked strikers. */
+.locker-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:calc(var(--px) * 2);width:100%}
+.block-button.tab{background:#3a4652;box-shadow:inset var(--px) var(--px) 0 #5a6876,inset calc(var(--px) * -1) calc(var(--px) * -2) 0 #222a32}
+.block-button.tab.active{background:var(--gold);color:#2b1d00;text-shadow:none;
+  box-shadow:inset var(--px) var(--px) 0 #fff3a0,inset calc(var(--px) * -1) calc(var(--px) * -2) 0 var(--gold-dark)}
+.tab-count{font-weight:500;opacity:.75}
+.striker-card.locked{cursor:default;background:#6d6d6d}
+.striker-card.locked .sprite{filter:grayscale(1) brightness(.45)}
+.striker-card.locked span{color:#e8e8e8;font-weight:700}
+.striker-card em{position:absolute;right:calc(var(--px) * -3);top:calc(var(--px) * -4)}
+.locker-title{text-align:center}
+.select-panel .locker-title{font-size:calc(var(--px) * 11)}
+/* Locked items show what they will look like, dimmed: something to play for. */
+.locker-item.locked .swatch{filter:saturate(.55) brightness(.7)}
+.special-tag.keeper{background:#ff5b52;color:#fff;text-shadow:var(--text-shadow);
+  box-shadow:inset var(--px) var(--px) 0 #ffb0aa,inset calc(var(--px) * -1) calc(var(--px) * -1) 0 #8a1c16}
+
+/* ---- Shot modes: the flick trail and the free-aim charge meter -------------- */
+.swipe{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.swipe polyline{fill:none;stroke:#ffffff;stroke-width:calc(var(--px) * 3);stroke-linecap:square;stroke-linejoin:miter;
+  opacity:.85;filter:drop-shadow(var(--px) var(--px) 0 #000a)}
+.swipe.fade polyline{opacity:0;transition:opacity .45s steps(4)}
+.charge{position:absolute;left:50%;bottom:calc(var(--px) * 34);transform:translateX(-50%);width:calc(var(--px) * 70);
+  height:calc(var(--px) * 6);background:#000000a0;border:var(--px) solid #000}
+.charge i{display:block;height:100%;width:var(--fill,0%);background:linear-gradient(90deg,#8be35a,#ffd23f 60%,#ff5b52)}
+
+/* Game over: the rewarded continue right under PLAY AGAIN (smaller, never green),
+   then a large locker button that turns gold when something new is waiting. */
+.block-button.reward.big{font-size:calc(var(--px) * 7);padding:calc(var(--px) * 3.5) calc(var(--px) * 6);color:#fff;white-space:nowrap;
+  background:#6b3fd1;box-shadow:inset var(--px) var(--px) 0 #a98bff,inset calc(var(--px) * -1) calc(var(--px) * -2) 0 #3b1f82;
+  animation:reward-pulse 1.6s steps(8) infinite}
+.block-button.reward.big:hover,.block-button.reward.big:focus-visible{background:#7d52e6;color:#ffffa0}
+@keyframes reward-pulse{50%{filter:brightness(1.25)}}
+.block-button.locker-cta{position:relative;font-size:calc(var(--px) * 6.5);white-space:nowrap;padding:calc(var(--px) * 3.5) calc(var(--px) * 8);
+  background:#2f6bff;box-shadow:inset var(--px) var(--px) 0 #8fb2ff,inset calc(var(--px) * -1) calc(var(--px) * -2) 0 #173a99}
+.block-button.locker-cta.has-new{background:var(--gold);color:#2b1d00;text-shadow:none;
+  box-shadow:inset var(--px) var(--px) 0 #fff3a0,inset calc(var(--px) * -1) calc(var(--px) * -2) 0 var(--gold-dark);
+  animation:reward-pulse 1.6s steps(8) infinite}
+.r-more{grid-template-columns:repeat(auto-fit,minmax(0,1fr))}
+.r-more .block-button:nth-child(4){grid-column:auto}
+/* Short screens: PLAY AGAIN stays the largest button (Poki: never smaller than the rewarded one). */
+@media (max-height:500px){
+  .r-actions .block-button.primary{font-size:calc(var(--px) * 9);padding:calc(var(--px) * 3.5) calc(var(--px) * 8)}
+  .block-button.reward.big{font-size:calc(var(--px) * 6.5);padding:calc(var(--px) * 3) calc(var(--px) * 6)}
+  .block-button.locker-cta{font-size:calc(var(--px) * 6);padding:calc(var(--px) * 2.5) calc(var(--px) * 6)}
 }

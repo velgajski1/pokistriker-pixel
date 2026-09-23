@@ -2,8 +2,9 @@
  * audio.js - the whole soundscape, synthesized with Web Audio. No samples.
  *
  *   Chip voices: pulse waves (12.5 / 25 / 50% duty), triangle bass, noise drums.
- *   Music:       two driving chiptune loops (150 and 160 bpm) sequenced on
- *                16th notes, with layers and tempo that build with the run.
+ *   Music:       a title anthem and four match songs (132-168 bpm), one per
+ *                band of levels, each about a minute of verse, chorus and
+ *                breakdown on 16th notes; layers and tempo build with the run.
  *   Crowd:       a filtered-noise bed that roars on goals, groans on misses
  *                and hushes while you aim.
  *   Effects:     arcade stingers for every beat of a shot.
@@ -30,33 +31,107 @@ const parse = name => {
 const bars = text => text.trim().split(/\s*\|\s*/).map(bar => bar.split(/\s+/).map(parse));
 
 // ---- Songs ------------------------------------------------------------------
-// Leads are written on the sixteenth-note grid, sixteen tokens per bar
-// ('-' rest, '~' hold the previous note); chords are one per bar.
+// A song is a form (section order) over sections. A section has one chord per
+// bar, an optional lead on the sixteenth-note grid (sixteen tokens per bar:
+// '-' rest, '~' hold), and its own drum and bass patterns, so a verse, a
+// chorus and a breakdown feel different. Each match song runs about a minute
+// before it repeats; a new song takes over every few levels.
 const C = [48, 52, 55], Am = [45, 48, 52], F = [41, 45, 48], G = [43, 47, 50], Em = [40, 43, 47], E = [40, 44, 47];
-const SONGS = {
-  // Title: a bright high-score anthem.
-  menu: {
-    bpm: 150,
-    chords: [C, Am, F, G, C, Am, F, G],
-    lead: bars(`G5 - C6 - G5 - E5 - G5 ~ ~ - C6 - D6 - | E6 - D6 - C6 - A5 - C6 ~ ~ - A5 - G5 - |
-      A5 - F5 - A5 - C6 - D6 ~ C6 - A5 - F5 - | G5 ~ ~ - B5 - D6 - G6 ~ ~ ~ F6 - D6 - |
-      E6 - - E6 - D6 C6 - D6 - - D6 - C6 B5 - | C6 - - C6 - B5 A5 - E6 ~ ~ - D6 - C6 - |
-      A5 - C6 - F6 - E6 - D6 - C6 - A5 - C6 - | B5 ~ ~ ~ D6 ~ ~ ~ G6 ~ ~ ~ ~ ~ - -`),
-    lead_volume: .07, stabs: .03, arp: .03,
-  },
-  // Match: driving minor-key chase music that builds with the run.
-  match: {
-    bpm: 160,
-    chords: [Am, F, C, G, Am, F, G, E],
-    lead: bars(`A5 - - A5 - G5 - A5 - - C6 - A5 - G5 - | F5 - - F5 - E5 - F5 - - A5 - C6 - A5 - |
-      G5 - - G5 - E5 - G5 - - C6 - E6 - D6 - | B5 ~ ~ - D6 ~ ~ - G5 ~ - B5 ~ - D6 - |
-      E6 - E6 - D6 - C6 - A5 - C6 - D6 - E6 - | F6 - E6 - D6 - C6 - A5 ~ ~ - C6 - A5 - |
-      G5 - B5 - D6 - G6 - F6 - D6 - B5 - D6 - | E6 ~ ~ ~ G#5 ~ ~ ~ B5 ~ ~ ~ E6 ~ ~ ~`),
-    lead_volume: .055, stabs: .026, arp: .028,
+const Dm = [50, 53, 57], Bb = [46, 50, 53], D = [50, 54, 57], Bm = [47, 50, 54], B = [47, 51, 54], A = [45, 49, 52],
+  Gm = [43, 46, 50];
+
+const TITLE = {
+  // Title and menus: a bright high-score anthem.
+  bpm: 150, form: ['A'], lead_volume: .07, stabs: .03, arp: .03,
+  sections: {
+    A: { drums: 'four', bass: 'pump', chords: [C, Am, F, G, C, Am, F, G],
+      lead: bars(`G5 - C6 - G5 - E5 - G5 ~ ~ - C6 - D6 - | E6 - D6 - C6 - A5 - C6 ~ ~ - A5 - G5 - |
+        A5 - F5 - A5 - C6 - D6 ~ C6 - A5 - F5 - | G5 ~ ~ - B5 - D6 - G6 ~ ~ ~ F6 - D6 - |
+        E6 - - E6 - D6 C6 - D6 - - D6 - C6 B5 - | C6 - - C6 - B5 A5 - E6 ~ ~ - D6 - C6 - |
+        A5 - C6 - F6 - E6 - D6 - C6 - A5 - C6 - | B5 ~ ~ ~ D6 ~ ~ ~ G6 ~ ~ ~ ~ ~ - -`) },
   },
 };
-// Octave-pumping bassline, in semitones above the chord root (two octaves down).
-const BASS = [0, 0, 12, 0, 0, 12, 0, 12, 0, 0, 12, 0, 0, 12, 7, 12];
+
+/** Match songs, by level: 1-3, 4-6, 7-9, 10 and up. */
+const MATCH_SONGS = [
+  { // Kickoff: sunny and bouncy, F major.
+    name: 'kickoff', bpm: 132, form: ['A', 'B', 'A', 'C'], lead_volume: .06, stabs: .026, arp: .024,
+    sections: {
+      A: { drums: 'rock', bass: 'walk', chords: [F, C, Dm, Bb, F, C, Bb, C],
+        lead: bars(`C6 - A5 - F5 - A5 - C6 - D6 - C6 - A5 - | G5 - - - E5 - G5 - C6 ~ ~ - G5 - E5 - |
+          F5 - A5 - D6 - F6 - E6 - D6 - C6 - A5 - | Bb5 ~ ~ - D6 - F6 - D6 ~ ~ - C6 - Bb5 - |
+          A5 - C6 - F6 - E6 - F6 - C6 - A5 - C6 - | G5 - C6 - E6 - D6 - C6 - G5 - E5 - G5 - |
+          F5 - Bb5 - D6 - C6 - Bb5 - A5 - G5 - A5 - | C6 ~ ~ ~ G5 ~ ~ ~ C6 ~ ~ ~ - - - -`) },
+      B: { drums: 'four', bass: 'pump', chords: [Dm, Bb, F, C, Dm, Bb, C, C],
+        lead: bars(`D6 - - D6 - C6 - A5 - - F5 - A5 - C6 - | D6 - - D6 - F6 - D6 C6 ~ ~ - Bb5 - A5 - |
+          A5 - - A5 - C6 - F6 - - E6 - D6 - C6 - | E6 ~ ~ ~ D6 ~ C6 ~ G5 ~ ~ ~ - - - - |
+          F6 - E6 - D6 - A5 - D6 - E6 - F6 - A6 - | G6 ~ ~ - F6 - D6 - Bb5 ~ ~ - D6 - F6 - |
+          E6 - G6 - E6 - C6 - G5 - C6 - E6 - G6 - | E6 ~ ~ ~ ~ ~ ~ ~ - - C6 - D6 - E6 -`) },
+      C: { drums: 'half', bass: 'hold', chords: [Bb, C, Dm, Dm, Bb, C, F, F], lead: null },
+    },
+  },
+  { // Pressure: the minor-key chase, with a new chorus and a breakdown.
+    name: 'pressure', bpm: 150, form: ['A', 'B', 'C', 'A', 'B'], lead_volume: .055, stabs: .026, arp: .028,
+    sections: {
+      A: { drums: 'four', bass: 'pump', chords: [Am, F, C, G, Am, F, G, E],
+        lead: bars(`A5 - - A5 - G5 - A5 - - C6 - A5 - G5 - | F5 - - F5 - E5 - F5 - - A5 - C6 - A5 - |
+          G5 - - G5 - E5 - G5 - - C6 - E6 - D6 - | B5 ~ ~ - D6 ~ ~ - G5 ~ - B5 ~ - D6 - |
+          E6 - E6 - D6 - C6 - A5 - C6 - D6 - E6 - | F6 - E6 - D6 - C6 - A5 ~ ~ - C6 - A5 - |
+          G5 - B5 - D6 - G6 - F6 - D6 - B5 - D6 - | E6 ~ ~ ~ G#5 ~ ~ ~ B5 ~ ~ ~ E6 ~ ~ ~`) },
+      B: { drums: 'rock', bass: 'drive', chords: [Dm, Am, E, Am, Dm, G, C, E],
+        lead: bars(`D6 - F6 - A6 - F6 - D6 - F6 - E6 - D6 - | C6 - E6 - A6 - E6 - C6 - B5 - A5 - C6 - |
+          B5 - G#5 - E5 - G#5 - B5 - D6 - E6 - D6 - | C6 ~ ~ - A5 ~ ~ - E5 ~ - A5 ~ - C6 - |
+          F6 - F6 - E6 - D6 - A5 - D6 - F6 - A6 - | G6 - F6 - D6 - B5 - G5 - B5 - D6 - F6 - |
+          E6 - D6 - C6 - G5 - E5 - G5 - C6 - E6 - | G#6 ~ ~ ~ E6 ~ ~ ~ B5 ~ ~ ~ G#5 ~ - -`) },
+      C: { drums: 'half', bass: 'hold', chords: [F, G, Am, Am, F, G, E, E], lead: null },
+    },
+  },
+  { // Night Match: syncopated and moody, E minor.
+    name: 'night', bpm: 156, form: ['A', 'B', 'A', 'C'], lead_volume: .055, stabs: .024, arp: .03,
+    sections: {
+      A: { drums: 'break', bass: 'sync', chords: [Em, C, D, Bm, Em, C, Am, B],
+        lead: bars(`E6 - - E6 - - G6 - F#6 - E6 - D6 - B5 - | C6 - - C6 - - E6 - D6 - C6 - B5 - G5 - |
+          A5 - - A5 - - D6 - F#6 - E6 - D6 - A5 - | B5 ~ ~ ~ D6 ~ ~ ~ F#6 ~ ~ ~ D6 ~ - - |
+          G6 - F#6 - E6 - B5 - E6 - F#6 - G6 - B6 - | A6 - G6 - E6 - C6 - E6 - G6 - A6 - G6 - |
+          E6 - C6 - A5 - C6 - E6 - A6 - G6 - E6 - | D#6 ~ ~ ~ F#6 ~ ~ ~ B6 ~ ~ ~ - - - -`) },
+      B: { drums: 'four', bass: 'drive', chords: [C, D, Em, Em, C, D, B, B],
+        lead: bars(`G5 - C6 - E6 - G6 ~ - E6 - C6 - G5 - C6 | F#5 - A5 - D6 - F#6 ~ - D6 - A5 - F#5 - A5 |
+          B5 ~ ~ - E6 ~ ~ - G6 ~ ~ - F#6 - E6 - | E6 ~ ~ ~ ~ ~ ~ ~ D6 - E6 - F#6 - G6 - |
+          A6 - G6 - E6 - G6 - A6 - B6 - A6 - G6 - | F#6 - E6 - D6 - E6 - F#6 - A6 - F#6 - D6 - |
+          D#6 - F#6 - B6 - A6 - F#6 - D#6 - B5 - D#6 - | F#6 ~ ~ ~ ~ ~ ~ ~ - - - - - - - -`) },
+      C: { drums: 'half', bass: 'hold', chords: [Em, C, D, B, Em, C, D, B], lead: null },
+    },
+  },
+  { // Final Whistle: fast and relentless, D minor.
+    name: 'final', bpm: 168, form: ['A', 'B', 'C', 'A', 'B'], lead_volume: .055, stabs: .028, arp: .03,
+    sections: {
+      A: { drums: 'four', bass: 'drive', chords: [Dm, Bb, C, A, Dm, Bb, Gm, A],
+        lead: bars(`D6 - A5 - D6 - E6 - F6 - E6 - D6 - A5 - | D6 - Bb5 - D6 - F6 - Bb6 - A6 - F6 - D6 - |
+          E6 - C6 - E6 - G6 - C7 - Bb6 - G6 - E6 - | C#6 ~ ~ - E6 ~ ~ - A6 ~ ~ - G6 - E6 - |
+          F6 - F6 - F6 - E6 - D6 - D6 - E6 - F6 - | G6 - G6 - G6 - F6 - D6 - Bb5 - D6 - F6 - |
+          Bb6 - A6 - G6 - F6 - E6 - D6 - C#6 - E6 - | A6 ~ ~ ~ E6 ~ ~ ~ C#6 ~ ~ ~ A5 ~ - -`) },
+      B: { drums: 'break', bass: 'pump', chords: [Bb, C, Dm, Dm, Bb, C, A, A],
+        lead: bars(`F6 ~ ~ - D6 - F6 - Bb6 ~ ~ - A6 - F6 - | G6 ~ ~ - E6 - G6 - C7 ~ ~ - Bb6 - G6 - |
+          A6 - F6 - D6 - F6 - A6 - D7 - A6 - F6 - | D6 ~ ~ ~ ~ ~ ~ ~ A5 - D6 - F6 - A6 - |
+          Bb6 - A6 - G6 - F6 - D6 - F6 - G6 - A6 - | G6 - F6 - E6 - C6 - E6 - G6 - Bb6 - G6 - |
+          E6 - C#6 - A5 - C#6 - E6 - G6 - A6 - C#7 - | A6 ~ ~ ~ ~ ~ ~ ~ - - - - - - - -`) },
+      C: { drums: 'half', bass: 'hold', chords: [Gm, A, Dm, Dm, Gm, A, A, A], lead: null },
+    },
+  },
+];
+for (const song of [TITLE, ...MATCH_SONGS]) song.bars = song.form.reduce((n, key) => n + song.sections[key].chords.length, 0);
+
+/** Which match song a level plays. */
+export const songForLevel = level => MATCH_SONGS[Math.min(MATCH_SONGS.length - 1, Math.floor((Math.max(1, level) - 1) / 3))];
+
+// Bass patterns in semitones above the chord root (two octaves down); null rests.
+const BASS = {
+  pump: [0, 0, 12, 0, 0, 12, 0, 12, 0, 0, 12, 0, 0, 12, 7, 12],          // sixteenth octave pump
+  drive: [0, null, 0, null, 0, null, 12, null, 0, null, 0, null, 0, null, 12, null],
+  walk: [0, null, null, null, 7, null, null, null, 12, null, null, 7, null, null, 5, null],
+  sync: [0, null, null, 0, null, null, 12, null, null, 0, null, null, 7, null, 12, null],
+  hold: [0, null, null, null, null, null, null, null, 7, null, null, null, null, null, null, null],
+};
 
 // ---- Voices -------------------------------------------------------------------
 function pulseWave(duty) {
@@ -148,7 +223,7 @@ function reverbImpulse(seconds = 1.6) {
 export function configure(values) {
   settings = { ...values };
   if (!context) return;
-  musicBus.gain.setTargetAtTime(settings.music * duck, context.currentTime, .05);
+  musicBus.gain.setTargetAtTime(musicLevel(), context.currentTime, .05);
   sfxBus.gain.setTargetAtTime(settings.sfx, context.currentTime, .05);
   master.gain.setTargetAtTime(settings.muted || adMuted ? 0 : 1.5, context.currentTime, .02);
 }
@@ -195,7 +270,7 @@ export async function unlock() {
       nextStep = context.currentTime + .1;
       setInterval(schedule, 25);
     }
-    if (!document.hidden && context.state !== 'running') await context.resume();
+    if (!document.hidden && !adMuted && context.state !== 'running') await context.resume();
   } catch { /* Audio is optional; blocked audio must not block the game. */ }
 }
 
@@ -219,11 +294,27 @@ function buildCrowd() {
 }
 
 // ---- Music sequencer ------------------------------------------------------------
+// During play the music sits well under the game (the crowd, the kick, the net);
+// menus get it at full level. Aiming ducks it further.
+const MATCH_MUSIC = .25;
+const musicLevel = () => settings.music * (scene === 'match' ? MATCH_MUSIC : 1) * duck;
+
+let song = TITLE, nextSong = TITLE, matchSong = MATCH_SONGS[0];
+
 export function setScene(value) {
   if (scene === value) return;
   scene = value;
+  // A new scene starts its song from the top.
+  song = nextSong = scene === 'match' ? matchSong : TITLE;
   step = 0;
+  if (context) musicBus.gain.setTargetAtTime(musicLevel(), context.currentTime, .4);
   if (context) nextStep = Math.max(nextStep, context.currentTime + .15);
+}
+
+/** The level picks the match song; a change lands on the next bar line. */
+export function setLevel(level) {
+  matchSong = songForLevel(level);
+  if (scene === 'match') nextSong = matchSong;
 }
 
 /** 0..1: how built-up the match music is (level and combo). */
@@ -233,7 +324,7 @@ export function setIntensity(value) { intensity = Math.max(0, Math.min(1, value)
 export function setFocus(on) {
   if ((duck < 1) === on) return;
   duck = on ? .55 : 1;
-  if (context) musicBus.gain.setTargetAtTime(settings.music * duck, context.currentTime, .15);
+  if (context) musicBus.gain.setTargetAtTime(musicLevel(), context.currentTime, .15);
 }
 
 function schedule() {
@@ -241,59 +332,103 @@ function schedule() {
   const now = context.currentTime;
   crowd.bed.gain.setTargetAtTime((scene === 'match' ? .1 : .035) * (duck < 1 ? .55 : 1) + crowd.level, now, .5);
   crowd.level = Math.max(0, crowd.level * .985 - .0005);
-  const song = SONGS[scene] || SONGS.menu;
-  const bpm = song.bpm + (scene === 'match' ? 12 * intensity : 0);
-  const sixteenth = 60 / bpm / 4;
   if (nextStep < now) nextStep = now + .02;
   while (nextStep < now + .12) {
+    if (step % 16 === 0 && nextSong !== song) { song = nextSong; step = 0; }
+    const bpm = song.bpm + (scene === 'match' ? 8 * intensity : 0);
+    const sixteenth = 60 / bpm / 4;
     if (settings.music > 0 && !settings.muted && !adMuted) playStep(song, step, nextStep, sixteenth);
     nextStep += sixteenth;
     step++;
   }
 }
 
+/** Where a step falls: its section, the bar within it, and whether it is the song's first bar. */
+function locate(song, index) {
+  let bar = Math.floor(index / 16) % song.bars;
+  const first = bar === 0;
+  for (const key of song.form) {
+    const section = song.sections[key];
+    if (bar < section.chords.length) return { section, bar, first, last: bar === section.chords.length - 1, start: bar === 0 };
+    bar -= section.chords.length;
+  }
+  return null;
+}
+
+/** One sixteenth of drums in the section's pattern. */
+function playDrums(pattern, beat, when, build) {
+  if (pattern === 'four') {
+    if (beat % 4 === 0) drum.kick(when, .5);
+    if (beat === 4 || beat === 12) { drum.snare(when, .22); drum.clap(when, .12 * build); }
+    if (beat % 4 === 2) drum.hat(when, .07, true);
+    else if (build > .45) drum.hat(when, beat % 2 ? .03 : .045);
+  } else if (pattern === 'rock') {
+    if (beat === 0 || beat === 8 || beat === 10) drum.kick(when, .48);
+    if (beat === 4 || beat === 12) drum.snare(when, .24);
+    if (beat % 2 === 0) drum.hat(when, beat === 14 ? .06 : .045, beat === 14);
+  } else if (pattern === 'break') {
+    if (beat === 0 || beat === 6 || beat === 10) drum.kick(when, .5);
+    if (beat === 4 || beat === 12) { drum.snare(when, .24); drum.clap(when, .1 * build); }
+    if (beat === 14) drum.snare(when, .07);
+    if (beat % 2 === 0) drum.hat(when, beat % 4 === 2 ? .06 : .04, beat % 8 === 6);
+  } else if (pattern === 'half') {
+    if (beat === 0) drum.kick(when, .45);
+    if (beat === 8) drum.snare(when, .2);
+    if (beat % 4 === 0) drum.hat(when, .035);
+  }
+}
+
 function playStep(song, index, when, sixteenth) {
-  const bars = song.chords.length;
-  const bar = Math.floor(index / 16) % bars, beat = index % 16;
-  const chord = song.chords[bar];
+  const at = locate(song, index);
+  const { section } = at;
+  const beat = index % 16, chord = section.chords[at.bar];
   const match = scene === 'match';
   // The title plays everything; the match starts lean and fills in with intensity.
   const build = match ? .35 + .65 * intensity : 1;
-  const lastBar = bar === bars - 1;
+  const breakdown = !section.lead;
 
-  // Drums: four on the floor, snare and clap on 2 and 4, sixteenth hats with
-  // open hats on the offbeats, and a snare roll into every loop.
-  if (beat % 4 === 0) drum.kick(when, .5);
-  if (beat === 4 || beat === 12) { drum.snare(when, .22); drum.clap(when, .12 * build); }
-  if (beat % 4 === 2) drum.hat(when, .07, true);
-  else if (build > .45) drum.hat(when, beat % 2 ? .03 : .045);
-  if (lastBar && beat >= 8) {
+  playDrums(section.drums, beat, when, build);
+  // A snare roll and riser into every new section; a crash where one begins.
+  if (at.last && beat >= 8 && !breakdown) {
     if (beat % 2 === 0 || beat >= 12) drum.snare(when, .06 + (beat - 8) * .018);
     if (beat === 8) hiss(when, sixteenth * 8, { frequency: 400, q: 1.5, volume: .06, bus: musicBus, attack: sixteenth * 7, sweep: 12 });
   }
-  if (beat === 0 && bar === 0 && index > 0) drum.crash(when, .14);
+  if (beat === 0 && at.start && index > 0) drum.crash(when, .14);
 
-  // Bass: sixteenth octave pump, triangle with a thin pulse on top for bite.
-  const bassNote = chord[0] - 12 + BASS[beat];
-  voice(midi(bassNote), when, sixteenth * .8, { wave: 'triangle', volume: .2, bus: musicBus, release: .02 });
-  voice(midi(bassNote), when, sixteenth * .5, { wave: 'p12', volume: .035, bus: musicBus, release: .02 });
+  // Bass: the section's pattern, each note held until the next.
+  const pattern = BASS[section.bass], offset = pattern[beat];
+  if (offset !== null) {
+    let length = 1;
+    while (beat + length < 16 && pattern[beat + length] === null) length++;
+    const bassNote = chord[0] - 12 + offset;
+    const hold = section.bass === 'pump' ? .8 : Math.min(length, 4) * .85;
+    voice(midi(bassNote), when, sixteenth * hold, { wave: 'triangle', volume: .2, bus: musicBus, release: .03 });
+    voice(midi(bassNote), when, sixteenth * Math.min(hold, 1), { wave: 'p12', volume: .035, bus: musicBus, release: .02 });
+  }
 
-  // Offbeat chord stabs (the "pump" between kicks).
-  if (beat % 4 === 2) {
+  // Chords: offbeat stabs, or a soft held pad in a breakdown.
+  if (breakdown) {
+    if (beat === 0) for (const note of chord) voice(midi(note + 12), when, sixteenth * 15, { wave: 'p50', volume: song.stabs * .9,
+      bus: musicBus, attack: .08, release: .3, reverb: .45, vibrato: .004 });
+  } else if (beat % 4 === 2) {
     for (const note of chord) voice(midi(note + 12), when, sixteenth * 1.2, { wave: 'p50', volume: song.stabs * build,
       bus: musicBus, release: .04, reverb: .2 });
   }
 
-  // Arpeggio: up-and-over chord tones on every sixteenth.
-  if (build > .3) {
+  // Arpeggio: up-and-over chord tones; in a breakdown it carries the tune, slower and echoing.
+  if (build > .3 || breakdown) {
     const shape = [0, 1, 2, 3, 2, 1];
-    const tone = shape[beat % shape.length];
-    const note = tone === 3 ? chord[0] + 24 : chord[tone] + 12;
-    voice(midi(note + 12), when, sixteenth * .6, { wave: 'p12', volume: song.arp * build, bus: musicBus, release: .02, echo: .1 });
+    const slot = breakdown ? Math.floor(beat / 2) : beat;
+    if (!breakdown || beat % 2 === 0) {
+      const tone = shape[slot % shape.length];
+      const note = tone === 3 ? chord[0] + 24 : chord[tone] + 12;
+      voice(midi(note + 12), when, sixteenth * (breakdown ? 1.6 : .6), { wave: 'p12',
+        volume: song.arp * (breakdown ? 1.5 : build), bus: musicBus, release: .02, echo: breakdown ? .35 : .1 });
+    }
   }
 
   // Lead: doubled and slightly detuned for width; held notes get vibrato.
-  const notes = song.lead[bar], note = notes[beat];
+  const notes = section.lead?.[at.bar], note = notes?.[beat];
   if (typeof note === 'number') {
     let length = 1;
     for (let k = beat + 1; k < notes.length && notes[k] === '~'; k++) length++;
@@ -457,7 +592,7 @@ export function setMuted(on) {
 export function setPaused(on) {
   if (!context) return;
   setPower(null);
-  musicBus.gain.setTargetAtTime(settings.music * (on ? .25 : duck), context.currentTime, .1);
+  musicBus.gain.setTargetAtTime(on ? settings.music * .25 : musicLevel(), context.currentTime, .1);
 }
 
 export function visibility() {
@@ -475,5 +610,5 @@ function level() {
   return { peak, rms: Math.sqrt(sum / meterData.length) };
 }
 
-export const status = () => ({ state: context?.state || 'locked', scene, intensity, settings: { ...settings },
+export const status = () => ({ state: context?.state || 'locked', scene, song: song.name || 'title', intensity, settings: { ...settings },
   played: { ...played }, level: level() });

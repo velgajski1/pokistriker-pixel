@@ -1,7 +1,9 @@
 // Arcade difficulty by level: conversion and precision tiers over many shots.
 // Drives the production shot (setup, keeper and defender AI, swept collisions,
 // goal-line verdict) through app.js's local test harness, aiming at the real
-// target spot with a human-ish aim and power error.
+// target spot. The aim and height errors model a human pressing the two taps:
+// a 50 ms timing spread times how fast the arrow and meter are moving then,
+// after waiting 0-3 bounces (each one speeds them up).
 // Usage: node tools/balance-simulation.mjs [shotsPerLevel=240]
 import { writeFileSync } from 'node:fs';
 import { CAPTURES, open } from './lib.mjs';
@@ -19,14 +21,18 @@ try {
       const tally = { level, shots, goal: 0, bullseye: 0, target: 0, plain: 0, save: 0, blocked: 0,
         miss: 0, blockersSeen: 0, keeperSkill: 0 };
       const origin = { x: 0, y: 0, z: 0 }, target = {};
+      const TIMING = .05;   // seconds: how precisely a player presses
       for (let i = 0; i < shots; i++) {
         app.chooseChanceOrigin(origin, level);
         const range = origin.z - __demo.dimensions.goal.PLANE_Z;
+        const boost = n => Math.min(1 + app.BOUNCE.MAX, 1 + app.BOUNCE.STEP * n);
+        const aimSpeed = app.sweepSpeedAt(level, Math.hypot(origin.x, range)) * boost(Math.floor(Math.random() * 4));
+        const powerSpeed = app.powerCycle(level) * boost(Math.floor(Math.random() * 4));
         const keeperX = Math.max(-2.6, Math.min(2.6, origin.x * .25));
         app.chooseTarget(target, level, keeperX);
         const result = app.simulateArcadeShotForTest({ level, x: origin.x, range,
           targetX: target.x, targetY: target.y, ring: target.ring, bull: target.bull,
-          aimError: gauss() * .45, powerError: gauss() * .035 });
+          aimError: gauss() * aimSpeed * TIMING, powerError: gauss() * powerSpeed * TIMING });
         tally.blockersSeen += result.blockers;
         tally.keeperSkill += result.keeperSkill;
         if (result.outcome === 'goal') {

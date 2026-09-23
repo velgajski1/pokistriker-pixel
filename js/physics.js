@@ -452,6 +452,34 @@ export function predictCrossing(origin, theta, power, speedScale, out, atZ) {
   return out;
 }
 
+/**
+ * Where a ball leaving `origin` with velocity `vel` crosses the plane at
+ * `atZ` (the goal line by default). `curve` is a sideways (x) acceleration,
+ * m/s^2, from spin; a keeper reads the flight without it.
+ */
+export function predictFromVelocity(origin, vel, out, atZ, curve = 0) {
+  const plane = atZ === undefined ? GOAL.PLANE_Z : atZ;
+  const t = vel.z === 0 ? 0 : (plane - origin.z) / vel.z;
+  out.x = origin.x + vel.x * t + .5 * curve * t * t;
+  out.y = Math.max(0, origin.y + vel.y * t + .5 * GRAVITY * t * t);
+  out.t = t;
+  return out;
+}
+
+/**
+ * The launch velocity that carries the ball from `origin` to (x, y) on the
+ * goal line at horizontal `speed`, with the sideways `curve` it will pick up
+ * on the way (so a curler still finishes where it was aimed).
+ */
+export function velocityTo(origin, x, y, speed, out, curve = 0) {
+  const dz = GOAL.PLANE_Z - origin.z;
+  const t = Math.hypot(x - origin.x, dz) / speed;
+  out.z = dz / t;
+  out.x = (x - origin.x - .5 * curve * t * t) / t;
+  out.y = (y - origin.y - .5 * GRAVITY * t * t) / t;
+  return out;
+}
+
 /** Launch vector per spec: dir(theta) * base * (0.6 + 0.4 * power), Vy = power * LIFT. */
 export function launchVector(theta, power, speedScale, out) {
   const a = Math.max(-AIM_CLAMP, Math.min(AIM_CLAMP, theta));

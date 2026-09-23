@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-<title>Block Striker - Arcade Football</title>
-<meta name="description" content="Block Striker: a blocky arcade football shooter in your browser. Hit the target, build your combo, and outlast a keeper who keeps getting better." />
+<title>Block Striker - Free Online Soccer Game</title>
+<meta name="description" content="Play Block Striker, a free blocky soccer game online. Hit the target, beat the keeper and build combos in this pixel football shooter. No download needed." />
+<link rel="preload" href="assets/fonts/rubik.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8' shape-rendering='crispEdges'%3E%3Crect width='8' height='8' fill='%235aa33a'/%3E%3Crect y='3' width='8' height='5' fill='%238a5a33'/%3E%3Crect x='2' y='4' width='1' height='1' fill='%23704626'/%3E%3Crect x='5' y='6' width='1' height='1' fill='%23704626'/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="style.css" />
 <!-- Poki SDK: the one external script, served by Poki. The game runs without it (js/poki.js). -->
@@ -36,17 +37,23 @@
     <div class="hud-score">
       <span id="hud-score" class="score">000000</span>
       <span id="hud-best" class="best">BEST 000000</span>
+      <span id="hud-progress" class="hud-progress"><b>PROGRESS 0%</b><i></i></span>
       <span id="hud-combo" class="combo"></span>
     </div>
     <div class="hud-level">
       <span id="hud-level">LEVEL 1</span>
+      <span id="hud-rank" class="rank">ROOKIE</span>
       <span id="hud-level-blocks" class="level-blocks"></span>
+      <div id="hud-special" class="special-tag"></div>
     </div>
     <div id="hud-hearts" class="hearts" aria-label="Hearts"></div>
 
     <div id="phase-prompt" class="phase-prompt"></div>
     <div id="verdict" class="verdict" aria-live="polite"></div>
     <div id="banner" class="banner" aria-live="polite"></div>
+    <div id="toast" class="toast" aria-live="polite"></div>
+    <svg id="swipe" class="swipe" aria-hidden="true"><polyline points="" /></svg>
+    <div id="charge" class="charge hidden" aria-hidden="true"><i></i></div>
   </div>
 
   <!-- Pause and game-over panels -->

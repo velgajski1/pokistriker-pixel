@@ -19,13 +19,22 @@ export async function open(errors = []) {
     page.on('console', message => {
       if (message.type() === 'error' && !/Cross-Origin-Opener-Policy/.test(message.text())) errors.push(message.text());
     });
-    await page.goto(process.env.DEMO_URL || 'http://localhost:5174', { waitUntil: 'networkidle' });
+    // Timing mode by default: the checks aim with Space presses (tools/shot-modes.mjs covers the others).
+    await page.goto(process.env.DEMO_URL || 'http://localhost:5174/?shot=timing', { waitUntil: 'networkidle' });
     await page.waitForFunction(() => window.__demo?.ready, null, { timeout: 45000 });
+    await pastSelect(page);
     return { browser, context, page, errors };
   } catch (error) {
     await browser.close();
     throw error;
   }
+}
+
+/** If a striker select is open (the results screen's STRIKER, or Alt+1), play with the selected striker. */
+export async function pastSelect(page) {
+  if (!await page.evaluate(() => window.__demo.state.screen === 'SELECT')) return;
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => window.__demo.state.screen === 'MATCH');
 }
 
 export const frameStats = samples => {

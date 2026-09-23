@@ -2,12 +2,16 @@
   "name": "block-striker",
   "version": "1.0.0",
   "private": true,
-  "description": "Block Striker: blocky arcade football",
+  "description": "Block Striker: Free Online Soccer Game",
   "type": "module",
   "scripts": {
     "start": "npx --yes serve -l 5174 .",
     "dev": "npx --yes serve -l 5174 .",
     "check": "node tools/validate.mjs check",
+    "check:ads": "node tools/poki-ads.mjs",
+    "check:hooks": "node tools/hooks.mjs",
+    "check:shots": "node tools/shot-modes.mjs",
+    "check:keeper": "node tools/keeper-reach.mjs",
     "balance": "node tools/balance-simulation.mjs",
     "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-release.ps1"
   },

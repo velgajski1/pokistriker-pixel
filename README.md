@@ -4,7 +4,10 @@ A blocky arcade football shooter for the browser. Each chance puts a target on
 the goal: lock the aim arrow on it, set the height, and shoot. Precision scores,
 consecutive target hits build a combo, and anything that is not a goal costs a
 heart. Every three goals the level rises: the keeper and defence, useless at
-first, get sharper, the arrow speeds up and the target shrinks.
+first, get sharper, the arrow speeds up and the target shrinks. Special chances
+(golden balls, moving targets, free kicks, boss keepers, bonus rounds) break up
+a run; XP, unlocks, missions, checkpoints and a daily challenge carry over
+between runs.
 
 Plain ES modules and Three.js r169 (the official minified build, vendored under
 `vendor/three`), no build step.
@@ -18,18 +21,41 @@ game mode and interface are new.
 npm install          # Playwright, for the browser checks only
 npm start            # static server on http://localhost:5174
 npm run check        # arcade smoke test (needs the server running)
+npm run check:hooks  # special chances, missions, XP and locker, checkpoints, daily, persistence
+npm run check:ads    # every ad break against a stub Poki SDK
+npm run check:shots  # flick and free-aim shots with the real mouse, and the Alt+9 switch
+npm run check:keeper # on-target shots always beat the keeper, and never pass through him
 npm run balance      # conversion and precision by level
 ```
 
 Browser checks use real Chrome: `CHROMIUM_PATH="C:/Program Files/Google/Chrome/Application/chrome.exe"`.
+On localhost, Alt+1..8 previews a screen with sample data (1 striker select,
+2 pause, 3 game over, 4 daily results, 5 locker, 6 level-up banner, 7 mission
+toast, 8 the next special chance in turn) and Alt+0 returns to play. That code
+sits in `/* @dev */` blocks, which `npm run package:release` strips.
 `DEMO_URL` overrides the server address. `?pixel=300` renders through an
 optional low-resolution pixel filter (300 rows); it is off by default.
 
 ## Controls
 
-The game opens straight into the first chance. Tap, click, Space or Enter:
-the first press locks the aim arrow, the second sets the shot's height from the
-pulsing meter. A press during the replay skips it. Esc or P (or the II button)
+The game opens straight into the first chance, no menu before play, with the
+saved striker (a random free one on a first launch). The STRIKER button on the
+game-over screen changes it: ten strikers with pixel portraits painted from
+their block skins in the equipped kit, six of them locked at first. Picking a
+look a team-mate or opponent already has swaps theirs, so nobody is on the
+pitch twice.
+Every run opens with the camera further behind the striker, easing into the
+aim view over 1.5 s. How a shot is taken depends on the shot mode
+(`?shot=flick|aim|timing`; on localhost Alt+9 cycles them; releases default to
+the two-tap timing shot, `DEFAULT_SHOT_MODE` in `js/app.js`):
+
+| Mode | Shot |
+|---|---|
+| Flick | Swipe up from anywhere. The swipe's direction sets where the ball crosses the line (5.5 m across per unit of sideways-over-up slope), its length the height (up to 2.9 m), its speed the pace (25-40 m/s). A swipe that bows to one side curls the ball back the other way, up to 14 m/s^2 sideways; the launch is corrected so a curler still finishes where it was aimed, but the keeper and a wall read it as a straight shot. No aim preview. |
+| Free aim | A crosshair on the goal follows the pointer (or the arrow keys) and sways, more at higher levels. Hold (click, touch, Space) to charge pace; the sway grows with the charge. Release to shoot at the crosshair. |
+| Timing | The original: the first press locks the sweeping aim arrow, the second sets the height from the pulsing meter. The meter is the height on the goal line (5 cm at the bottom to 3.3 m at the top, at any distance), so a late press misses high. |
+
+A press during the replay skips it. Esc or P (or the II button)
 pauses; the SOUND button in the corner switches all sound on or off.
 
 ## Poki
@@ -43,11 +69,22 @@ no-op and the game plays the same, minus the rewarded continue.
 | Boot | `init()`, then `gameLoadingFinished()` once the first frame has rendered |
 | First press of a session, resume, PLAY AGAIN, continue | `gameplayStart()` (never twice in a row) |
 | Pause, hidden tab, game over | `gameplayStop()` |
-| Resume from pause, RESTART, PLAY AGAIN | `commercialBreak()` first; audio muted and input ignored while it runs |
+| Resume from pause | `commercialBreak()` first; audio muted and input ignored while it runs |
+| New runs: PLAY AGAIN, RESTART, START LV n, DAILY | `commercialBreak()` before every third one only (never the session's first run) |
 | Game over: CONTINUE +1 HEART | `rewardedBreak()`, once per run; the heart only if it reports success. Grey with the 🎬 icon, below and smaller than PLAY AGAIN. |
+| Game over after a continue: NEXT RUN +1 HEART | `rewardedBreak()`; on success the next arcade run starts with 4 hearts. No gameplay resumes. |
+| START LV n, DAILY | `commercialBreak()` first, like PLAY AGAIN |
+| Analytics | `measure()`: `run` start/complete per mode, `level` start/complete/fail, `special` start/complete/fail, `mission` and `unlock` complete, `button` visible/interact for the rewarded offers, daily, checkpoint and locker |
 | Mobile | `movePill()` moves Poki's pill below the score |
 
-Space and the arrow keys never scroll the page, nor does the wheel. The test
+While a break runs, every break-starting button ignores presses (Enter would
+otherwise re-click the focused PLAY AGAIN behind the ad), and if the tab is
+hidden when it ends (an ad click opened a new tab) the game stays paused.
+`npm run check:ads` checks all of this against a stub SDK (`tools/poki-ads.mjs`,
+from the `poki-sdk` skill).
+
+Space and the arrow keys never scroll the page, nor does the wheel, and touch
+gestures can't pan or zoom the page around the game. The test
 hook `window.__demo` and the balance harness exist only on localhost.
 `node tools/poki-thumbnail.mjs` renders the 1024x1024 text-free thumbnail to
 `dist/poki/thumbnail.png`; `npm run package:release` builds the upload ZIP.
@@ -56,28 +93,38 @@ hook `window.__demo` and the balance harness exist only on localhost.
 
 | | |
 |---|---|
-| Hearts | 3 at the start, 5 at most. A save, block, post or crossbar, or miss costs one. |
-| Points | Bullseye 300, target ring 200, plain goal 100, times the combo. |
+| Hearts | 3 at the start (4 with a boost), 5 at most. A save, block, post or crossbar, or miss costs one. |
+| Points | Bullseye 300, target ring 200, plain goal 100, times the combo, times a special chance's multiplier. |
 | Combo | Consecutive goals inside the target ring, up to x5. A plain goal or a miss resets it. |
 | Extra life | About one target in five carries a block heart (never two in a row, not at 5 hearts). A goal inside the ring collects it. |
 | Level | Up every 3 goals: new opponent kit and pitch, and everything below gets harder. |
-| Target | Always clear of the keeper: its ring sits at least 0.45 m beyond where he sets himself. Ring half-width 0.85 m at level 1, shrinking toward 0.5 m. |
-| Best score | Kept in `localStorage` (`blockstriker.best.v1`). |
+| Target | A round archery face (white, black, blue and red bands, a gold bullseye); specials paint it in their colours. Scored by distance from the centre: inside the bullseye, inside the ring, or a plain goal; a ball up to 12 cm outside a painted ring still counts as inside it (`TARGET.LENIENCY`). Radius 0.7 m at level 1, shrinking toward 0.45 m; the bullseye 0.34 m toward 0.2 m. Always clear of the keeper: the ring's edge stays 1.05 m from where he sets himself, the bullseye 1.7 m. |
+| On target beats the keeper | A shot that crosses inside the ring, or up to 0.4 m outside it ("through his fingers"), always scores. The keeper still dives at it, full stretch, but every physics step keeps his real limbs 12 cm clear of the ball ("JUST PAST HIS FINGERTIPS!"). A defender's touch cancels it. `npm run check:keeper` checks both over thousands of shots. |
+| Pause after a shot | 2.6 s after a goal (up to 4.2 s while the celebration plays), 1 s after a miss. A tap skips it. |
+| Best score | Kept in `localStorage` (`pokisavedgame.blockstriker.best.v1`). |
 
-All numbers live in `ARCADE`, `TARGET` and `SHOT` at the top of `js/app.js`.
+All numbers live in `ARCADE`, `HOLD`, `SPECIALS`, `TARGET` and `SHOT` at the top
+of `js/app.js`.
 
 ### Difficulty
 
-`levelRamp(level) = 1 - exp(-(level - 1) / 9)`, 0 at level 1 and approaching 1.
+`levelRamp(level) = 1 - exp(-(level - 1) / ARCADE.RAMP_LEVELS)`, 0 at level 1
+and approaching 1. `RAMP_LEVELS` is 20, a slow climb: the ramp is 0.14 at
+level 4, 0.30 at level 8, 0.48 at level 14.
 
-- **Keeper:** interpolates from a rookie profile (0.55 s reaction, slow dives,
-  1.1 m read error, soft catches) toward the original game's elite keeper, capped
-  at 80% of the way (`ARCADE.KEEPER_CAP`). Long shots add a little on top.
-- **Defenders:** none before level 5; sometimes one from level 5, always one from
-  level 8, up to two on longer chances from level 12. Their reactions and lunges
+- **Keeper:** good from the first shot: 55% of the way from a rookie to the
+  original game's elite keeper at level 1, rising to 90% (`ARCADE.KEEPER_FLOOR`,
+  `KEEPER_CAP`). He reads and dives at everything, so shots outside the target
+  are usually saved; only the target beats him.
+  Long shots add a little on top.
+- **Defenders:** none before level 5 (the first levels are striker against
+  keeper); sometimes one from level 5, always one from level 7, up to two on
+  longer chances from level 10. Their reactions and lunges
   are slow at first and tighten over the run.
-- **Aim:** the arrow sweeps at 62% of the base speed at level 1, rising toward
-  150%; the height meter cycles from 0.95 to 1.6 per second. Long chances still
+- **Aim (timing mode):** the arrow sweeps at 114% of the base speed at level 1,
+  rising toward 230%; the height meter cycles from 1.4 to 2.6 per second. Every
+  turn of the arrow or the meter speeds it up another 10%, up to +50%, so
+  waiting for the perfect moment makes the shot harder. Long chances still
   sweep faster (1x within 10 m, up to 2.5x).
 - **Chances:** from 9-13 m and fairly central at level 1, out to 25 m and wide.
 
@@ -85,14 +132,69 @@ Measured with `node tools/balance-simulation.mjs 300` (production shot code,
 shots aimed at the real target with a Gaussian 0.45 m aim and 0.035 power error;
 the arrow speed is not modelled, so real play gets harder than this faster):
 
-| Level | 1 | 2 | 3 | 5 | 8 | 10 | 12 | 16 | 20 |
+| Level | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 14 |
 |---|---|---|---|---|---|---|---|---|---|
-| Conversion % | 96 | 96 | 96 | 86 | 55 | 46 | 39 | 29 | 26 |
-| Bullseye % | 66 | 59 | 57 | 48 | 26 | 21 | 16 | 11 | 9 |
-| Saved % | 4 | 4 | 4 | 10 | 35 | 43 | 47 | 57 | 64 |
+| Conversion % | 90 | 87 | 74 | 65 | 54 | 48 | 28 | 24 | 20 |
+| Bullseye % | 50 | 46 | 36 | 27 | 23 | 18 | 9 | 7 | 6 |
+| Saved % | 10 | 12 | 22 | 26 | 35 | 43 | 57 | 64 | 61 |
+
+Out of date: measured before the faster arrow, the bounce speed-up and the
+weaker keeper cap; re-measure with `npm run balance`, which now models a player's
+timing (a 50 ms spread times the arrow and meter speed after 0-3 bounces).
+
+
 
 Outcomes are random (chance spots, keeper reads, deflections); re-measure over
 many shots after any change to physics, the keeper or defender AI, or `SHOT`.
+
+## Special chances
+
+About one chance in three from level 2 is special, never two in a row. The
+first run of a session opens with a showcase instead (players who see one
+repeated shot leave): a plain chance, a golden ball, a plain one, then a moving
+target. The HUD
+shows a coloured tag and the target takes the special's colours.
+
+| Special | When | Rule |
+|---|---|---|
+| Golden ball | from level 2, 12% | gold ball and target, double points |
+| Moving target | from level 3, 10% | the target slides across its side of the goal until the kick, x1.5 points |
+| Free kick | from level 5, 10% | 17-22 m out, a two-man wall 9.15 m from the ball that jumps as you strike, x2 points |
+| Boss keeper | first chance of every 5th level | a slightly bigger keeper (1.08x) in black and gold, no extra skill, his collision grows with him; beat him for x3 points and a heart |
+| Bonus round | first three chances of every 4th level | the keeper stands aside, misses are free, x2 points; combo and level progress untouched |
+
+## Progression
+
+`js/progress.js` owns everything that carries over between runs, stored in
+`pokisavedgame.blockstriker.progress.v1`:
+
+- **XP and unlocks.** A run pays its score / 10 in XP (a continued run pays only
+  for the points scored since its last game over), missions pay more. 38 unlocks
+  on one track from 150 to 43,800 XP, a striker or a kit every few steps:
+  14 kits (a repaint of the striker and his team-mates, and the home fans),
+  7 boots, 7 ball tints, 4 celebrations and 6 strikers. Free from the start: the
+  classic kit, boots and ball, three celebrations and four strikers. The
+  game-over screen shows the XP bar toward the next unlock; the LOCKER (tabs:
+  kits, boots, balls, moves) equips them and shows the collection count.
+  Locked strikers show greyed on the striker screen with their XP cost.
+- **Missions.** Three active at a time from a pool of 20, easiest first,
+  cycling. "In one run" missions count within a run; the others add up across
+  runs from when they start. A mission finished mid-run pays at once with a
+  toast.
+- **Game progress.** 0-100%: the average of reaching level 10, finishing every
+  mission once (the achievements) and unlocking every item on the track. Shown
+  under the best score in the HUD, on the game-over screen with its three parts,
+  and in the locker.
+- **Ranks.** ROOKIE, PRO (level 4), STAR (7), LEGEND (10), ICON (13), shown
+  under the level; a new rank gets its own banner.
+- **Checkpoints.** Reaching two levels past 4, 7, 10 or 13 lets later runs
+  START at that level.
+- **Daily challenge.** Ten chances seeded by the date (spots, targets, keeper
+  set, kits, specials; deflections stay random), the level rising one per shot
+  and a boss on the last. No hearts to lose. The day's best and a streak of
+  consecutive days are kept.
+- **So-close screen.** Game over shows the gap to the best score, rank, XP,
+  unlocks and missions, then PLAY AGAIN, START LV n, DAILY and LOCKER.
 
 ## Look
 
@@ -119,9 +221,15 @@ many shots after any change to physics, the keeper or defender AI, or `SHOT`.
   DOM write.
 - **Sound.** Everything is synthesized with Web Audio (`js/audio.js`), no
   samples: pulse-wave and triangle chip voices, noise drums, a reverb send and a
-  lead echo. Two looping songs (a C-major title theme, a driving A-minor match
-  theme) whose hats, arpeggio and tempo build with the level and combo; the
-  music ducks while you aim. A live crowd bed roars on goals and groans on
+  lead echo. A C-major title anthem for the menus, and four match songs, one
+  per band of levels: Kickoff (levels 1-3, 132 bpm, F major), Pressure (4-6,
+  150 bpm, A minor), Night Match (7-9, 156 bpm, E minor) and Final Whistle (10+,
+  168 bpm, D minor). Each is about a minute of verse, chorus and a lead-free
+  breakdown, with its own drum (four-on-the-floor, rock, breakbeat, half-time)
+  and bass (pump, drive, walk, syncopated, held) patterns per section; a new
+  song takes over on a bar line. Layers and tempo build with the level and
+  combo. During play the music sits at a quarter of its menu level, under the
+  crowd and the shot sounds, and ducks further while you aim. A live crowd bed roars on goals and groans on
   misses. Stingers for every beat of a shot: aim and power blips, the kick,
   woodwork clang, net swish, tiered goal / target / bullseye fanfares (the
   bullseye adds a coin sparkle), combo blips that climb with the combo, a 1-UP
@@ -141,7 +249,8 @@ js/blockman.js      block-person parts and skin painting
 js/voxel.js         boot-time voxelizer (the ball)
 js/physics.js       vector maths, ball kinetics, swept collision, net
 js/uiManager.js     every DOM write
-js/saveSystem.js    localStorage: best score and audio mix
+js/progress.js      XP, unlocks, missions, ranks, checkpoints, daily challenge
+js/saveSystem.js    localStorage (keys prefixed pokisavedgame.): best score, audio mix, progress
 js/audio.js         the whole soundscape, synthesized: chip music, crowd, arcade stingers
 tools/              Playwright checks and Blender asset scripts
 ```
@@ -164,6 +273,15 @@ tools/              Playwright checks and Blender asset scripts
 - **The net is four spring-damper surfaces** the ball sinks into, each a small
   cloth pinned at the rim, integrating at 240 Hz.
 - **Advertising boards rebound the ball** with swept collision boxes.
+- **Two quality tiers.** Touch devices and CPUs with 4 cores or fewer run low
+  quality: at most 1.5x device pixels without anti-aliasing, 1024 px hard
+  shadows refreshed every other frame, only the body blocks (head, torso,
+  hips, legs) casting shadows, and every other crowd seat filled with 6-box
+  fans. At 1920x1080 that is about 135 draw calls and 0.28M triangles per
+  frame, against 345 and 1.28M on high. In both tiers the resolution steps
+  down by 0.25x (to 0.75x at least, never back up) whenever the median frame
+  misses 45 fps. `?quality=low|high` overrides the detection; `?stats=1` shows
+  fps, tier, resolution, draw calls and triangles.
 - **Framerate independence.** All displacement scales against one
   `clock.getDelta()`; the physics accumulator makes 30, 60 and 144 Hz agree.
 - **Consistent metre scale.** Pitch 105 x 68 m, goal 7.32 x 2.44 m, ball radius

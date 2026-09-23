@@ -1,14 +1,15 @@
 /**
  * uiManager.js - every DOM write in the game happens here.
  *
- * The arcade interface: the HUD (score, pixel hearts, level blocks, combo),
- * shot verdicts, the level-up banner, and the title and game-over panels.
+ * The arcade interface: the HUD (score, pixel hearts, level blocks, rank,
+ * combo, special-chance tag), shot verdicts, the level-up banner, mission
+ * toasts, and the pause, game-over and locker panels.
  * This module owns no game state; app.js hands it plain values.
  */
 
 const $ = (id) => document.getElementById(id);
 const el = {};
-let verdictTimer = 0, bannerTimer = 0;
+let verdictTimer = 0, bannerTimer = 0, toastTimer = 0;
 const loadingStarted = performance.now();
 
 // ---- Pixel art ------------------------------------------------------------
@@ -57,11 +58,23 @@ export function init() {
   el.combo = $('hud-combo');
   el.level = $('hud-level');
   el.levelBlocks = $('hud-level-blocks');
+  el.rank = $('hud-rank');
+  el.progress = $('hud-progress');
+  el.special = $('hud-special');
+  el.toast = $('toast');
+  el.swipe = $('swipe');
+  el.swipeLine = el.swipe.querySelector('polyline');
+  el.charge = $('charge');
   el.hearts = $('hud-hearts');
   el.prompt = $('phase-prompt');
   el.verdict = $('verdict');
   el.banner = $('banner');
   el.overlay = $('overlay');
+  // A rotated phone or a resized window refits whichever panel is open.
+  addEventListener('resize', () => {
+    const panel = el.overlay.firstElementChild;
+    if (panel && !el.overlay.classList.contains('hidden')) fitPanel(panel);
+  });
 }
 
 /** One button: SOUND ON / SOUND OFF. `onToggle(muted)` applies and saves it. */
@@ -120,8 +133,12 @@ export function setGameplayActive(on) {
   el.overlay.inert = on;
 }
 
-let lastScore = -1;
-export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProgress, best }) {
+let lastScore = -1, lastSpecial = '';
+const hex = value => '#' + value.toString(16).padStart(6, '0');
+const thousands = value => value.toLocaleString('en-US');
+
+export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProgress, levelSteps = 3, best,
+  rank = '', daily = null, special = null, progress = null }) {
   if (score !== lastScore) {
     el.score.textContent = String(score).padStart(6, '0');
     if (lastScore >= 0 && score > lastScore) {
@@ -132,13 +149,29 @@ export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProg
   el.best.textContent = `BEST ${String(Math.max(best, score)).padStart(6, '0')}`;
   el.combo.textContent = combo > 1 ? `x${combo}` : '';
   el.combo.classList.toggle('show', combo > 1);
-  el.level.textContent = `LEVEL ${level}`;
+  el.level.textContent = daily ? `DAILY ${daily.shot}/${daily.of}` : `LEVEL ${level}`;
+  el.rank.textContent = daily ? `LEVEL ${level}` : rank;
+  if (progress !== null && el.progress.dataset.percent !== String(progress)) {
+    el.progress.dataset.percent = progress;
+    el.progress.firstChild.textContent = `PROGRESS ${progress}%`;
+    el.progress.style.setProperty('--fill', `${progress}%`);
+  }
   const blocks = [];
-  const steps = 3;
-  for (let i = 0; i < steps; i++) {
-    blocks.push(node('i', i < Math.round(levelProgress * steps) ? 'on' : ''));
+  if (!daily) for (let i = 0; i < levelSteps; i++) {
+    blocks.push(node('i', i < Math.round(levelProgress * levelSteps) ? 'on' : ''));
   }
   el.levelBlocks.replaceChildren(...blocks);
+  el.hearts.classList.toggle('hidden', !!daily);
+  const specialKey = special ? `${special.kind}:${special.label}` : '';
+  if (specialKey !== lastSpecial) {
+    lastSpecial = specialKey;
+    el.special.replaceChildren();
+    el.special.className = 'special-tag';
+    if (special) {
+      el.special.append(node('strong', '', special.label), node('span', '', special.note));
+      el.special.className = `special-tag show ${special.kind}`;
+    }
+  }
   if (el.hearts.dataset.hearts !== `${hearts}/${maxHearts}`) {
     const lost = Number(el.hearts.dataset.hearts?.split('/')[0]) > hearts;
     el.hearts.dataset.hearts = `${hearts}/${maxHearts}`;
@@ -163,14 +196,45 @@ export function flashVerdict(label, kind, points = '', detail = '') {
   verdictTimer = setTimeout(() => { el.verdict.className = 'verdict'; }, 1600);
 }
 
-export function showLevelUp(level) {
-  el.banner.replaceChildren(node('strong', '', `LEVEL ${level}`),
-    node('span', '', level === 2 ? 'THE KEEPER IS WAKING UP' : level === 3 ? 'DEFENDERS INCOMING'
-      : level === 5 ? 'A DEFENDER EVERY TIME' : level === 6 ? 'DOUBLE DEFENCE'
-        : level % 3 === 0 ? 'SMALLER TARGETS' : 'THEY ARE GETTING BETTER'));
+/** A new chance: the last shot's verdict goes, so it never covers the special tag. */
+export function clearVerdict() {
+  clearTimeout(verdictTimer);
+  el.verdict.className = 'verdict';
+}
+
+/** The green banner: a level-up, a new rank, the daily challenge starting. */
+export function showLevelUp(title, note = '') {
+  el.banner.replaceChildren(node('strong', '', title));
+  if (note) el.banner.append(node('span', '', note));
   el.banner.className = 'banner show';
   clearTimeout(bannerTimer);
-  bannerTimer = setTimeout(() => { el.banner.className = 'banner'; }, 1900);
+  bannerTimer = setTimeout(() => { el.banner.className = 'banner'; }, 2200);
+}
+
+/** The flick shot's trail: the finger's path so far (client pixels), then a fade on release. */
+export function drawSwipe(xs, ys, count) {
+  let points = '';
+  for (let i = 0; i < count; i++) points += `${Math.round(xs[i])},${Math.round(ys[i])} `;
+  el.swipeLine.setAttribute('points', points);
+  el.swipe.classList.remove('fade');
+}
+export function fadeSwipe() { el.swipe.classList.add('fade'); }
+
+/** Free aim's charge meter, 0..1; null hides it. */
+export function setCharge(value) {
+  el.charge.classList.toggle('hidden', value === null);
+  if (value !== null) el.charge.style.setProperty('--fill', `${Math.round(value * 100)}%`);
+}
+
+/** A mission finished mid-run: a small gold plate that slides in and out. */
+export function toast(text, reward = '') {
+  el.toast.replaceChildren(node('strong', '', text));
+  if (reward) el.toast.append(node('b', '', reward));
+  el.toast.className = 'toast';
+  void el.toast.offsetWidth;   // restart the animation for back-to-back toasts
+  el.toast.className = 'toast show';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.toast.className = 'toast'; }, 2800);
 }
 
 // ---- Panels ---------------------------------------------------------------
@@ -185,7 +249,17 @@ function mount(panel) {
   el.overlay.classList.remove('hidden');
   el.overlay.inert = false;
   el.hud.inert = true;
+  fitPanel(panel);
   panel.querySelector('.primary')?.focus({ preventScroll: true });
+}
+
+/** Panels never scroll or clip: one that is taller or wider than the screen scales down to fit. */
+const PANEL_GUTTER = 32;
+function fitPanel(panel) {
+  panel.style.scale = '';
+  const scale = Math.min(1, (innerHeight - PANEL_GUTTER) / panel.offsetHeight,
+    (innerWidth - PANEL_GUTTER) / panel.offsetWidth);
+  if (scale < 1) panel.style.scale = String(scale);
 }
 
 function logo() {
@@ -194,10 +268,45 @@ function logo() {
   return title;
 }
 
+/** A labelled progress bar; `fill` is 0..1. */
+function bar(fill) {
+  const track = node('i', 'bar');
+  track.style.setProperty('--fill', `${Math.round(100 * Math.max(0, Math.min(1, fill)))}%`);
+  return track;
+}
+
+/** Overall game progress: the percentage, a bar, and its three parts. */
+function gameProgressBlock(game) {
+  const block = node('div', 'game-progress');
+  const head = node('div', 'r-row');
+  head.append(node('span', 'r-label', 'Game progress'), node('b', 'gp-percent', `${game.percent}%`));
+  block.append(head, bar(game.percent / 100), node('p', 'r-small gp-parts',
+    `Level ${game.level.value}/${game.level.goal}  ·  Missions ${game.missions.value}/${game.missions.goal}  ·  Items ${game.items.value}/${game.items.goal}`));
+  return block;
+}
+
+/** Mission rows: text, progress bar and reward; `finished` ones are ticked. */
+function missionList(missions, finished = []) {
+  const list = node('ul', 'missions');
+  for (const mission of finished) {
+    const row = node('li', 'done');
+    row.append(node('i', 'tick', '\u2714'), node('span', 'mission-text', mission.text), node('b', '', `+${mission.xp} XP`));
+    list.append(row);
+  }
+  for (const mission of missions) {
+    const row = node('li');
+    row.append(node('i', 'tick'), node('span', 'mission-text', mission.text), bar(mission.value / mission.goal),
+      node('b', '', `${thousands(mission.value)}/${thousands(mission.goal)}`));
+    list.append(row);
+  }
+  return list;
+}
+
 /** Pause: the game is frozen behind it; RESUME is the big button. */
-export function showPause({ onResume, onRestart }) {
+export function showPause({ onResume, onRestart, missions = [] }) {
   const panel = node('div', 'panel pause-panel');
   panel.append(logo(), node('p', 'tagline', 'PAUSED'));
+  if (missions.length) panel.append(node('h3', 'section-title', 'MISSIONS'), missionList(missions));
   const actions = node('div', 'actions stack');
   actions.append(button('RESUME', onResume, 'primary'), button('RESTART', onRestart));
   panel.append(actions);
@@ -217,30 +326,175 @@ export function initPauseButton(onPause) {
   el.hud.append(b);
 }
 
-export function showGameOver({ score, best, isBest, level, goals, bullseyes, bestCombo, precision, onReplay, onContinue }) {
-  const panel = node('div', 'panel over-panel');
-  panel.append(node('h2', 'over-title', isBest && score > 0 ? 'NEW BEST!' : 'GAME OVER'));
-  panel.append(node('p', 'over-score', String(score).padStart(6, '0')));
-  const stats = node('dl', 'stats');
-  for (const [label, value] of [['LEVEL', level], ['GOALS', goals], ['BULLSEYES', bullseyes],
-    ['PRECISION', `${precision}%`], ['BEST COMBO', bestCombo > 1 ? `x${bestCombo}` : '-'],
-    ['BEST', String(best).padStart(6, '0')]]) {
-    const row = node('div');
-    row.append(node('dt', '', label), node('dd', '', String(value)));
-    stats.append(row);
-  }
-  // Poki: the standard button is at least as large as, and above, the rewarded
-  // one; the rewarded one is never green and carries the video icon.
-  const actions = node('div', 'actions stack');
+/**
+ * Game over, or the daily challenge's results. One clear order, top to bottom
+ * (two columns on a landscape screen): the result, progress toward the next
+ * unlock, missions, then what to do next.
+ */
+export function showGameOver({ score, isBest, level, goals, bullseyes, bestCombo, precision, rank, toBest,
+  daily, xpGained, unlocked, next, missions, finished, boosted, lockerNew, dailyStatus, collection, game,
+  onReplay, onContinue, onBoost, onCheckpoint, checkpoint, onDaily, onLocker, onStriker }) {
+  const panel = node('div', 'panel results-panel');
+
+  // The result.
+  const hero = node('div', 'r-hero');
+  hero.append(node('h2', 'r-title' + (isBest && score > 0 && !daily ? ' best' : ''),
+    daily ? 'DAILY DONE' : isBest && score > 0 ? 'NEW BEST!' : 'GAME OVER'));
+  hero.append(node('p', 'r-score', thousands(score)));
+  const gap = daily
+    ? (daily.newBest ? 'New daily best!' : `Today's best: ${thousands(daily.best)}`)
+    : toBest > 0 ? `${thousands(toBest)} points to beat your best` : isBest && score > 0 ? 'Your best run ever' : '';
+  if (gap) hero.append(node('p', 'r-gap', gap));
+  if (daily) hero.append(node('p', 'r-streak', `\u{1F525} ${daily.streak}-day streak`));
+  hero.append(node('p', 'r-meta', [daily ? `Reached level ${level}` : `Level ${level} · ${rank}`,
+    `${goals} goal${goals === 1 ? '' : 's'}`, `${bullseyes} bullseye${bullseyes === 1 ? '' : 's'}`,
+    `${precision}% on target`].join('  ·  ')));
+
+  // Progress toward the next unlock, and the whole collection.
+  const progress = node('section', 'r-card r-progress');
+  const head = node('div', 'r-row');
+  head.append(node('b', 'r-xp', `+${thousands(xpGained)} XP`),
+    node('span', '', next ? `Next: ${next.name}` : 'Everything unlocked'));
+  progress.append(head, bar(next ? next.fraction : 1));
+  const foot = node('div', 'r-row r-small');
+  foot.append(node('span', '', next ? `${thousands(next.need)} XP to go` : ''));
+  progress.append(foot);
+  for (const item of unlocked) progress.append(node('p', 'r-unlocked', `Unlocked: ${item.name}`));
+  progress.append(gameProgressBlock(game));
+
+  // Missions.
+  const tasks = node('section', 'r-card r-missions');
+  tasks.append(node('h3', 'r-label', 'Missions'), missionList(missions, finished));
+
+  // What next. Poki: the standard PLAY AGAIN comes first and is the largest; the
+  // rewarded offer sits right under it, prominent but smaller, never green, with
+  // the video icon. Then the locker, then the smaller extras.
+  const actions = node('div', 'r-actions');
   actions.append(button('PLAY AGAIN', onReplay, 'primary'));
   if (onContinue) {
-    const reward = button('\u{1F3AC} CONTINUE  +1 HEART', onContinue, 'reward');
+    const reward = button('\u{1F3AC} Continue: +1 heart', onContinue, 'reward big');
     reward.id = 'continue-button';
     actions.append(reward);
+  } else if (onBoost) {
+    const reward = button('\u{1F3AC} Next run: +1 heart', onBoost, 'reward big');
+    reward.id = 'boost-button';
+    actions.append(reward);
   }
-  panel.append(stats, actions);
+  const lockerButton = button(lockerNew ? 'Locker: new items!' : 'Locker', onLocker,
+    'locker-cta' + (lockerNew ? ' has-new' : ''));
+  if (lockerNew) lockerButton.append(node('em', 'new', 'NEW'));
+  actions.append(lockerButton);
+  const more = node('div', 'r-more');
+  const dailyButton = button(dailyStatus.played ? `Daily ✔` : 'Daily', onDaily, 'small' + (dailyStatus.played ? '' : ' glow'));
+  if (dailyStatus.streak > 0) dailyButton.append(node('em', '', `\u{1F525}${dailyStatus.streak}`));
+  more.append(dailyButton, button('Striker', onStriker, 'small'));
+  if (onCheckpoint) more.append(button(`Start at level ${checkpoint}`, onCheckpoint, 'small'));
+  actions.append(more);
+  if (!onContinue && !onBoost && boosted) actions.append(node('p', 'r-small r-boost', 'Boost ready: your next run starts with an extra heart'));
+
+  panel.append(hero, progress, tasks, actions);
   mount(panel);
 }
+
+/** The locker: every kit, pair of boots, ball and celebration, and how to get it. */
+export function showLocker({ items, tab, tabs, onTab, xp, next, collection, game, onEquip, onBack }) {
+  const panel = node('div', 'panel locker-panel');
+  panel.append(node('h2', 'over-title locker-title', 'LOCKER'),
+    node('p', 'over-rank', `${thousands(xp)} XP${next ? `  \u00b7  NEXT: ${next.name} AT ${thousands(next.xp)}` : ''}`));
+  panel.append(gameProgressBlock(game));
+  // Tabs, each flagged when it holds something new.
+  const tabRow = node('div', 'locker-tabs');
+  for (const [type, label] of tabs) {
+    const b = button(label, () => onTab(type), 'small tab' + (type === tab ? ' active' : ''));
+    const inTab = items.filter(item => item.type === type);
+    b.append(node('span', 'tab-count', ` ${inTab.filter(item => item.unlocked).length}/${inTab.length}`));
+    if (inTab.some(item => item.isNew)) b.append(node('em', 'new', 'NEW'));
+    tabRow.append(b);
+  }
+  panel.append(tabRow);
+  const grid = node('div', 'locker');
+  const labels = { kit: 'KIT', boots: 'BOOTS', ball: 'BALL', celebration: 'MOVE' };
+  for (const item of items.filter(entry => entry.type === tab)) {
+    const tile = document.createElement('button');
+    tile.type = 'button';
+    tile.className = `locker-item ${item.type}${item.unlocked ? '' : ' locked'}${item.equipped ? ' equipped' : ''}`;
+    tile.disabled = !item.unlocked || item.type === 'celebration';
+    const swatch = node('i', 'swatch');
+    if (item.color != null) swatch.style.background = hex(item.color);
+    if (item.accent != null) swatch.style.setProperty('--accent', hex(item.accent));
+    if (item.type === 'celebration') swatch.textContent = '\u2605';
+    tile.append(swatch, node('span', 'item-type', labels[item.type]), node('span', 'item-name', item.short),
+      node('span', 'item-state', !item.unlocked ? `${thousands(item.xp)} XP` : item.equipped ? 'EQUIPPED'
+        : item.type === 'celebration' ? 'UNLOCKED' : 'EQUIP'));
+    if (item.isNew) tile.append(node('em', 'new', 'NEW'));
+    if (item.unlocked && item.type !== 'celebration' && !item.equipped) tile.onclick = () => onEquip(item.id);
+    grid.append(tile);
+  }
+  const actions = node('div', 'actions');
+  actions.append(button('BACK', onBack, 'primary'));
+  panel.append(grid, actions);
+  mount(panel);
+}
+
+/**
+ * Choose your striker: a card per striker with their pixel portrait. Picking a
+ * card calls `onPick` at once (the striker on the pitch changes behind the
+ * panel); PLAY starts, BACK (from the results) returns.
+ */
+export function showStrikerSelect({ strikers, selected, onPick, onPlay, onBack = null }) {
+  const panel = node('div', 'panel select-panel');
+  panel.append(node('h2', 'over-title locker-title', 'CHOOSE YOUR STRIKER'));
+  const grid = node('div', 'strikers');
+  for (const striker of strikers) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'striker-card' + (striker.id === selected ? ' selected' : '') + (striker.unlocked ? '' : ' locked');
+    card.dataset.id = striker.id;
+    card.disabled = !striker.unlocked;
+    striker.sprite.className = 'sprite';
+    card.append(striker.sprite, node('strong', '', striker.name),
+      node('span', '', striker.unlocked ? striker.style : `\u{1F512} ${thousands(striker.xp)} XP`));
+    if (striker.isNew) card.append(node('em', 'new', 'NEW'));
+    card.onclick = () => {
+      for (const other of grid.children) other.classList.toggle('selected', other === card);
+      onPick(striker.id);
+    };
+    grid.append(card);
+  }
+  const actions = node('div', 'actions');
+  actions.append(button('PLAY', onPlay, 'primary'));
+  if (onBack) actions.append(button('BACK', onBack));
+  const hint = pressWord() === 'TAP' ? 'TAP A STRIKER, THEN PLAY' : '← → TO CHOOSE, SPACE TO PLAY';
+  panel.append(grid, node('p', 'select-hint', hint), actions);
+  mount(panel);
+}
+
+/** Arrow keys on the striker screen: move the selection one card. */
+export function stepStriker(direction) {
+  const cards = [...el.overlay.querySelectorAll('.striker-card:not(:disabled)')];
+  if (!cards.length) return;
+  const index = cards.findIndex(card => card.classList.contains('selected'));
+  cards[(index + direction + cards.length) % cards.length].click();
+}
+
+/* @dev */
+/** Localhost screen previews: a yellow tag naming the screen on show. */
+let devTagTimer = 0;
+export function devTag(text) {
+  let tag = document.getElementById('dev-tag');
+  if (!tag) {
+    tag = node('div', '');
+    tag.id = 'dev-tag';
+    tag.style.cssText = 'position:fixed;left:8px;top:8px;z-index:99;padding:4px 8px;background:#ffd23f;color:#2b1d00;'
+      + 'font:700 13px system-ui,sans-serif;border:2px solid #000;pointer-events:none';
+    document.body.append(tag);
+  }
+  tag.textContent = text;
+  tag.hidden = false;
+  clearTimeout(devTagTimer);
+  devTagTimer = setTimeout(() => { tag.hidden = true; }, 2500);
+}
+/* @end-dev */
 
 /** The rewarded ad did not complete: the continue offer goes away. */
 export function dropContinue() { document.getElementById('continue-button')?.remove(); }

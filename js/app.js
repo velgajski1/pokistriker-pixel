@@ -14,11 +14,13 @@ import * as ui from './uiManager.js';
 import * as save from './saveSystem.js';
 import * as audio from './audio.js';
 import * as poki from './poki.js';
+import * as progress from './progress.js';
 import {
   GOAL, PITCH, GROUND_Y, BALL_R, PHYS_DT, GRAVITY, hit,
   launchVector, stepBall, crossedGoalPlane, planeIntersection,
   classifyAtPlane, hitWoodwork, sweptCapsuleHit, reflect, predictCrossing,
   aimAngleFor, netContact, hitAdvertisingBoards, closestPointOnSegment, GROUND_Y as TURF,
+  predictFromVelocity, velocityTo, BASE_VELOCITY,
 } from './physics.js';
 
 // ===========================================================================
@@ -27,29 +29,78 @@ import {
 export const ARCADE = {
   HEARTS: 3,                 // hearts at the start of a run
   MAX_HEARTS: 5,             // extra lives can take you this far
-  GOALS_PER_LEVEL: 2,
+  GOALS_PER_LEVEL: 3,
   POINTS: { bullseye: 300, target: 200, goal: 100 },
   MAX_COMBO: 5,              // consecutive target hits multiply the points
   HEART_ODDS: .2,            // chance a target carries an extra life (never twice running)
-  RAMP_LEVELS: 4,            // difficulty eases in over roughly this many levels
-  KEEPER_CAP: 1,             // the keeper tops out at this share of the elite profile
+  RAMP_LEVELS: 20,           // difficulty eases in over roughly this many levels (slow on purpose)
+  // The keeper is good from the first shot and better later (this share of the
+  // elite profile, level 1 -> late), and dives at everything - but a shot that
+  // crosses inside the target always beats him (see keeperBeaten).
+  KEEPER_FLOOR: .55,
+  KEEPER_CAP: .9,
+  BEATEN_MARGIN: .4,         // ...and so does one just outside the ring: "through his fingers"
+  KEEPER_MISS: .9,           // on-target shots: his dive aims this far short of the ball, metres
+                             // (keepClearOf then keeps every limb clear of it)
+  // Now and then, from the very first level, the keeper plays well above his
+  // level for one chance: at least this skill. Early runs get real saves and
+  // full-stretch dives instead of a keeper who never moves.
+  KEEPER_MOMENT: { odds: 0, skill: .35 },   // off: the keeper is always good now
 };
+
+/**
+ * Special chances. Golden balls, moving targets and free kicks turn up at
+ * random from their first level (never two specials running); a boss keeper
+ * guards the first chance of every fifth level; every fourth level opens with
+ * a three-shot bonus round where misses are free.
+ */
+const SPECIALS = {
+  golden: { from: 2, odds: .12, points: 2, label: 'GOLDEN BALL', note: 'DOUBLE POINTS', ring: 0xfff27a, bull: 0xffb000 },
+  moving: { from: 3, odds: .1, points: 1.5, label: 'MOVING TARGET', note: 'x1.5 POINTS', ring: 0x54e0ff, bull: 0x2f8bff },
+  freekick: { from: 5, odds: .1, points: 2, label: 'FREE KICK', note: 'CHIP THE WALL', ring: 0xffd23f, bull: 0xff4d3a },
+  boss: { every: 5, points: 3, label: 'BOSS KEEPER', note: 'BEAT HIM: x3 AND A HEART', ring: 0xc07cff, bull: 0x8b3dff },
+  bonus: { every: 4, shots: 3, points: 2, label: 'BONUS ROUND', note: 'NO KEEPER. MISSES ARE FREE', ring: 0x8dff5a, bull: 0x31c75a },
+};
+const GOLDEN_BALL = 0xffd23f;
+/** The HUD tag for a keeper's moment (a normal chance with a sharp keeper). */
+const HOT_KEEPER = { label: 'HOT KEEPER', note: 'HE IS ON FIRE THIS TIME' };
+/**
+ * The first run of a session shows what the game has in its first few shots
+ * (players who see one repeated shot leave): a plain chance, a golden ball, a
+ * plain one and a moving target. After that, the usual odds. No wall early:
+ * the first levels are striker against keeper.
+ */
+const OPENING = [null, 'golden', null, 'moving'];
+let sessionRuns = 0;
+const BOSS_SKILL = 0;              // a boss keeper plays this much above the level's keeper (a showpiece, not a wall)
+const MOVING_TARGET = { speed: 1.25, minTravel: .6 };   // radians/s; metres of room needed
+const WALL = { range: [17, 22], lateral: 5, jump: 3.3, delay: [.08, .2] };
+
+/** Seconds the result holds before the next chance (a tap skips it). */
+const HOLD = { GOAL: 2.6, MISS: 1, REACTION_MAX: 2.4, CELEBRATION_MAX: 4.2 };
 
 /** Where the target sits and how big it is: it shrinks as the level rises. */
 const TARGET = {
-  RING_HALF: [.85, .45],     // half-width at level 1 -> fully ramped
-  BULL_HALF: [.42, .2],
+  RING_HALF: [.7, .45],      // half-width at level 1 -> fully ramped
+  BULL_HALF: [.34, .2],
   MARGIN_X: .55, MIN_Y: .5, // keep the whole ring inside the goal mouth
-  KEEPER_CLEAR: .7,          // the ring's edge stays this far from the keeper's centre, metres
+  KEEPER_CLEAR: 1.05,        // the ring's edge stays this far from the keeper's centre: an
+                             // on-target ball never passes within a standing keeper's reach, metres
   BULL_CLEAR: 1.7,           // ...and the bullseye centre at least this far: out of his reach
+  LENIENCY: .12,             // scoring counts a ball this far outside a painted ring as inside it
 };
 
 const SHOT = {
   BASE_SWEEP: 12.0,         // metres/sec ACROSS the goal plane when fully ramped
-  EASY_SWEEP: .62,          // ...and this fraction of it at level 1
-  HARD_SWEEP: 1.9,          // ...rising towards this multiple late in a run
+  EASY_SWEEP: 1.14,         // ...and this fraction of it at level 1
+  HARD_SWEEP: 2.3,          // ...rising towards this multiple late in a run
+  BOUNCE_BOOST: .1,         // the arrow and the meter speed up this much at every turn...
+  MAX_BOOST: .5,            // ...up to this much: waiting for the perfect moment gets harder
   AIM_SPAN: 5.2,            // the arrow sweeps this far past the goal centre
-  POWER_CYCLE: [.95, 2],    // power oscillations per second: level 1 -> late in a run
+  POWER_CYCLE: [1.4, 2.6],  // power oscillations per second: level 1 -> late in a run
+  // The height meter is the height on the goal line, bottom to top, at any
+  // distance: the top quarter goes over the bar, so a late press misses high.
+  METER_HEIGHT: [.05, 3.3],
   WINDUP: 0.28,                   // strike animation before the ball leaves
   KEEPER_ANGLE_NARROW: 0.25,      // how far he shades toward the shooter
   KEEPER_LEAP: 2.8,               // upward launch of a dive, m/s
@@ -72,7 +123,7 @@ const SHOT = {
  * Keeper profiles at the two ends of the ramp. Level 1 is a keeper who
  * barely reacts; the elite end is the original game's best keeper.
  */
-const KEEPER_ROOKIE = { reaction: .55, diveSpeed: 2.6, setSpeed: 1.2, readError: 1.1, heightError: .6,
+const KEEPER_ROOKIE = { reaction: .3, diveSpeed: 2.6, setSpeed: 1.2, readError: 1.1, heightError: .6,
   setSpread: .6, diveTime: .45, catchSpeed: 5, parryBias: .2 };
 const KEEPER_ELITE = { reaction: .065, diveSpeed: 10, setSpeed: 5.5, readError: .06, heightError: .045,
   setSpread: .10, diveTime: .18, catchSpeed: 18, parryBias: .82 };
@@ -81,23 +132,28 @@ const KEEPER_ELITE = { reaction: .065, diveSpeed: 10, setSpeed: 5.5, readError: 
 export const levelRamp = level => 1 - Math.exp(-Math.max(0, level - 1) / ARCADE.RAMP_LEVELS);
 
 /** Keeper ability for a level; distance adds a little on top for long shots. */
-export function keeperAbility(level, distance = 10) {
-  const ramp = levelRamp(level) * ARCADE.KEEPER_CAP;
-  const skill = Math.min(ARCADE.KEEPER_CAP, ramp + Math.max(0, distance - 12) * .01 * ramp);
+export function keeperAbility(level, distance = 10, special = null, moment = false) {
+  const ramp = ARCADE.KEEPER_FLOOR + (ARCADE.KEEPER_CAP - ARCADE.KEEPER_FLOOR) * levelRamp(level);
+  let skill = Math.min(ARCADE.KEEPER_CAP, ramp + Math.max(0, distance - 12) * .01 * ramp);
+  if (moment) skill = Math.max(skill, ARCADE.KEEPER_MOMENT.skill);
+  if (special === 'boss') skill = Math.min(1, skill + BOSS_SKILL);
   const ability = { skill, level };
   for (const key of Object.keys(KEEPER_ROOKIE)) {
     ability[key] = KEEPER_ROOKIE[key] + (KEEPER_ELITE[key] - KEEPER_ROOKIE[key]) * skill;
   }
+  // Bonus round: he stands aside by the post and never moves.
+  if (special === 'bonus') { ability.skill = 0; ability.reaction = 99; ability.setSpread = 0; }
   return ability;
 }
 
 /** Defenders: none early on, then one, then two; slow at first, sharper later. */
 export function defenceFor(level, range, random = Math.random) {
-  const strength = Math.max(0, Math.min(1, (level - 3) / 5));
+  // The first levels are striker against keeper: no defenders until level 5.
+  const strength = Math.max(0, Math.min(1, (level - 5) / 6));
   let blockers = 0;
-  if (level >= 6) blockers = range > 13 ? (random() < .55 ? 2 : 1) : 1;
-  else if (level >= 5) blockers = 1;
-  else if (level >= 3) blockers = random() < .45 ? 1 : 0;
+  if (level >= 10) blockers = range > 13 ? (random() < .55 ? 2 : 1) : 1;
+  else if (level >= 7) blockers = 1;
+  else if (level >= 5) blockers = random() < .4 ? 1 : 0;
   return { blockers, strength };
 }
 
@@ -151,7 +207,7 @@ export const OPPONENT_COLORS = [
 
 // ---- Application state ----------------------------------------------------
 const state = {
-  screen: 'MATCH',     // MATCH | GAMEOVER
+  screen: 'MATCH',     // SELECT | MATCH | GAMEOVER
   phase: 'IDLE',       // IDLE | AIM | POWER | WINDUP | FLIGHT
   paused: false,
   run: null,
@@ -169,18 +225,27 @@ const contactPoint = { x: 0, y: 0, z: 0 };
 const prediction = { x: 0, y: 0, t: 0 };
 const keeperAim = { x: 0, y: 0, z: 0 };
 const origin = { x: 0, y: GROUND_Y, z: 0 };
-const aimTarget = { x: 0, y: 1.2, ring: TARGET.RING_HALF[0], bull: TARGET.BULL_HALF[0], heart: false };
+const aimTarget = { x: 0, y: 1.2, ring: TARGET.RING_HALF[0], bull: TARGET.BULL_HALF[0], heart: false,
+  minX: 0, maxX: 0, phase: 0 };
 
 /** Live defender state, one entry per blocker planted on the shot line. */
 const blockers = [
-  { z: 0, baseX: 0, x: 0, target: 0, side: 1, depth: 1, delay: 0, lunge: 0, down: 0, spent: false },
-  { z: 0, baseX: 0, x: 0, target: 0, side: 1, depth: 1, delay: 0, lunge: 0, down: 0, spent: false },
+  { z: 0, baseX: 0, x: 0, target: 0, side: 1, depth: 1, delay: 0, lunge: 0, down: 0, spent: false,
+    airY: 0, vy: 0, jumped: false },
+  { z: 0, baseX: 0, x: 0, target: 0, side: 1, depth: 1, delay: 0, lunge: 0, down: 0, spent: false,
+    airY: 0, vy: 0, jumped: false },
 ];
 let blockerCount = 0;
 let balanceSimulation = false;
 
 const shot = {
   defenseStrength: 0,
+  keeperBeaten: false,       // the shot crosses inside the target: the keeper's dive cannot reach it
+  sweepBoost: 1, powerBoost: 1,   // timing mode: speed-ups earned by waiting (see SHOT.BOUNCE_BOOST)
+  preset: false,             // a shot mode set the launch velocity (flick, free aim)
+  curve: 0,                  // sideways acceleration from spin, m/s^2 (flick)
+  keeperMoment: false,       // the keeper is playing above his level this chance
+  wall: false,               // a free kick: the defenders stand as a jumping wall
   keeperAbility: keeperAbility(1),
   theta: 0, sweepDir: 1, power: 0, powerDir: 1,
   keeperSetX: 0, keeperX: 0, keeperTarget: 0, keeperDive: 0, keeperDepth: .75,
@@ -199,8 +264,10 @@ const shot = {
 /** The aim arrow and the height meter both speed up as the level rises. */
 export const aimSpeedFactor = level => SHOT.EASY_SWEEP + (SHOT.HARD_SWEEP - SHOT.EASY_SWEEP) * levelRamp(level);
 export const powerCycle = level => SHOT.POWER_CYCLE[0] + (SHOT.POWER_CYCLE[1] - SHOT.POWER_CYCLE[0]) * levelRamp(level);
-const sweepSpeed = () => SHOT.BASE_SWEEP * aimSpeedFactor(state.run.level)
-  * aimDistanceMultiplier(Math.hypot(origin.x, origin.z - GOAL.PLANE_Z));
+/** The aim arrow's speed across the goal line, m/s, before its bounce bonus. */
+export const sweepSpeedAt = (level, distance) => SHOT.BASE_SWEEP * aimSpeedFactor(level) * aimDistanceMultiplier(distance);
+export const BOUNCE = { STEP: SHOT.BOUNCE_BOOST, MAX: SHOT.MAX_BOOST };
+const sweepSpeed = () => sweepSpeedAt(state.run.level, Math.hypot(origin.x, origin.z - GOAL.PLANE_Z)) * shot.sweepBoost;
 const SPEED_SCALE = 1;
 
 // ===========================================================================
@@ -216,15 +283,27 @@ function setGameplayActive(active) {
   }
 }
 
-/** A fresh run. Boot starts one straight away: no menus before the first shot. */
-function startRun() {
+/**
+ * A fresh run. Boot starts one straight away: no menus before the first shot.
+ * `mode` is 'arcade', 'checkpoint' (start at `level`) or 'daily' (the day's
+ * ten seeded chances, no hearts to lose).
+ */
+function startRun(mode = 'arcade', level = 1) {
   engine.stopCelebration();
   engine.stopReactions();
   engine.setAnimationsPaused(false);
+  const daily = mode === 'daily';
+  const boosted = !daily && progress.hasBoost();
+  if (boosted) progress.setBoost(false);
   state.run = {
-    score: 0, hearts: ARCADE.HEARTS, level: 1, goals: 0, levelGoals: 0,
+    mode, daily, startLevel: level,
+    random: daily ? progress.seededRandom('blockstriker-daily-' + progress.today()) : Math.random,
+    score: 0, hearts: ARCADE.HEARTS + (boosted ? 1 : 0), level, goals: 0, levelGoals: 0,
     combo: 0, bestCombo: 0, shots: 0, targetHits: 0, bullseyes: 0,
     lastCelebration: undefined, kit: -1, heartOffered: false, extraLives: 0, continued: false,
+    special: null, lastSpecial: null, bonusLeft: 0, bossPending: false, paidScore: 0, missionsDone: [],
+    opening: mode !== 'daily' && ++sessionRuns === 1, scriptedMoment: false,
+    tally: progress.newTally(),
   };
   applyLevelLook();
   state.screen = 'MATCH';
@@ -234,25 +313,61 @@ function startRun() {
   ui.setDimmed(false);
   setGameplayActive(true);
   audio.play('kickoff');
+  if (daily) progress.markDailyStarted(state.run);
+  poki.measure('run', mode, 'start');
+  poki.measure('level', String(level), 'start');
+  if (daily) ui.showLevelUp('DAILY CHALLENGE', `${progress.DAILY_SHOTS} SHOTS. EVERY SHOT COUNTS`);
+  else if (boosted) ui.showLevelUp('BOOST!', 'YOU START WITH AN EXTRA HEART');
+  else if (mode === 'checkpoint') ui.showLevelUp(`LEVEL ${level}`, `${progress.rankFor(level).name} START`);
   pushHud();
   beginChance();
+  engine.startCameraIntro();
 }
 
 /** Mute and freeze input for an ad; restore afterwards. */
 const adPause = () => audio.setMuted(true);
 const adResume = () => audio.setMuted(false);
 
-/** PLAY AGAIN: an ad may run first (the player chose to continue), then a new run. */
-async function replay() {
+/**
+ * Ad breaks come before every third new run, not every one (the first run of
+ * a session never has one); Poki may still skip a break it is asked for.
+ * Resuming from pause keeps its own break.
+ */
+let runsPerBreak = 3, runsSinceBreak = 0;
+async function runBreak() {
+  if (++runsSinceBreak < runsPerBreak) return;
+  runsSinceBreak = 0;
   await poki.commercialBreak(adPause, adResume);
-  startRun();
+}
+
+/** Back into play from a menu: an ad may run first, then the new run. */
+async function startFromMenu(mode, level = 1) {
+  if (poki.isInBreak()) return;   // Enter on the still-focused button during the ad
+  await runBreak();
+  startRun(mode, level);
   poki.gameplayStart();
+  pauseIfHidden();
+}
+
+/** PLAY AGAIN (Space or Enter on the game-over screen too). */
+const replay = () => startFromMenu('arcade');
+function playCheckpoint() {
+  if (poki.isInBreak()) return;
+  const level = progress.checkpoint();
+  poki.measure('button', 'checkpoint', 'interact');
+  startFromMenu(level ? 'checkpoint' : 'arcade', level || 1);
+}
+function playDaily() {
+  if (poki.isInBreak()) return;
+  poki.measure('button', 'daily', 'interact');
+  startFromMenu('daily');
 }
 
 /** Rewarded continue: one extra heart, once per run, only if the ad completed. */
 async function continueRun() {
   const run = state.run;
-  if (run.continued) return;
+  if (run.continued || poki.isInBreak()) return;
+  poki.measure('button', 'reward-continue', 'interact');
   const success = await poki.rewardedBreak(adPause, adResume);
   if (!success) { ui.dropContinue(); return; }
   run.continued = true;
@@ -266,6 +381,89 @@ async function continueRun() {
   pushHud();
   beginChance();
   poki.gameplayStart();
+  pauseIfHidden();
+}
+
+/** Rewarded boost: the next run starts with an extra heart. No play resumes here. */
+async function boostNextRun() {
+  if (poki.isInBreak() || progress.hasBoost()) return;
+  poki.measure('button', 'reward-boost', 'interact');
+  const success = await poki.rewardedBreak(adPause, adResume);
+  if (success) {
+    progress.setBoost(true);
+    audio.play('extraLife');
+  }
+  showResults();
+}
+
+/**
+ * Choose your striker, from the results screen: PLAY starts a new run (an ad
+ * may run first) and BACK returns. Boot never shows it: play comes first.
+ * ('play' mode, over the live chance, is the Alt+1 preview.) The pick is saved
+ * and shows on the pitch at once.
+ */
+let selectPlay = null;
+function openStrikerSelect(from) {
+  if (poki.isInBreak()) return;
+  state.screen = 'SELECT';
+  if (from === 'play') {
+    ui.showHud(false);
+    ui.setDimmed(true);
+    setGameplayActive(false);
+  }
+  poki.measure('button', 'striker', 'visible');
+  selectPlay = () => {
+    if (state.screen !== 'SELECT' || poki.isInBreak()) return;
+    progress.markSeen('strikers');
+    poki.measure('striker', progress.striker(), 'pick');
+    if (from !== 'play') { startFromMenu('arcade'); return; }
+    state.screen = 'MATCH';
+    ui.hideOverlay();
+    ui.showHud(true);
+    ui.setDimmed(false);
+    setGameplayActive(true);
+  };
+  ui.showStrikerSelect({
+    strikers: progress.strikerItems().map(item => ({ id: item.key, name: item.name, style: item.style,
+      unlocked: item.unlocked, xp: item.xp, isNew: item.isNew,
+      sprite: engine.strikerSprite(item.key, progress.kit(), progress.bootsColor()) })),
+    selected: progress.striker(),
+    onPick: id => { if (progress.setStriker(id)) engine.setStrikerLook(id); },
+    onPlay: () => selectPlay(),
+    onBack: from === 'play' ? null : () => { progress.markSeen('strikers'); state.screen = 'GAMEOVER'; showResults(); },
+  });
+}
+
+/** The locker: equip what the XP bar has unlocked, one tab at a time. Back returns to the results. */
+function openLocker(tab = null) {
+  if (poki.isInBreak()) return;
+  const items = progress.lockerItems();
+  if (!tab) {
+    poki.measure('button', 'locker', 'interact');
+    tab = items.find(item => item.isNew)?.type || progress.LOCKER_TABS[0][0];
+  }
+  ui.showLocker({ items, tab, tabs: progress.LOCKER_TABS, onTab: openLocker, xp: progress.xp(), next: progress.nextUnlock(),
+    collection: progress.collection(), game: progress.gameProgress(),
+    onEquip: id => {
+      if (!progress.equip(id)) return;
+      applyCosmetics();
+      openLocker(id.split(':')[0]);
+    },
+    onBack: () => { progress.markSeen(); showResults(); } });
+}
+
+/** The equipped kit, boots and ball; a golden ball overrides the tint for its chance. */
+function applyCosmetics() {
+  engine.setHomeKit(progress.kit(), progress.bootsColor());
+  engine.setBallTint(state.run?.special === 'golden' ? GOLDEN_BALL : progress.ballColor());
+}
+
+/**
+ * Clicking an ad usually opens a new tab. The tab-hidden pause is ignored
+ * during the break, so check again once play would resume.
+ */
+function pauseIfHidden() {
+  if (document.hidden) pause();
 }
 
 /** Esc / P / the pause button, and a hidden tab: stop play and show the pause panel. */
@@ -276,14 +474,20 @@ function pause() {
   audio.setPaused(true);
   engine.setAnimationsPaused(true);
   ui.setDimmed(true);
-  ui.showPause({ onResume: resume, onRestart: restart });
+  showPausePanel();
   setGameplayActive(false);
 }
 
+function showPausePanel() {
+  ui.showPause({ onResume: resume, onRestart: restart, missions: progress.missions(state.run) });
+}
+
 async function resume() {
-  if (!state.paused) return;
+  if (!state.paused || poki.isInBreak()) return;
   ui.hideOverlay();
   await poki.commercialBreak(adPause, adResume);
+  // Still hidden after the ad (it opened a tab): stay paused.
+  if (document.hidden) { showPausePanel(); return; }
   state.paused = false;
   audio.setPaused(false);
   ui.setDimmed(false);
@@ -292,20 +496,22 @@ async function resume() {
 }
 
 async function restart() {
+  if (poki.isInBreak()) return;
   ui.hideOverlay();
   audio.setPaused(false);
-  await poki.commercialBreak(adPause, adResume);
-  startRun();
+  await runBreak();
+  startRun(state.run.mode, state.run.startLevel);
   poki.gameplayStart();
+  pauseIfHidden();
 }
 
-/** Every level brings a new opponent kit and pitch. */
+/** Every level brings a new opponent kit and pitch (seeded in the daily challenge). */
 function applyLevelLook() {
   const run = state.run;
-  let kit = Math.floor(Math.random() * (OPPONENT_COLORS.length - (run.kit < 0 ? 0 : 1)));
+  let kit = Math.floor(run.random() * (OPPONENT_COLORS.length - (run.kit < 0 ? 0 : 1)));
   if (run.kit >= 0 && kit >= run.kit) kit++;
   run.kit = kit;
-  engine.setMatchColors(OPPONENT_COLORS[kit], Math.floor(Math.random() * 0xffffffff));
+  engine.setMatchColors(OPPONENT_COLORS[kit], Math.floor(run.random() * 0xffffffff));
   engine.setPitchSurface((run.level - 1) % engine.PITCH_SURFACES.length);
 }
 
@@ -313,28 +519,68 @@ function pushHud() {
   const run = state.run;
   // Music builds with the run: level does most of it, a hot combo adds the rest.
   audio.setIntensity(levelRamp(run.level) * 1.4 + run.combo * .06);
+  audio.setLevel(run.level);   // a new song every few levels
+  const special = run.special ? SPECIALS[run.special]
+    : shot.keeperMoment && state.phase !== 'IDLE' ? HOT_KEEPER : null;
   ui.setArcadeHud({ score: run.score, hearts: run.hearts, maxHearts: Math.max(ARCADE.HEARTS, run.hearts), level: run.level,
-    combo: run.combo, levelProgress: run.levelGoals / ARCADE.GOALS_PER_LEVEL, best: state.best });
+    combo: run.combo, levelProgress: run.levelGoals / ARCADE.GOALS_PER_LEVEL, levelSteps: ARCADE.GOALS_PER_LEVEL,
+    best: state.best, rank: progress.rankFor(run.level).name, progress: progress.gameProgress().percent,
+    daily: run.daily ? { shot: Math.min(run.shots + 1, progress.DAILY_SHOTS), of: progress.DAILY_SHOTS } : null,
+    special: special && { label: run.special === 'bonus'
+      ? `${special.label} ${special.shots - run.bonusLeft}/${special.shots}` : special.label,
+      note: special.note, kind: run.special || 'keeper' } });
 }
+
+/** Results of the last finished run, kept so the locker can return to them. */
+let results = null;
 
 function gameOver() {
   const run = state.run;
-  const isBest = run.score > state.best;
+  const isBest = !run.daily && run.score > state.best;
   if (isBest) { state.best = run.score; save.saveBest(state.best); }
   state.screen = 'GAMEOVER';
   state.phase = 'IDLE';
   poki.gameplayStop();
+  endSpecial();
   engine.showTarget(false);
   engine.showAimRig(false, false);
   engine.frameAmbient();
   ui.showHud(false);
   ui.setDimmed(true);
   setGameplayActive(false);
-  audio.play(isBest && run.score > 0 ? 'newBest' : 'gameOver');
+  const outcome = progress.finishRun(run);
+  poki.measure('level', String(run.level), run.daily ? 'complete' : 'fail');
+  poki.measure('run', run.mode, 'complete');
+  for (const mission of outcome.missions) poki.measure('mission', mission.id, 'complete');
+  for (const item of outcome.unlocked) poki.measure('unlock', item.id, 'complete');
+  audio.play((isBest && run.score > 0) || outcome.daily?.newBest ? 'newBest' : 'gameOver');
+  results = { run, isBest, outcome };
+  showResults();
+}
+
+/** The game-over (or daily results) panel, rebuilt from the kept results. */
+function showResults() {
+  if (!results) return;
+  const { run, isBest, outcome } = results;
+  const continueOffer = !run.daily && !run.continued && poki.rewardsAvailable();
+  const boostOffer = !continueOffer && poki.rewardsAvailable() && !progress.hasBoost();
+  const checkpoint = progress.checkpoint();
+  if (continueOffer) poki.measure('button', 'reward-continue', 'visible');
+  if (boostOffer) poki.measure('button', 'reward-boost', 'visible');
   ui.showGameOver({ score: run.score, best: state.best, isBest, level: run.level, goals: run.goals,
     bullseyes: run.bullseyes, bestCombo: run.bestCombo,
     precision: run.shots ? Math.round(100 * run.targetHits / run.shots) : 0,
-    onReplay: replay, onContinue: !run.continued && poki.rewardsAvailable() ? continueRun : null });
+    rank: progress.rankFor(run.level).name,
+    toBest: !run.daily && !isBest ? state.best - run.score : 0,
+    daily: run.daily ? outcome.daily : null,
+    xpGained: outcome.gained, unlocked: outcome.unlocked, next: progress.nextUnlock(),
+    missions: progress.missions(null), finished: [...run.missionsDone, ...outcome.missions],
+    boosted: progress.hasBoost(), lockerNew: progress.hasNewItems(), collection: progress.collection(),
+    game: progress.gameProgress(),
+    dailyStatus: progress.dailyStatus(),
+    onReplay: replay, onContinue: continueOffer ? continueRun : null, onBoost: boostOffer ? boostNextRun : null,
+    onCheckpoint: checkpoint ? playCheckpoint : null, checkpoint,
+    onDaily: playDaily, onLocker: () => openLocker(), onStriker: () => openStrikerSelect('results') });
 }
 
 // ===========================================================================
@@ -342,10 +588,67 @@ function gameOver() {
 // ===========================================================================
 function prepareChance() {
   const run = state.run;
-  chooseChanceOrigin(origin, run.level);
-  const defence = defenceFor(run.level, origin.z - GOAL.PLANE_Z);
-  blockerCount = defence.blockers;
+  if (run.daily && run.level !== 1 + run.shots) {
+    // The daily challenge climbs a level with every shot, goal or not.
+    run.level = 1 + run.shots;
+    applyLevelLook();
+  }
+  run.special = planSpecial(run);
+  const random = run.random;
+  shot.wall = run.special === 'freekick';
+  if (shot.wall) {
+    const range = WALL.range[0] + random() * (WALL.range[1] - WALL.range[0]);
+    origin.x = (random() * 2 - 1) * WALL.lateral;
+    origin.y = GROUND_Y;
+    origin.z = GOAL.PLANE_Z + range;
+    blockerCount = 2;
+    shot.defenseStrength = 1;
+    return;
+  }
+  chooseChanceOrigin(origin, run.level, random);
+  const defence = defenceFor(run.level, origin.z - GOAL.PLANE_Z, random);
+  blockerCount = run.special === 'bonus' ? 0 : defence.blockers;
   shot.defenseStrength = defence.strength;
+}
+
+/** Which special, if any, this chance is. Never two random specials running. */
+function planSpecial(run) {
+  let special = null;
+  run.scriptedMoment = false;
+  if (state.forceSpecial) { special = state.forceSpecial; state.forceSpecial = null; }   // test hook
+  else if (run.opening && run.shots < OPENING.length) {
+    special = OPENING[run.shots] === 'moment' ? null : OPENING[run.shots];
+    run.scriptedMoment = OPENING[run.shots] === 'moment';
+  }
+  else if (run.bonusLeft > 0) { run.bonusLeft--; special = 'bonus'; }
+  else if (run.bossPending) { run.bossPending = false; special = 'boss'; }
+  else if (run.daily && run.shots === progress.DAILY_SHOTS - 1) special = 'boss';
+  else if (!run.lastSpecial) {
+    const roll = run.random();
+    let edge = 0;
+    for (const kind of ['freekick', 'moving', 'golden']) {
+      if (run.level < SPECIALS[kind].from) continue;
+      edge += SPECIALS[kind].odds;
+      if (roll < edge) { special = kind; break; }
+    }
+  }
+  run.lastSpecial = special;
+  return special;
+}
+
+/** Undo a special chance's looks: keeper size and kit, target colours, ball tint. */
+function endSpecial() {
+  engine.setKeeperBoss(false);
+  engine.setTargetStyle();
+  engine.setBallTint(progress.ballColor());
+}
+
+/** The moving target slides across its side of the goal until the kick. */
+function updateMovingTarget(dt) {
+  if (state.run.special !== 'moving') return;
+  aimTarget.phase += MOVING_TARGET.speed * dt;
+  aimTarget.x = aimTarget.minX + (aimTarget.maxX - aimTarget.minX) * (.5 + .5 * Math.sin(aimTarget.phase));
+  engine.setTargetX(aimTarget.x);
 }
 
 /**
@@ -361,10 +664,15 @@ export function chooseTarget(out, level, keeperX, random = Math.random) {
   // Free space either side of the keeper, as intervals of allowed centres.
   const left = [-spanX, Math.min(spanX, keeperX - gap)], right = [Math.max(-spanX, keeperX + gap), spanX];
   const leftRoom = Math.max(0, left[1] - left[0]), rightRoom = Math.max(0, right[1] - right[0]);
-  if (leftRoom + rightRoom <= 0) out.x = keeperX > 0 ? -spanX : spanX;
-  else {
+  if (leftRoom + rightRoom <= 0) {
+    out.x = keeperX > 0 ? -spanX : spanX;
+    out.minX = out.maxX = out.x;
+  } else {
     const pick = random() * (leftRoom + rightRoom);
+    const side = pick < leftRoom ? left : right;
     out.x = pick < leftRoom ? left[0] + pick : right[0] + (pick - leftRoom);
+    // The room on the chosen side of the keeper: a moving target stays inside it.
+    out.minX = side[0]; out.maxX = side[1];
   }
   const minY = Math.max(TARGET.MIN_Y, out.ring + .08);
   out.y = minY + random() * Math.max(0, GOAL.HEIGHT - out.ring - .08 - minY);
@@ -379,14 +687,15 @@ function beginChance() {
   engine.captureSelectionPoses();
   prepareChance();
   shot.keeperDepth = .75;
-  engine.setupChance(origin, blockerCount, false);
+  engine.setKeeperBoss(run.special === 'boss');
+  engine.setupChance(origin, blockerCount, false, shot.wall ? 'wall' : 'marking');
   for (let i = 0; i < blockerCount; i++) {
     const src = engine.chance.blockers[i];
     const b = blockers[i];
     b.z = src.z; b.baseX = src.baseX; b.x = src.baseX;
     b.side = 1; b.lunge = 0; b.depth = 1; b.delay = 0; b.down = 0; b.spent = false;
+    b.airY = 0; b.vy = 0; b.jumped = false;
   }
-  engine.showAimRig(true, false);
 
   // The arrow sweeps in goal-plane metres, so a shot from 9m and one from 18m
   // demand the same precision instead of the far one being trivially easy.
@@ -394,6 +703,8 @@ function beginChance() {
   shot.aimX = 0;
   shot.theta = shot.thetaCentre;
   shot.sweepDir = Math.random() < 0.5 ? 1 : -1;
+  shot.sweepBoost = 1;
+  shot.powerBoost = 1;
   shot.power = 0;
   shot.powerDir = 1;
   shot.swing = 0;
@@ -410,24 +721,43 @@ function beginChance() {
   // A real keeper narrows the angle: he shades along his line toward the
   // shooter rather than standing centrally and waiting.
   const narrow = Math.max(-2.6, Math.min(2.6, origin.x * SHOT.KEEPER_ANGLE_NARROW));
-  shot.keeperAbility = keeperAbility(run.level, Math.hypot(origin.x, origin.z - GOAL.PLANE_Z));
-  shot.keeperSetX = narrow + (Math.random() * 2 - 1) * shot.keeperAbility.setSpread;
+  // A keeper's moment: not on special chances, which have their own keeper rules.
+  shot.keeperMoment = !run.special && (run.scriptedMoment
+    || (!(run.opening && run.shots < OPENING.length) && run.random() < ARCADE.KEEPER_MOMENT.odds));
+  shot.keeperAbility = keeperAbility(run.level, Math.hypot(origin.x, origin.z - GOAL.PLANE_Z), run.special,
+    shot.keeperMoment);
+  shot.keeperSetX = run.special === 'bonus' ? (run.random() < .5 ? -1 : 1) * (GOAL.HALF_W + 1.3)
+    : narrow + (run.random() * 2 - 1) * shot.keeperAbility.setSpread;
   shot.keeperX = shot.keeperSetX;
   shot.keeperDive = 0;
   shot.keeperSide = 1;
   shot.diveDepth = 1;
   engine.setKeeper(shot.keeperX, 0, 1, 0, 0, 0, null, shot.keeperDepth);
-  chooseTarget(aimTarget, run.level, shot.keeperSetX);
+  chooseTarget(aimTarget, run.level, shot.keeperSetX, run.random);
+  // A moving target needs room to travel on its side of the keeper.
+  if (run.special === 'moving' && aimTarget.maxX - aimTarget.minX < MOVING_TARGET.minTravel) {
+    run.special = run.lastSpecial = 'golden';
+  }
+  aimTarget.phase = run.random() * Math.PI * 2;
   // Now and then the target carries an extra life; never on two targets running.
-  aimTarget.heart = !run.heartOffered && run.hearts < ARCADE.MAX_HEARTS && Math.random() < ARCADE.HEART_ODDS;
+  aimTarget.heart = !run.daily && run.special !== 'bonus' && !run.heartOffered
+    && run.hearts < ARCADE.MAX_HEARTS && run.random() < ARCADE.HEART_ODDS;
   run.heartOffered = aimTarget.heart;
   engine.setTarget(aimTarget.x, aimTarget.y, aimTarget.ring, aimTarget.bull, aimTarget.heart);
+  const style = run.special && SPECIALS[run.special];
+  engine.setTargetStyle(style?.ring, style?.bull);
+  applyCosmetics();
+  updateMovingTarget(0);
+  if (run.special) poki.measure('special', run.special, 'start');
   engine.showTarget(true);
   engine.restoreSelectionPoses();
   engine.faceStrikerForSelection();
 
+  prepareShotMode();
   state.phase = 'AIM';
-  ui.setPrompt(run.shots === 0 ? `${ui.pressWord()} TO LOCK YOUR AIM ON THE TARGET` : '');
+  ui.clearVerdict();
+  ui.setPrompt(shotPrompt(run));
+  pushHud();
 }
 
 /** Keeps the arena alive while you are aiming. */
@@ -435,20 +765,247 @@ function updateAim(dt) {
   // Triangle sweep across the goalmouth, delta-scaled.
   const span = SHOT.AIM_SPAN;
   shot.aimX += shot.sweepDir * sweepSpeed() * dt;
-  if (shot.aimX > span)  { shot.aimX = 2 * span - shot.aimX; shot.sweepDir = -1; }
-  if (shot.aimX < -span) { shot.aimX = -2 * span - shot.aimX; shot.sweepDir = 1; }
+  if (shot.aimX > span)  { shot.aimX = 2 * span - shot.aimX; shot.sweepDir = -1; bounceBoost('sweepBoost'); }
+  if (shot.aimX < -span) { shot.aimX = -2 * span - shot.aimX; shot.sweepDir = 1; bounceBoost('sweepBoost'); }
   shot.theta = aimAngleFor(origin, shot.aimX);
   engine.setAim(shot.theta);
 }
 
-function updatePower(dt) {
-  shot.power += shot.powerDir * powerCycle(state.run.level) * dt;
-  if (shot.power > 1) { shot.power = 1; shot.powerDir = -1; }
-  if (shot.power < 0) { shot.power = 0; shot.powerDir = 1; }
+/** Timing mode: the meter's height on the goal line. */
+const meterHeight = power => SHOT.METER_HEIGHT[0] + (SHOT.METER_HEIGHT[1] - SHOT.METER_HEIGHT[0]) * power;
 
-  // Preview where this power lands on the goal plane.
-  predictCrossing(origin, shot.theta, shot.power, SPEED_SCALE, prediction);
+/** Timing mode's launch: the arrow's line, the meter's height, and pace rising with the meter. */
+function timingVelocity(theta, power, out) {
+  const x = origin.x + Math.tan(theta) * (origin.z - GOAL.PLANE_Z);
+  return velocityTo(origin, x, meterHeight(power), BASE_VELOCITY * SPEED_SCALE * (.6 + .4 * power), out, 0);
+}
+
+/** Every turn of the arrow or the meter makes it a little faster, up to the cap. */
+function bounceBoost(key) {
+  shot[key] = Math.min(1 + SHOT.MAX_BOOST, shot[key] + SHOT.BOUNCE_BOOST);
+}
+
+function updatePower(dt) {
+  shot.power += shot.powerDir * powerCycle(state.run.level) * shot.powerBoost * dt;
+  if (shot.power > 1) { shot.power = 1; shot.powerDir = -1; bounceBoost('powerBoost'); }
+  if (shot.power < 0) { shot.power = 0; shot.powerDir = 1; bounceBoost('powerBoost'); }
+
+  // Preview where this power crosses the goal line (also the test hook's `prediction`).
+  prediction.y = meterHeight(shot.power);
   engine.setElevation(Math.max(0.1, prediction.y));
+}
+
+// ===========================================================================
+// Shot modes. Three ways to take a shot, one launch: each mode ends in a
+// launch velocity (and, for flick, a sideways curve), then the same windup,
+// flight, keeper and scoring.
+//   flick  - swipe up from anywhere: direction aims, length sets the height,
+//            speed sets the pace, a bent swipe curls the ball.
+//   aim    - a crosshair on the goal follows the pointer (or the arrow keys)
+//            and sways; hold to charge pace (the sway grows), release to shoot.
+//   timing - the original sweeping arrow and height meter, two presses.
+// ?shot=flick|aim|timing picks one (default: timing); on localhost Alt+9 cycles them.
+// ===========================================================================
+export const SHOT_MODES = ['flick', 'aim', 'timing'];
+const DEFAULT_SHOT_MODE = 'timing';   // releases: the two-tap shot
+const _shotParam = new URLSearchParams(location.search).get('shot');
+let shotMode = SHOT_MODES.includes(_shotParam) ? _shotParam : DEFAULT_SHOT_MODE;
+
+const FLICK = {
+  MIN_UP: .05,            // a swipe must travel this much of the screen height upward
+  MAX_TIME: 1.4,          // ...within this many seconds
+  AIM: 5.5,               // metres across the goal line per unit of swipe slope (sideways / up)
+  HEIGHT: [.07, .5],      // swipe length (screen heights) for the lowest and the highest shot
+  TOP: 2.9,               // height on the line of the longest swipe, metres
+  SWIPE_SPEED: [.8, 4],   // screen heights per second for the slowest and the fastest pace
+  SPEED: [25, 40],        // horizontal ball speed, m/s
+  CURVE: 32,              // m/s^2 of sideways curl per unit of swipe bend
+  CURVE_MAX: 14,
+  DEAD: .035,             // a bend below this is a straight shot
+};
+const FREE_AIM = {
+  SWAY: [.12, .42],       // sway radius, metres: level 1 -> late in a run
+  CHARGE_TIME: .8,        // seconds to full charge
+  SPREAD: 1.4,            // how much a full charge widens the sway
+  SPEED: [25, 40],
+  KEYS: 2.6,              // m/s the arrow keys move the crosshair
+};
+const SWIPE_SAMPLES = 96;
+const swipe = { active: false, count: 0, x: new Float32Array(SWIPE_SAMPLES), y: new Float32Array(SWIPE_SAMPLES),
+  t: new Float32Array(SWIPE_SAMPLES) };
+const aimPoint = { x: 0, y: 1.2, swayX: 0, swayY: 0, time: 0 };
+const aimKeys = { left: false, right: false, up: false, down: false };
+const launchVelocity = { x: 0, y: 0, z: 0 };
+let charge = 0;
+
+/** Switches the shot mode (localhost Alt+9 cycles); the current chance is dealt again. */
+function setShotMode(mode) {
+  if (!SHOT_MODES.includes(mode)) return;
+  shotMode = mode;
+  if (state.screen === 'MATCH' && (state.phase === 'AIM' || state.phase === 'POWER')) beginChance();
+}
+
+/** The first shots of a run explain the controls of the current mode. */
+function shotPrompt(run) {
+  if (run.shots > 2) return '';
+  if (shotMode === 'flick') return run.shots === 0 ? 'SWIPE UP TOWARD THE GOAL TO SHOOT' : 'BEND YOUR SWIPE TO CURL THE BALL';
+  if (shotMode === 'aim') return run.shots === 0
+    ? `${ui.pressWord() === 'TAP' ? 'TOUCH' : 'POINT'} TO AIM, HOLD FOR POWER, RELEASE TO SHOOT` : '';
+  return run.shots === 0 ? `${ui.pressWord()} TO LOCK YOUR AIM ON THE TARGET` : '';
+}
+
+/** A chance begins: show the mode's aiming aids. */
+function prepareShotMode() {
+  swipe.active = false;
+  charge = 0;
+  shot.preset = false;
+  shot.curve = 0;
+  ui.setCharge(null);
+  engine.showAimRig(shotMode === 'timing', false);
+  engine.showCrosshair(shotMode === 'aim');
+  if (shotMode === 'aim') {
+    aimPoint.x = aimTarget.x; aimPoint.y = aimTarget.y;
+    engine.setCrosshair(aimPoint.x, aimPoint.y, 0);
+  }
+}
+
+/** Commits a mode's shot: the ball leaves with `launchVelocity` (and `curve`) after the windup. */
+function commitShot(curve) {
+  shot.preset = true;
+  shot.curve = curve;
+  shot.theta = Math.atan2(launchVelocity.x, -launchVelocity.z);
+  audio.play('power');
+  audio.setPower(null);
+  ui.setPrompt('');
+  ui.setCharge(null);
+  engine.showAimRig(false, false);
+  engine.showCrosshair(false);
+  engine.placeStrikerContact(shot.theta);
+  shot.windup = 0;
+  state.phase = 'WINDUP';
+}
+
+const shotInputOpen = () => state.screen === 'MATCH' && !state.paused && !poki.isInBreak()
+  && (state.phase === 'AIM' || state.phase === 'POWER');
+
+// ---- Flick --------------------------------------------------------------------
+function swipeSample(e) {
+  const i = Math.min(swipe.count, SWIPE_SAMPLES - 1);
+  swipe.x[i] = e.clientX; swipe.y[i] = e.clientY; swipe.t[i] = e.timeStamp / 1000;
+  swipe.count = i + 1;
+}
+
+/** Reads a finished swipe into a shot, or explains why it was not one. */
+function flickShot() {
+  const n = swipe.count, H = innerHeight;
+  const dx = swipe.x[n - 1] - swipe.x[0], dy = swipe.y[n - 1] - swipe.y[0];
+  const up = -dy / H, side = dx / H, length = Math.hypot(dx, dy) / H;
+  const time = Math.max(.016, swipe.t[n - 1] - swipe.t[0]);
+  if (n < 2 || up < FLICK.MIN_UP || time > FLICK.MAX_TIME) {
+    ui.setPrompt('SWIPE UP TOWARD THE GOAL, IN ONE QUICK MOVE');
+    return false;
+  }
+  // Bend: the farthest the path strays from its straight line, signed (right of it positive).
+  let bend = 0;
+  for (let i = 1; i < n - 1; i++) {
+    const cross = (dx * (swipe.y[i] - swipe.y[0]) - dy * (swipe.x[i] - swipe.x[0])) / (Math.hypot(dx, dy) * H);
+    if (Math.abs(cross) > Math.abs(bend)) bend = cross;
+  }
+  bend /= Math.max(length, .05);
+  // The ball follows the swipe's shape: a path bowing right starts right and curls back left.
+  const curve = Math.abs(bend) < FLICK.DEAD ? 0
+    : -Math.sign(bend) * Math.min(FLICK.CURVE_MAX, (Math.abs(bend) - FLICK.DEAD) * FLICK.CURVE);
+  const x = side / up * FLICK.AIM;
+  const y = GROUND_Y + FLICK.TOP * Math.max(0, Math.min(1, (length - FLICK.HEIGHT[0]) / (FLICK.HEIGHT[1] - FLICK.HEIGHT[0])));
+  const pace = Math.max(0, Math.min(1, (length / time - FLICK.SWIPE_SPEED[0]) / (FLICK.SWIPE_SPEED[1] - FLICK.SWIPE_SPEED[0])));
+  velocityTo(origin, x, y, FLICK.SPEED[0] + (FLICK.SPEED[1] - FLICK.SPEED[0]) * pace, launchVelocity, curve);
+  shot.power = pace;
+  commitShot(curve);
+  return true;
+}
+
+// ---- Free aim ---------------------------------------------------------------------
+/** The crosshair: pointer or keys, plus a sway that grows with level and charge. */
+function updateFreeAim(dt) {
+  if (aimKeys.left || aimKeys.right || aimKeys.up || aimKeys.down) {
+    aimPoint.x += ((aimKeys.right ? 1 : 0) - (aimKeys.left ? 1 : 0)) * FREE_AIM.KEYS * dt;
+    aimPoint.y += ((aimKeys.up ? 1 : 0) - (aimKeys.down ? 1 : 0)) * FREE_AIM.KEYS * dt;
+  }
+  aimPoint.x = Math.max(-GOAL.HALF_W - 1.2, Math.min(GOAL.HALF_W + 1.2, aimPoint.x));
+  aimPoint.y = Math.max(.15, Math.min(GOAL.HEIGHT + .8, aimPoint.y));
+  if (state.phase === 'POWER') {
+    charge = Math.min(1, charge + dt / FREE_AIM.CHARGE_TIME);
+    shot.power = charge;
+    ui.setCharge(charge);
+  }
+  aimPoint.time += dt;
+  const ramp = levelRamp(state.run.level);
+  const sway = (FREE_AIM.SWAY[0] + (FREE_AIM.SWAY[1] - FREE_AIM.SWAY[0]) * ramp) * (1 + FREE_AIM.SPREAD * charge);
+  aimPoint.swayX = Math.sin(aimPoint.time * 1.7) * sway;
+  aimPoint.swayY = Math.sin(aimPoint.time * 2.3 + 1) * sway * .7;
+  engine.setCrosshair(aimPoint.x + aimPoint.swayX, aimPoint.y + aimPoint.swayY, charge * .6);
+}
+
+function releaseFreeAim() {
+  if (state.phase !== 'POWER' || shotMode !== 'aim') return;
+  velocityTo(origin, aimPoint.x + aimPoint.swayX, aimPoint.y + aimPoint.swayY,
+    FREE_AIM.SPEED[0] + (FREE_AIM.SPEED[1] - FREE_AIM.SPEED[0]) * charge, launchVelocity, 0);
+  commitShot(0);
+}
+
+// ---- Input ---------------------------------------------------------------------------
+function shotPointerDown(e) {
+  if (shotMode === 'timing' || state.phase === 'FLIGHT') { advance(); return; }
+  if (!shotInputOpen()) return;
+  poki.gameplayStart();
+  if (shotMode === 'flick' && state.phase === 'AIM') {
+    swipe.active = true;
+    swipe.count = 0;
+    swipeSample(e);
+    ui.drawSwipe(swipe.x, swipe.y, swipe.count);
+  } else if (shotMode === 'aim' && state.phase === 'AIM') {
+    engine.pointerToGoal(e.clientX, e.clientY, aimPoint);
+    audio.play('aim');
+    charge = 0;
+    state.phase = 'POWER';
+  }
+}
+
+function shotPointerMove(e) {
+  if (shotMode === 'flick' && swipe.active) {
+    swipeSample(e);
+    ui.drawSwipe(swipe.x, swipe.y, swipe.count);
+  } else if (shotMode === 'aim' && shotInputOpen() && (e.pointerType === 'mouse' || e.buttons)) {
+    engine.pointerToGoal(e.clientX, e.clientY, aimPoint);
+  }
+}
+
+function shotPointerUp(e) {
+  if (shotMode === 'flick' && swipe.active) {
+    swipe.active = false;
+    swipeSample(e);
+    ui.fadeSwipe();
+    if (shotInputOpen()) flickShot();
+  } else if (shotMode === 'aim') releaseFreeAim();
+}
+
+/** Space and the arrow keys, for the modes that use them. */
+function shotKey(e, down) {
+  const arrow = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[e.code];
+  if (shotMode === 'aim' && arrow) { aimKeys[arrow] = down; return true; }
+  if (e.code !== 'Space' && e.code !== 'Enter') return false;
+  if (shotMode === 'timing' || state.phase === 'FLIGHT') { if (down && !e.repeat) advance(); return true; }
+  if (shotMode === 'aim') {
+    if (down && !e.repeat && shotInputOpen() && state.phase === 'AIM') {
+      poki.gameplayStart();
+      audio.play('aim');
+      charge = 0;
+      state.phase = 'POWER';
+    } else if (!down) releaseFreeAim();
+    return true;
+  }
+  if (down && !e.repeat && shotInputOpen()) ui.setPrompt('SWIPE UP TOWARD THE GOAL TO SHOOT');
+  return true;
 }
 
 /** Input handler: one press per phase; a press during the replay skips it. */
@@ -456,6 +1013,7 @@ function advance() {
   if (state.screen !== 'MATCH' || state.paused || poki.isInBreak()) return;
   poki.gameplayStart();   // the first press of a session starts gameplay; later calls are no-ops
 
+  if (shotMode !== 'timing' && (state.phase === 'AIM' || state.phase === 'POWER')) return;
   if (state.phase === 'AIM') {
     audio.play('aim');
     state.phase = 'POWER';
@@ -483,9 +1041,14 @@ function launch() {
     audio.play('kick');
     audio.play('whoosh');
   }
-  const theta = shot.theta;
   ballPos.x = origin.x; ballPos.y = origin.y; ballPos.z = origin.z;
-  launchVector(theta, shot.power, SPEED_SCALE, ballVel);
+  if (shot.preset) {
+    ballVel.x = launchVelocity.x; ballVel.y = launchVelocity.y; ballVel.z = launchVelocity.z;
+  } else {
+    timingVelocity(shot.theta, shot.power, ballVel);
+    shot.curve = 0;
+  }
+  const theta = shot.theta;
   engine.placeStrikerContact(theta);
   engine.setStrikerKick(1);
   engine.recordStrikerLaunch();
@@ -493,7 +1056,7 @@ function launch() {
   // Read the arrival at the keeper, with uncertainty and reaction delay. He cannot
   // slide the length of the line either: a dive displaces him KEEPER_MAX_DIVE
   // at most, and his arms have to cover the rest.
-  predictCrossing(origin, theta, shot.power, SPEED_SCALE, prediction, engine.keeperLineZ());
+  predictFromVelocity(origin, ballVel, prediction, engine.keeperLineZ());
   const err = (Math.random() * 2 - 1) * shot.keeperAbility.readError;
   shot.keeperReadX = err;
   shot.keeperReadY = (Math.random() * 2 - 1) * shot.keeperAbility.heightError;
@@ -510,6 +1073,16 @@ function launch() {
   // blocks with his body; only a full-stretch save goes horizontal.
   shot.diveDepth = Math.max(0, Math.min(1, (travel - SHOT.KEEPER_STAND_ZONE)
     / (SHOT.KEEPER_MAX_DIVE - SHOT.KEEPER_STAND_ZONE)));
+  // On target: he still flies at it, full stretch, but finishes short of the ball.
+  predictFromVelocity(origin, ballVel, crossing, GOAL.PLANE_Z, shot.curve);
+  shot.keeperBeaten = Math.abs(crossing.x) < GOAL.HALF_W && crossing.y < GOAL.HEIGHT
+    && Math.hypot(crossing.x - aimTarget.x, crossing.y - aimTarget.y) <= aimTarget.ring + ARCADE.BEATEN_MARGIN;
+  if (shot.keeperBeaten) {
+    shot.keeperTarget = keeperShortOf(prediction.x, shot.keeperSetX);
+    shot.keeperSide = Math.sign(shot.keeperTarget - shot.keeperSetX) || 1;
+    shot.diveDepth = 1;
+  }
+  shot.ghosted = false;
   shot.keeperJumpAt = Math.max(shot.keeperAbility.reaction, prediction.t - .25);
   shot.keeperDelay = shot.keeperAbility.reaction;
   shot.keeperDive = 0;
@@ -537,7 +1110,7 @@ function launch() {
   // and steps across it with his body and leading boot.
   for (let i = 0; i < blockerCount; i++) {
     const b = blockers[i];
-    predictCrossing(origin, theta, shot.power, SPEED_SCALE, prediction, b.z);
+    predictFromVelocity(origin, ballVel, prediction, b.z);
     const guess = prediction.x + (Math.random() * 2 - 1) * SHOT.BLOCK_READ_ERROR * (1 - .65 * shot.defenseStrength);
     b.target = Math.max(b.baseX - SHOT.BLOCK_MAX_LUNGE,
                         Math.min(b.baseX + SHOT.BLOCK_MAX_LUNGE, guess));
@@ -551,9 +1124,66 @@ function launch() {
     b.down = 0;
     b.spent = false;
     b.x = b.baseX;
+    if (shot.wall) {
+      // A wall holds its line and jumps as the ball is struck.
+      b.target = b.baseX;
+      b.lowSlide = false;
+      b.delay = WALL.delay[0] + Math.random() * (WALL.delay[1] - WALL.delay[0]);
+      b.airY = 0; b.vy = 0; b.jumped = false;
+    }
   }
 
   state.phase = 'FLIGHT';
+}
+
+const crossing = { x: 0, y: 0, t: 0 };
+const _arrivalPoint = { x: 0, y: 0, z: 0 }, _ahead1 = { x: 0, y: 0, z: 0 }, _ahead2 = { x: 0, y: 0, z: 0 };
+const _clearPoints = [_arrivalPoint, ballPos, _ahead1, _ahead2];
+const KEEPER_CLEARANCE = .12;   // metres between his nearest limb and a ball that beats him
+
+/**
+ * An on-target shot beats the keeper: every substep his real limbs are kept
+ * clear of where the ball will cross his line (and of the ball itself), by
+ * easing him away from it. He still flies at it; it goes just past his fingertips.
+ */
+function keepClearOf(aim, arrival) {
+  const t = Math.max(0, arrival);
+  _arrivalPoint.x = aim.x + .5 * shot.curve * t * t;
+  _arrivalPoint.y = aim.y;
+  _arrivalPoint.z = aim.z;
+  // The ball now and over its next two substeps, so it cannot slip between checks.
+  for (const [out, k] of [[_ahead1, 1], [_ahead2, 2]]) {
+    out.x = ballPos.x + ballVel.x * PHYS_DT * k;
+    out.y = ballPos.y + ballVel.y * PHYS_DT * k;
+    out.z = ballPos.z + ballVel.z * PHYS_DT * k;
+  }
+  const points = arrival >= 0 ? 4 : 3;
+  for (let pass = 0; pass < 4; pass++) {
+    let deficit = 0;
+    const caps = engine.getKeeperCapsules();
+    for (let i = 0; i < caps.length; i++) {
+      const cap = caps[i], reach = cap.r + BALL_R + KEEPER_CLEARANCE;
+      for (let p = 4 - points; p < 4; p++) {
+        const point = _clearPoints[p];
+        closestPointOnSegment(point, cap.a, cap.b, contactPoint);
+        const gap = Math.hypot(point.x - contactPoint.x, point.y - contactPoint.y, point.z - contactPoint.z);
+        deficit = Math.max(deficit, reach - gap);
+      }
+    }
+    if (deficit <= 0) return;
+    const away = Math.sign(shot.keeperX - _arrivalPoint.x) || -shot.keeperSide;
+    shot.keeperX += away * (deficit + .01);
+    shot.keeperTarget += away * (deficit + .01);
+    engine.setKeeper(shot.keeperX, shot.keeperDive, shot.keeperSide, shot.keeperHigh,
+      shot.keeperAirY, shot.keeperGround, null, shot.keeperDepth);
+  }
+}
+
+/** Where a beaten keeper's dive ends: toward the ball but KEEPER_MISS short, within his reach. */
+function keeperShortOf(ballX, fromX) {
+  const side = Math.sign(ballX - fromX) || 1;
+  const x = ballX - side * ARCADE.KEEPER_MISS;
+  return Math.max(fromX - SHOT.KEEPER_MAX_DIVE, Math.min(fromX + SHOT.KEEPER_MAX_DIVE, x));
 }
 
 /** Backswing. The ball does not move until the boot actually reaches it. */
@@ -634,7 +1264,8 @@ export function substep(h) {
     const readX = ballPos.x + ballVel.x * arrival + shot.keeperReadX * uncertainty;
     const readY = Math.max(BALL_R, ballPos.y + ballVel.y * arrival + .5 * GRAVITY * arrival * arrival)
       + shot.keeperReadY * uncertainty;
-    shot.keeperTarget = Math.max(-GOAL.HALF_W + .25, Math.min(GOAL.HALF_W - .25, readX));
+    shot.keeperTarget = Math.max(-GOAL.HALF_W + .25, Math.min(GOAL.HALF_W - .25,
+      shot.keeperBeaten && shot.touched === null ? keeperShortOf(readX, shot.keeperX) : readX));
     if (arrival <= SHOT.KEEPER_COMMIT_TIME) {
       shot.keeperTarget = Math.max(shot.keeperX - SHOT.KEEPER_MAX_DIVE,
         Math.min(shot.keeperX + SHOT.KEEPER_MAX_DIVE, shot.keeperTarget));
@@ -645,6 +1276,7 @@ export function substep(h) {
     shot.keeperSide = Math.sign(shot.keeperTarget - shot.keeperX) || shot.keeperSide;
     shot.diveDepth = Math.max(0, Math.min(1, (remaining - SHOT.KEEPER_STAND_ZONE)
       / (SHOT.KEEPER_MAX_DIVE - SHOT.KEEPER_STAND_ZONE)));
+    if (shot.keeperBeaten) shot.diveDepth = 1;
   }
   if (shot.keeperDelay > 0) {
     shot.keeperDelay -= h;
@@ -695,7 +1327,7 @@ export function substep(h) {
   }
   // Standing saves track the actual incoming trajectory, including low bounces.
   // Hands follow this target through real rig joints; no enlarged hit area.
-  const tracking = shot.keeperDelay <= 0 && shot.diveDepth < .35 && arrival >= 0 && arrival < .65
+  const tracking = !shot.keeperBeaten && shot.keeperDelay <= 0 && shot.diveDepth < .35 && arrival >= 0 && arrival < .65
     && shot.resolved === null;
   keeperAim.x = ballPos.x + ballVel.x * Math.max(0, arrival);
   keeperAim.y = Math.max(BALL_R, ballPos.y + ballVel.y * Math.max(0, arrival)
@@ -703,9 +1335,21 @@ export function substep(h) {
   keeperAim.z = keeperZ + .25;
   engine.setKeeper(shot.keeperX, shot.keeperDive, shot.keeperSide, shot.keeperHigh,
     shot.keeperAirY, shot.keeperGround, tracking ? keeperAim : null, shot.keeperDepth);
+  if (shot.keeperBeaten && shot.touched === null && shot.resolved === null) keepClearOf(keeperAim, arrival);
 
   // --- Defenders -----------------------------------------------------------
-  for (let i = 0; i < blockerCount && shot.resolved === null; i++) {
+  // A wall jumps once and lands even after the shot is decided.
+  for (let i = 0; shot.wall && i < blockerCount; i++) {
+    const b = blockers[i];
+    if (b.delay > 0) b.delay -= h;
+    else if (!b.jumped) { b.jumped = true; b.vy = WALL.jump; }
+    if (b.jumped && (b.airY > 0 || b.vy > 0)) {
+      b.vy += GRAVITY * h;
+      b.airY = Math.max(0, b.airY + b.vy * h);
+    }
+    b.x = engine.setBlocker(i, b.baseX, 0, 1, b.airY);
+  }
+  for (let i = 0; !shot.wall && i < blockerCount && shot.resolved === null; i++) {
     const b = blockers[i];
     if (b.delay > 0) {
       b.delay -= h;
@@ -729,6 +1373,7 @@ export function substep(h) {
 
   // --- Ball ----------------------------------------------------------------
   prevPos.x = ballPos.x; prevPos.y = ballPos.y; prevPos.z = ballPos.z;
+  if (shot.curve !== 0 && shot.touched === null && !shot.bounced) ballVel.x += shot.curve * h;
   stepBall(ballPos, ballVel, h);
   if (prevPos.y > TURF + 1e-4 && ballPos.y <= TURF) {
     shot.bounced = true;
@@ -807,6 +1452,10 @@ function tryResolve() {
     const caps = engine.getKeeperCapsules();
     for (let i = 0; i < caps.length; i++) {
       if (!sweptCapsuleHit(prevPos, ballPos, caps[i])) continue;
+      // An untouched on-target shot always beats him. The target's clearance and
+      // his short dive keep him from reaching it; `ghosted` records it if he ever
+      // does (tools/keeper-reach.mjs checks it never happens).
+      if (shot.keeperBeaten && shot.touched === null) { shot.ghosted = true; continue; }
       const speed = Math.hypot(ballVel.x, ballVel.y, ballVel.z);
       deflect(caps[i], SHOT.SAVE_RESTITUTION);
       if (speed < shot.keeperAbility.catchSpeed) {
@@ -925,35 +1574,54 @@ function updateFlight(dt) {
   }
 }
 
-/** Precision tier of a goal: how close its crossing came to the target's centre. */
+/** Precision tier of a goal: how close its crossing came to the target's centre (round rings).
+ * A ball grazing a ring's painted edge counts: TARGET.LENIENCY is added to both radii. */
 export function precisionTier(crossX, crossY, target) {
-  const off = Math.max(Math.abs(crossX - target.x), Math.abs(crossY - target.y));
+  const off = Math.hypot(crossX - target.x, crossY - target.y) - TARGET.LENIENCY;
   return off <= target.bull ? 'bullseye' : off <= target.ring ? 'target' : 'goal';
 }
 
-/** Scores a finished shot and updates hearts, combo and level. Pure run maths.
- * `heart` says the target carried an extra life: a shot inside the ring takes it. */
-export function scoreShot(run, outcome, tier, heart = false) {
+/**
+ * Scores a finished shot and updates hearts, combo and level. Pure run maths.
+ * `heart` says the target carried an extra life: a shot inside the ring takes it.
+ * `special` multiplies the points; a beaten boss also gives a heart; a bonus
+ * round shot costs nothing and leaves the combo and level progress alone; the
+ * daily challenge never costs hearts and levels by shot count instead.
+ */
+export function scoreShot(run, outcome, tier, heart = false, special = null) {
   run.shots += 1;
+  const bonus = special === 'bonus';
   if (outcome !== 'goal') {
-    run.hearts = Math.max(0, run.hearts - 1);
-    run.combo = 0;
+    if (!bonus && !run.daily) run.hearts = Math.max(0, run.hearts - 1);
+    if (!bonus) run.combo = 0;
     return { points: 0, levelUp: false, extraLife: false };
   }
   run.goals += 1;
-  run.levelGoals += 1;
+  if (!bonus) run.levelGoals += 1;
   const onTarget = tier !== 'goal';
-  run.combo = onTarget ? Math.min(ARCADE.MAX_COMBO, run.combo + 1) : 0;
+  if (!bonus) run.combo = onTarget ? Math.min(ARCADE.MAX_COMBO, run.combo + 1) : 0;
   run.bestCombo = Math.max(run.bestCombo, run.combo);
   if (onTarget) run.targetHits += 1;
   if (tier === 'bullseye') run.bullseyes += 1;
-  const points = ARCADE.POINTS[tier] * Math.max(1, run.combo);
+  const multiplier = special ? SPECIALS[special].points : 1;
+  const points = Math.round(ARCADE.POINTS[tier] * Math.max(1, run.combo) * multiplier / 10) * 10;
   run.score += points;
-  const extraLife = heart && onTarget && run.hearts < ARCADE.MAX_HEARTS;
+  const extraLife = !run.daily && ((heart && onTarget) || special === 'boss') && run.hearts < ARCADE.MAX_HEARTS;
   if (extraLife) { run.hearts += 1; run.extraLives += 1; }
-  const levelUp = run.levelGoals >= ARCADE.GOALS_PER_LEVEL;
+  const levelUp = !run.daily && !bonus && run.levelGoals >= ARCADE.GOALS_PER_LEVEL;
   if (levelUp) { run.level += 1; run.levelGoals = 0; }
   return { points, levelUp, extraLife };
+}
+
+/** What a level-up banner says underneath the level. */
+function levelNote(run, rankUp) {
+  if (rankUp) return `NEW RANK: ${progress.rankFor(run.level).name}`;
+  if (run.bonusLeft) return 'BONUS ROUND: MISSES ARE FREE';
+  if (run.bossPending) return 'A BOSS KEEPER IS WAITING';
+  const level = run.level;
+  return level === 2 ? 'THE KEEPER IS WAKING UP' : level === 5 ? 'DEFENDERS INCOMING'
+    : level === 7 ? 'A DEFENDER EVERY TIME' : level === 10 ? 'DOUBLE DEFENCE'
+      : level % 3 === 0 ? 'SMALLER TARGETS' : 'THEY ARE GETTING BETTER';
 }
 
 function resolve(outcome) {
@@ -963,16 +1631,34 @@ function resolve(outcome) {
   engine.cheerCrowd(outcome === 'goal');
   const tier = outcome === 'goal' ? precisionTier(shot.crossX, shot.crossY, aimTarget) : null;
   shot.precision = tier;
-  const result = scoreShot(run, outcome, tier, aimTarget.heart);
-  if (result.extraLife) engine.collectTargetHeart();
+  const special = run.special;
+  const result = scoreShot(run, outcome, tier, aimTarget.heart, special);
+  if (result.extraLife && special !== 'boss') engine.collectTargetHeart();
   shot.points = result.points;
   run.levelUpPending = result.levelUp;
+  if (special) poki.measure('special', special, outcome === 'goal' ? 'complete' : 'fail');
 
-  // Short, arcade-paced replays: tap skips them, and they never run long.
-  shot.holdTimer = outcome === 'goal' ? 1.6 : .9;
+  // Mission counters for this shot; finished missions pay out straight away.
+  const goal = outcome === 'goal', onTarget = goal && tier !== 'goal';
+  const finished = progress.recordShot(run, {
+    goals: goal ? 1 : 0, bullseyes: tier === 'bullseye' ? 1 : 0,
+    golden: goal && special === 'golden' ? 1 : 0, hearts: result.extraLife ? 1 : 0,
+    moving: onTarget && special === 'moving' ? 1 : 0, freekick: goal && special === 'freekick' ? 1 : 0,
+    woodwork: goal && (shot.touched === 'post' || shot.touched === 'bar') ? 1 : 0,
+    boss: goal && special === 'boss' ? 1 : 0, bonus: onTarget && special === 'bonus' ? 1 : 0 });
+  for (const mission of finished) {
+    run.missionsDone.push(mission);
+    ui.toast(`MISSION COMPLETE: ${mission.text}`, `+${mission.xp} XP`);
+    poki.measure('mission', mission.id, 'complete');
+    audio.play('levelUp');
+  }
+
+  // A goal gets room to breathe (the celebration, the points); a miss moves on
+  // quickly. A tap skips either.
+  shot.holdTimer = outcome === 'goal' ? HOLD.GOAL : HOLD.MISS;
   const reactionIndex = Math.floor(Math.random() * engine.REACTIONS.length);
   const reaction = engine.startReaction(outcome === 'goal' ? 'keeper' : 'shooter', engine.REACTIONS[reactionIndex]);
-  shot.holdTimer = Math.min(2.2, Math.max(shot.holdTimer, reaction));
+  shot.holdTimer = Math.min(HOLD.REACTION_MAX, Math.max(shot.holdTimer, reaction));
 
   if (outcome === 'goal') {
     audio.play('net');
@@ -981,24 +1667,31 @@ function resolve(outcome) {
     if (run.combo > 1) audio.play('combo', run.combo);
     if (result.extraLife) audio.play('extraLife');
     engine.startDefenderReactions({ sadSpeed: .65, slowMin: .7, slowMax: 1.05 });
-    let celebrationIndex = Math.floor(Math.random() * (engine.CELEBRATIONS.length - (run.lastCelebration === undefined ? 0 : 1)));
-    if (run.lastCelebration !== undefined && celebrationIndex >= run.lastCelebration) celebrationIndex++;
-    run.lastCelebration = celebrationIndex;
-    shot.holdTimer = Math.min(3.2, Math.max(shot.holdTimer, engine.startCelebration(engine.CELEBRATIONS[celebrationIndex])));
+    // A different unlocked celebration from last time, when there is a choice.
+    const moves = progress.celebrations();
+    const choices = moves.length > 1 ? moves.filter(name => name !== run.lastCelebration) : moves;
+    run.lastCelebration = choices[Math.floor(Math.random() * choices.length)];
+    shot.holdTimer = Math.min(HOLD.CELEBRATION_MAX, Math.max(shot.holdTimer, engine.startCelebration(run.lastCelebration)));
     engine.shake(tier === 'bullseye' ? .7 : .5);
-    const label = tier === 'bullseye' ? 'BULLSEYE!' : tier === 'target' ? 'ON TARGET!' : 'GOAL!';
-    const detail = [GOAL_CALLS[shot.touched] || '', result.extraLife ? 'EXTRA LIFE!' : ''].filter(Boolean).join('  ');
+    if (tier !== 'goal') engine.burstTarget(tier);
+    const label = special === 'boss' ? 'BOSS BEATEN!' : special === 'freekick' ? 'OVER THE WALL!'
+      : tier === 'bullseye' ? 'BULLSEYE!' : tier === 'target' ? 'ON TARGET!' : 'GOAL!';
+    const detail = [special === 'boss' && tier !== 'goal' ? tier.toUpperCase() : '',
+      special && special !== 'boss' && special !== 'freekick' ? SPECIALS[special].label : '',
+      shot.keeperBeaten && !GOAL_CALLS[shot.touched] ? 'JUST PAST HIS FINGERTIPS!' : '',
+      GOAL_CALLS[shot.touched] || '', result.extraLife ? 'EXTRA LIFE!' : ''].filter(Boolean).join('  ');
     ui.flashVerdict(label, tier, `+${result.points}${run.combo > 1 ? `  x${run.combo} COMBO` : ''}`, detail);
   } else {
     if (outcome === 'save') engine.shake(0.25);
     if (outcome === 'blocked') engine.shake(0.3);
-    const label = { save: 'SAVED!', blocked: 'BLOCKED!', woodwork: shot.touched === 'bar' ? 'CROSSBAR!' : 'POST!',
+    const label = { save: shot.keeperMoment ? 'WHAT A SAVE!' : 'SAVED!', blocked: 'BLOCKED!', woodwork: shot.touched === 'bar' ? 'CROSSBAR!' : 'POST!',
       high: 'OVER!', wide: 'WIDE!' }[outcome];
-    ui.flashVerdict(label, 'miss', run.hearts > 0 ? '-1 HEART' : 'OUT OF HEARTS');
+    ui.flashVerdict(label, 'miss', special === 'bonus' ? 'FREE MISS' : run.daily
+      ? `SHOT ${run.shots}/${progress.DAILY_SHOTS}` : run.hearts > 0 ? '-1 HEART' : 'OUT OF HEARTS');
     audio.play('groan');
     audio.play('miss');
-    audio.play('loseHeart');
-    if (run.hearts === 1) audio.play('warning');
+    if (special !== 'bonus' && !run.daily) audio.play('loseHeart');
+    if (run.hearts === 1 && !run.daily) audio.play('warning');
   }
   pushHud();
 }
@@ -1008,16 +1701,99 @@ function finishChance() {
   engine.stopCelebration();
   engine.stopReactions();
   engine.showTarget(false);
-  if (run.hearts <= 0) { gameOver(); return; }
+  endSpecial();
+  run.special = null;
+  if (run.daily ? run.shots >= progress.DAILY_SHOTS : run.hearts <= 0) { gameOver(); return; }
   if (run.levelUpPending) {
     run.levelUpPending = false;
     applyLevelLook();
     audio.play('levelUp');
-    ui.showLevelUp(run.level);
+    poki.measure('level', String(run.level - 1), 'complete');
+    poki.measure('level', String(run.level), 'start');
+    if (run.level % SPECIALS.bonus.every === 0) run.bonusLeft = SPECIALS.bonus.shots;
+    if (run.level % SPECIALS.boss.every === 0) run.bossPending = true;
+    const rankUp = progress.rankFor(run.level) !== progress.rankFor(run.level - 1);
+    ui.showLevelUp(`LEVEL ${run.level}`, levelNote(run, rankUp));
   }
   pushHud();
   beginChance();
 }
+
+/* @dev */
+// ===========================================================================
+// Screen previews (localhost only, stripped from releases): Alt+1..8 opens a
+// screen with sample data so it can be checked without playing to it; Alt+0
+// returns to play.
+// ===========================================================================
+const PREVIEW_SPECIALS = ['golden', 'moving', 'freekick', 'boss', 'bonus'];
+let previewSpecial = 0;
+
+/** Sample results (nothing is saved): a middling run, or a finished daily. */
+function previewResults(daily) {
+  poki.gameplayStop();
+  state.paused = false;
+  audio.setPaused(false);
+  engine.showTarget(false);
+  engine.showAimRig(false, false);
+  ui.showHud(false);
+  ui.setDimmed(true);
+  setGameplayActive(false);
+  state.screen = 'GAMEOVER';
+  state.phase = 'IDLE';
+  results = {
+    run: { ...state.run, daily, mode: daily ? 'daily' : 'arcade', score: daily ? 2400 : 2750, level: daily ? 10 : 5,
+      goals: 9, bullseyes: 6, bestCombo: 3, shots: 14, targetHits: 7, continued: false,
+      missionsDone: [{ id: 'woodwork1', text: 'SCORE IN OFF THE POST OR BAR', xp: 200 }] },
+    isBest: false,
+    outcome: { gained: 275, unlocked: daily ? [] : [{ id: 'kit:sky', name: 'SKY BLUE' }], missions: [],
+      daily: daily ? { best: 2400, newBest: true, streak: 3 } : null },
+  };
+  showResults();
+}
+
+/** Back to the live chance from any preview. */
+function previewBackToPlay() {
+  state.screen = 'MATCH';
+  state.paused = false;
+  ui.hideOverlay();
+  ui.showHud(true);
+  ui.setDimmed(false);
+  audio.setPaused(false);
+  setGameplayActive(true);
+  if (state.phase === 'IDLE') beginChance();
+}
+
+function previewScreen(key) {
+  if (poki.isInBreak()) return;
+  if (state.screen === 'GAMEOVER' && key !== 3 && key !== 4 && key !== 5) previewBackToPlay();
+  const labels = { 0: 'PLAY', 1: 'STRIKER SELECT', 2: 'PAUSE', 3: 'GAME OVER', 4: 'DAILY RESULTS', 5: 'LOCKER',
+    6: 'LEVEL UP / NEW RANK', 7: 'MISSION TOAST', 8: 'SPECIAL CHANCE', 9: 'SHOT MODE' };
+  if (!(key in labels)) return;
+  if (key === 0) previewBackToPlay();
+  if (key === 1) { if (state.screen !== 'SELECT') openStrikerSelect('play'); }
+  if (key === 2) { if (state.screen === 'SELECT') previewBackToPlay(); pause(); }
+  if (key === 3 || key === 4) previewResults(key === 4);
+  if (key === 5) { previewResults(false); openLocker(); }
+  if (key === 6) ui.showLevelUp(`LEVEL ${state.run.level + 1}`, `NEW RANK: ${progress.rankFor(state.run.level + 3).name}`);
+  if (key === 7) ui.toast('MISSION COMPLETE: SCORE 5 GOALS IN ONE RUN', '+100 XP');
+  let label = labels[key];
+  if (key === 8 && state.screen === 'MATCH' && !state.paused) {
+    // Re-deal the current chance as the next special in the cycle.
+    const kind = PREVIEW_SPECIALS[previewSpecial++ % PREVIEW_SPECIALS.length];
+    state.forceSpecial = kind;
+    if (kind === 'bonus') state.run.bonusLeft = 1;
+    engine.stopCelebration();
+    beginChance();
+    label = `SPECIAL: ${SPECIALS[kind].label}`;
+  }
+  if (key === 9) {
+    if (state.screen !== 'MATCH') previewBackToPlay();
+    setShotMode(SHOT_MODES[(SHOT_MODES.indexOf(shotMode) + 1) % SHOT_MODES.length]);
+    label = `SHOT MODE: ${shotMode.toUpperCase()}`;
+  }
+  ui.devTag(`ALT+${key} \u00b7 ${label}`);
+}
+/* @end-dev */
 
 // ===========================================================================
 // Test harness (local only): drives the production shot at a given level.
@@ -1039,6 +1815,7 @@ export function simulateArcadeShotForTest(config) {
   const defence = defenceFor(level, config.range);
   blockerCount = config.blockers ?? defence.blockers;
   shot.defenseStrength = defence.strength;
+  shot.wall = false;
   shot.keeperDepth = .75;
   engine.setupChance(origin, blockerCount, false);
   for (let i = 0; i < blockerCount; i++) {
@@ -1047,15 +1824,16 @@ export function simulateArcadeShotForTest(config) {
     b.side = 1; b.lunge = 0; b.depth = 1; b.delay = 0; b.down = 0; b.spent = false;
   }
   shot.theta = aimAngleFor(origin, (config.targetX ?? 0) + (config.aimError ?? 0));
-  let low = 0, high = 1;
-  for (let i = 0; i < 18; i++) {
-    const mid = (low + high) / 2;
-    predictCrossing(origin, shot.theta, mid, SPEED_SCALE, prediction);
-    if (prediction.y < (config.targetY ?? 1.35)) low = mid; else high = mid;
-  }
-  shot.power = Math.max(0, Math.min(1, (low + high) / 2 + (config.powerError ?? 0)));
+  const aimY = (config.targetY ?? 1.35) + (config.heightOffset ?? 0);
+  const meterAt = (aimY - SHOT.METER_HEIGHT[0]) / (SHOT.METER_HEIGHT[1] - SHOT.METER_HEIGHT[0]);
+  shot.power = Math.max(0, Math.min(1, meterAt + (config.powerError ?? 0)));
   shot.resolved = null;
-  shot.keeperAbility = keeperAbility(level, Math.hypot(origin.x, config.range));
+  shot.preset = false;
+  shot.ghosted = false;
+  aimTarget.x = config.targetX ?? 0; aimTarget.y = config.targetY ?? 1.35;
+  aimTarget.ring = config.ring ?? TARGET.RING_HALF[0]; aimTarget.bull = config.bull ?? TARGET.BULL_HALF[0];
+  shot.keeperAbility = keeperAbility(level, Math.hypot(origin.x, config.range), null,
+    config.moment ?? Math.random() < ARCADE.KEEPER_MOMENT.odds);
   const narrow = Math.max(-2.6, Math.min(2.6, origin.x * SHOT.KEEPER_ANGLE_NARROW));
   shot.keeperSetX = narrow + (Math.random() * 2 - 1) * shot.keeperAbility.setSpread;
   shot.keeperX = shot.keeperSetX;
@@ -1067,6 +1845,7 @@ export function simulateArcadeShotForTest(config) {
   const target = { x: config.targetX ?? 0, y: config.targetY ?? 1.35,
     ring: config.ring ?? TARGET.RING_HALF[0], bull: config.bull ?? TARGET.BULL_HALF[0] };
   const result = { outcome: shot.resolved || 'unresolved', level, blockers: blockerCount,
+    beaten: shot.keeperBeaten, ghosted: shot.ghosted, keeperX: shot.keeperSetX,
     keeperSkill: shot.keeperAbility.skill,
     tier: shot.resolved === 'goal' ? precisionTier(shot.crossX, shot.crossY, target) : null };
   engine.stopCelebration();
@@ -1087,9 +1866,10 @@ function frame(dt) {
   state.elapsed += dt;
   if (state.paused || state.screen !== 'MATCH') return;
 
+  if (state.phase === 'AIM' || state.phase === 'POWER') updateMovingTarget(dt);
   switch (state.phase) {
-    case 'AIM':    updateAim(dt); break;
-    case 'POWER':  updatePower(dt); break;
+    case 'AIM':    if (shotMode === 'timing') updateAim(dt); else if (shotMode === 'aim') updateFreeAim(dt); break;
+    case 'POWER':  if (shotMode === 'timing') updatePower(dt); else if (shotMode === 'aim') updateFreeAim(dt); break;
     case 'WINDUP': updateWindup(dt); break;
     case 'FLIGHT': updateFlight(dt); break;
   }
@@ -1123,6 +1903,9 @@ async function boot() {
   engine.init(document.getElementById('pitch'));
   await Promise.all([engine.loadStriker(), engine.loadBall()]);
   engine.onFrame(frame);
+  applyCosmetics();
+  if (!progress.striker()) progress.setStriker(progress.randomFreeStriker());
+  engine.setStrikerLook(progress.striker());
   // The test hook, for tools/: local development only, never in a release.
   if (localHost) {
     window.__demo = {
@@ -1136,14 +1919,31 @@ async function boot() {
       dimensions: { goal: GOAL, pitch: PITCH, ballRadius: BALL_R },
       striker: engine.striker, players: engine.players, lastLaunch: engine.lastLaunch,
       poki: { pause, resume, playing: poki.isPlaying },
+      progress: progress.debugData, specials: SPECIALS,
+      /** The next chance is this special ('golden', 'moving', 'freekick', 'boss', 'bonus'). */
+      forceSpecial: kind => { state.forceSpecial = kind; },
+      get shotMode() { return shotMode; }, setShotMode,
+      /** Ad-break tests: a break before every n-th new run (the game uses 3). */
+      setRunsPerBreak: n => { runsPerBreak = n; runsSinceBreak = 0; },
     };
   }
 
+  /* @dev */
+  if (localHost) addEventListener('keydown', e => {
+    if (!ready || !e.altKey || !/^Digit\d$/.test(e.code)) return;
+    e.preventDefault();
+    previewScreen(Number(e.code.slice(5)));
+  });
+  /* @end-dev */
   addEventListener('pointerdown', (e) => {
     if (!ready) return;
     if (e.target.closest('button, .audio-controls')) return;   // overlay controls own their clicks
-    advance();
+    shotPointerDown(e);
   });
+  addEventListener('pointermove', (e) => { if (ready) shotPointerMove(e); });
+  addEventListener('pointerup', (e) => { if (ready) shotPointerUp(e); });
+  addEventListener('pointercancel', (e) => { if (ready) shotPointerUp(e); });
+  addEventListener('keyup', (e) => { if (ready && !poki.isInBreak()) shotKey(e, false); });
   addEventListener('keydown', (e) => {
     if (!ready || poki.isInBreak()) return;
     if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
@@ -1152,15 +1952,23 @@ async function boot() {
       if (state.paused) resume(); else pause();
       return;
     }
+    if (state.screen === 'SELECT') {
+      const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.code];
+      if (step) { e.preventDefault(); ui.stepStriker(step); }
+      else if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) { e.preventDefault(); selectPlay?.(); }
+      return;
+    }
     if (e.target.closest('button')) return;
+    if (e.code.startsWith('Arrow') && state.screen === 'MATCH') shotKey(e, true);
     if (e.code === 'Space' || e.code === 'Enter') {
       if (e.repeat) return;
       if (state.paused) resume();
       else if (state.screen === 'GAMEOVER') replay();
-      else advance();
+      else shotKey(e, true);
     }
   });
 
+  // Straight into the first chance: no menu before play.
   startRun();
   await new Promise(resolve => {
     const afterRender = engine.scene.onAfterRender;
@@ -1171,6 +1979,7 @@ async function boot() {
     };
   });
   await ui.finishLoading();
+  engine.startCameraIntro();   // the intro plays once the loading screen is gone
   poki.loadingFinished();
   poki.movePill(ui.scoreBottom() + 8);
   ready = true;

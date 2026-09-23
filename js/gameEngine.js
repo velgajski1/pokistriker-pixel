@@ -17,10 +17,11 @@
  * exactly what the save/block test uses.
  */
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { GOAL, PITCH, BALL_START, BALL_R, GRAVITY, NET, netPockets, releaseNetPockets,
   AD_BOARDS, BOARD_HEIGHT, BOARD_THICKNESS } from './physics.js';
 import { voxelShade, voxelizeGeometry } from './voxel.js';
-import { measureBlockParts, paintSkin, blockPartVisible, blockPart, BLOCK_PX, SKIN_SIZE, HEAD_RISE } from './blockman.js';
+import { measureBlockParts, paintSkin, blockPartVisible, blockPart, frontSprite, BLOCK_PX, SKIN_SIZE, HEAD_RISE } from './blockman.js';
 
 // ---- File-scope scratch. Never allocate inside the rAF path. --------------
 const _camTarget = new THREE.Vector3(0, 1.35, GOAL.PLANE_Z);
@@ -40,8 +41,22 @@ let shakeAmp = 0;
 let started = false;
 let renderPending = true;
 
+// ---- Quality ----------------------------------------------------------------
+// Phones and weak CPUs render fewer pixels, cheaper shadows and a thinner
+// crowd. `?quality=low|high` overrides the detection; `?stats=1` shows a
+// frame-rate readout. Every tier lowers resolution while frames run slow.
+const _query = new URLSearchParams(location.search);
+export const QUALITY = ['low', 'high'].includes(_query.get('quality')) ? _query.get('quality')
+  : matchMedia('(pointer: coarse)').matches || (navigator.hardwareConcurrency || 8) <= 4 ? 'low' : 'high';
+const LOW_QUALITY = QUALITY === 'low';
+const MAX_PIXEL_RATIO = LOW_QUALITY ? 1.25 : 2;
+const MIN_PIXEL_RATIO = LOW_QUALITY ? .6 : .75;
+// Low quality: the body alone casts the (blurred, every-other-frame) shadow.
+const LOW_SHADOW_PARTS = new Set(['head', 'torso', 'hips', 'thighL', 'thighR', 'shinL', 'shinR']);
+const castsShadow = name => !LOW_QUALITY || LOW_SHADOW_PARTS.has(name);
+
 /** Render-loop state exposed to the smoke tests and performance tooling. */
-export const renderState = { gameplayActive: true, frames: 0 };
+export const renderState = { gameplayActive: true, frames: 0, quality: QUALITY, pixelRatio: 1, updateMs: 0, renderMs: 0 };
 
 export const objects = { ball: null, arrow: null, guide: null, elevation: null };
 
@@ -112,6 +127,11 @@ const LOOKS = [
   { skin: SKIN.dark,  hair: HAIR.black,      style: 'crew',     height: 1.01,  build: 1.03, beard: 0.45, brow: 1 },
   { skin: SKIN.fair,  hair: HAIR.darkBlond,  style: 'swept',    height: 1.04,  build: 0.98, beard: 0,   brow: 1 },
 ];
+
+/** Each choosable striker's look (an archetype above); names and unlocks live in progress.js. */
+export const STRIKER_LOOKS = { blade: 0, tank: 1, zippy: 2, rocket: 3, bounce: 6, chief: 8, blaze: 9, swift: 11,
+  maestro: 12, frost: 13 };
+const sameLook = (a, b) => a.skin === b.skin && a.hair === b.hair && a.style === b.style;
 
 /** Deals distinct looks so no two players on screen are the same person. */
 function dealLooks(n) {
@@ -436,7 +456,7 @@ function addBlock(parent, material, name, x, y, z = 0, grow = 1) {
   const mesh = new THREE.Mesh(blockPart(name, grow), material);
   mesh.name = 'block-' + name;
   mesh.position.set(x, y, z);
-  mesh.castShadow = true;
+  mesh.castShadow = castsShadow(name);
   parent.add(mesh);
   return mesh;
 }
@@ -470,29 +490,70 @@ function blockifyHumanoid(rig, dress) {
   texture.needsUpdate = true;
 }
 
-/** Boot-only: hides the scan and hangs this player's boxes on its bones. */
+/**
+ * Boot-only: hides the scan and dresses the player in boxes. All of a player's
+ * boxes are one skinned mesh on the scan's skeleton, each box's vertices bound
+ * wholly to the bone it rides, so the body moves exactly as boxes hung on
+ * bones would, in one draw call (and one shadow draw) instead of about 13.
+ */
 function dressBlocks(model, rig, parts) {
-  model.traverse(node => { if (node.isSkinnedMesh) node.visible = false; });
+  let skinned = null;
+  model.traverse(node => {
+    if (!node.isSkinnedMesh) return;
+    node.visible = false;
+    skinned ??= node;
+  });
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = SKIN_SIZE;
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.magFilter = texture.minFilter = THREE.NearestFilter;
   texture.generateMipmaps = false;
-  const material = new THREE.MeshStandardMaterial({ map: texture, roughness: .9, alphaTest: .5 });
+  // Low quality lights the boxes with Lambert (see cheapenMaterials).
+  const material = LOW_QUALITY ? new THREE.MeshLambertMaterial({ map: texture, alphaTest: .5 })
+    : new THREE.MeshStandardMaterial({ map: texture, roughness: .9, alphaTest: .5 });
   material.name = 'block-skin';
-  const meshes = {};
-  for (const part of parts) {
-    const mesh = new THREE.Mesh(part.geometry, material);
-    mesh.name = 'block-' + part.name;
-    mesh.matrixAutoUpdate = false;
-    mesh.matrix.copy(part.local);
-    mesh.castShadow = true;
-    model.getObjectByName(part.bone).add(mesh);
-    meshes[part.name] = mesh;
-  }
-  rig.blocks = { canvas, texture, material, meshes };
+  rig.blocks = { canvas, texture, material, parts, skeleton: skinned.skeleton, owner: model, mesh: null, shown: '' };
   paintBlocks(rig);
+}
+
+const _partBind = new THREE.Matrix4();
+/**
+ * (Re)builds a player's box mesh from the parts its look shows (hair pieces
+ * differ). With the mesh bound to the skeleton at an identity bind matrix, a
+ * vertex placed at boneInverse^-1 * local * v renders at boneWorld * local * v:
+ * the box rigidly on its bone.
+ */
+function buildBlockMesh(rig) {
+  const { parts, skeleton } = rig.blocks;
+  const shown = parts.filter(part => blockPartVisible(part.name, rig.look));
+  const key = shown.map(part => part.name).join();
+  if (key === rig.blocks.shown) return;
+  rig.blocks.shown = key;
+  const pieces = shown.map(part => {
+    const bone = skeleton.bones.findIndex(b => b.name === part.bone);
+    const geometry = part.geometry.clone().applyMatrix4(_partBind.copy(skeleton.boneInverses[bone]).invert().multiply(part.local));
+    const count = geometry.attributes.position.count;
+    const index = new Uint16Array(count * 4), weight = new Float32Array(count * 4);
+    for (let i = 0; i < count; i++) { index[i * 4] = bone; weight[i * 4] = 1; }
+    geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(index, 4));
+    geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute(weight, 4));
+    return geometry;
+  });
+  const merged = mergeGeometries(pieces);
+  for (const piece of pieces) piece.dispose();
+  if (rig.blocks.mesh) {
+    rig.blocks.mesh.geometry.dispose();
+    rig.blocks.mesh.geometry = merged;
+    return;
+  }
+  const mesh = new THREE.SkinnedMesh(merged, rig.blocks.material);
+  mesh.name = 'block-body';
+  mesh.castShadow = true;
+  mesh.frustumCulled = false;   // bounds follow the bones, not the bind pose
+  rig.blocks.owner.add(mesh);
+  mesh.bind(skeleton, new THREE.Matrix4());
+  rig.blocks.mesh = mesh;
 }
 
 /** Repaints a player's skin from its current look, kit and number. */
@@ -501,7 +562,7 @@ function paintBlocks(rig) {
   paintSkin(rig.blocks.canvas, { look: rig.look, kit: rig.kit, number: rig.number,
     pattern: rig.kitPattern || null, accent: rig.kitAccent, sleeves: KEEPERS().includes(rig) });
   rig.blocks.texture.needsUpdate = true;
-  for (const [name, mesh] of Object.entries(rig.blocks.meshes)) mesh.visible = blockPartVisible(name, rig.look);
+  buildBlockMesh(rig);
 }
 
 // World-scale block sizes for everything that is not a squad player, in metres.
@@ -522,7 +583,8 @@ function recolourKit(rig, kit) {
 /** Match-only recolouring: reuse all rig materials and crowd instance buffers. */
 export function setMatchColors(theme, seed) {
   for (const rig of squad.foes) recolourKit(rig, theme);
-  recolourKit(squad.keeper, theme.keeper);
+  keeperKit = theme.keeper;
+  recolourKit(squad.keeper, keeperBoss ? KIT_BOSS : keeperKit);
   const tint = new THREE.Color();
   for (const mesh of crowd.batches) {
     const part = mesh.userData.part;
@@ -530,8 +592,8 @@ export function setMatchColors(theme, seed) {
     for (let i = 0; i < mesh.count; i++) {
       const hash = (Math.imul(i + 1 + mesh.userData.pose * 917, 1664525) + seed) >>> 0;
       const awayFan = hash % 10 < 7;
-      const primary = awayFan ? theme.kit : KIT_HOME.kit;
-      const accent = awayFan ? theme.accent : KIT_HOME.shorts;
+      const primary = awayFan ? theme.kit : homeKit.kit;
+      const accent = awayFan ? theme.accent : homeKit.accent ?? homeKit.shorts;
       const shirt = hash % 17 === 0 ? 0xd9d5c9 : hash % 13 === 0 ? 0x30343a
         : hash % 5 === 0 ? accent : primary;
       tint.setHex(part === 0 ? shirt : part === 5 ? primary : accent);
@@ -548,6 +610,85 @@ export function setMatchColors(theme, seed) {
     }
     supporterFlagMap.needsUpdate = true;
   }
+}
+
+// ---- Cosmetics and special chances --------------------------------------
+// Boot-free repaints: every call reuses the rig skins, materials and buffers.
+let homeKit = { kit: 0x2f6bff, shorts: 0xf4f7fa, socks: 0x2f6bff };
+let keeperKit = null, keeperBoss = false;
+const KIT_BOSS = { kit: 0x17151c, shorts: 0x17151c, socks: 0xffc21a, pattern: 'hoops', accent: 0x2a2633,
+  gloves: 0xffc21a };
+const KEEPER_BOSS_SCALE = 1.08;
+
+/** The player's home kit and boots, on the striker and his team-mates. */
+export function setHomeKit(kit, boots) {
+  homeKit = kit;
+  for (const rig of [squad.striker, ...squad.mates]) {
+    rig.kit.boots = boots;
+    recolourKit(rig, kit);
+  }
+}
+
+/**
+ * The chosen striker's look. Anyone else on the pitch who had it takes the
+ * striker's old one, so no two players are the same person.
+ */
+export function setStrikerLook(id) {
+  const rig = squad.striker;
+  if (!(id in STRIKER_LOOKS) || sameLook(rig.look, LOOKS[STRIKER_LOOKS[id]])) return;
+  const look = LOOKS[STRIKER_LOOKS[id]], old = rig.look;
+  for (const other of [squad.keeper, ...squad.mates, ...squad.foes, squad.homeKeeper, squad.ref]) {
+    if (!sameLook(other.look, look)) continue;
+    other.look = { ...old, height: other.look.height };
+    paintBlocks(other);
+    const player = players.find(p => p.rig === other);
+    if (player) player.look = other.look;
+  }
+  rig.look = look;
+  paintBlocks(rig);
+  const player = players.find(p => p.role === 'striker');
+  if (player) player.look = look;
+  renderPending = true;
+}
+
+/** A menu portrait: the striker's front view, painted in the given kit and boots. */
+export function strikerSprite(id, kit, boots) {
+  const skin = document.createElement('canvas');
+  skin.width = skin.height = SKIN_SIZE;
+  paintSkin(skin, { look: LOOKS[STRIKER_LOOKS[id]], kit: { ...kit, boots }, number: 9,
+    pattern: kit.pattern || null, accent: kit.accent ?? kit.kit });
+  return frontSprite(skin);
+}
+
+/** Tints the ball's white panels (the black patches stay dark). */
+export function setBallTint(hex) { objects.ball.material.color.setHex(hex); }
+
+/** Frame colours of the target: gold for a golden ball, purple for a boss... */
+export function setTargetStyle(ring, bull) {
+  // No colours: the archery face. Specials paint their own.
+  target.style = ring === undefined ? null : { ring, bull };
+  drawTargetFace();
+  ring ??= 0xffd23f; bull ??= 0xff4d3a;
+  target.ring.material.color.setHex(ring);
+  target.bull.material.color.setHex(bull);
+  target.zone.material.color.setHex(ring);
+  target.glow.material.color.setHex(ring);
+}
+
+/** Slides the target along the goal line (the moving-target chance). */
+export function setTargetX(x) { target.group.position.x = x; }
+
+/**
+ * Boss keeper: a size larger, in black and gold. His collision capsules grow
+ * with him, so the extra reach is real, not just drawn.
+ */
+export function setKeeperBoss(on) {
+  if (on === keeperBoss) return;
+  const rig = squad.keeper, factor = on ? KEEPER_BOSS_SCALE : 1 / KEEPER_BOSS_SCALE;
+  keeperBoss = on;
+  rig.root.scale.multiplyScalar(factor);
+  for (const cap of keeperSet?.caps || []) cap.r *= factor;
+  recolourKit(rig, on ? KIT_BOSS : keeperKit || rig.kit);
 }
 
 const squad = { keeper: null, homeKeeper: null, striker: null, mates: [], foes: [], ref: null };
@@ -2033,6 +2174,7 @@ function joinCrowdParts(parts) {
 /** Block fans in Minecraft proportions (32 px tall), one geometry per colour slot:
  * shirt, head, hair, trousers, arms, scarf, scarf squares, shoes and eyes. */
 function supporterParts(pose) {
+  if (LOW_QUALITY) return supporterPartsLow(pose);
   const P = CROWD_PX;
   const box = (w, h, d, x, y, z = 0) => new THREE.BoxGeometry(w * P, h * P, d * P).translate(x * P, y * P, z * P);
   const sleeves = [], arms = [], trousers = [], dark = [];
@@ -2052,6 +2194,29 @@ function supporterParts(pose) {
     pose === 2 ? box(20, 2.5, .6, 0, 35, 1.2) : null,
     pose === 2 ? joinCrowdParts([-7.5, -2.5, 2.5, 7.5].map(x => box(2.5, 2.7, .8, x, 35, 1.3))) : null,
     joinCrowdParts(dark)];
+}
+
+/**
+ * Low-quality fan, 6-7 boxes (72-84 triangles) instead of up to 17: sleeves
+ * fold into skin-coloured arms, the legs are one box, the hair is a single
+ * cap and the scarf a plain bar. Shoes and eyes (slot 7) are dropped.
+ */
+function supporterPartsLow(pose) {
+  const P = CROWD_PX;
+  const box = (w, h, d, x, y, z = 0) => new THREE.BoxGeometry(w * P, h * P, d * P).translate(x * P, y * P, z * P);
+  const arms = [];
+  for (const side of [-1, 1]) {
+    const up = pose === 2 || (pose === 1 && side === 1);
+    arms.push(box(4, 12, 4, side * 6, up ? 30 : 18));
+  }
+  return [box(8, 12, 4, 0, 18),
+    box(8, 8, 8, 0, 28),
+    box(8.4, 2.4, 8.4, 0, 31.4),
+    box(8, 12, 4, 0, 6),
+    joinCrowdParts(arms),
+    pose === 2 ? box(20, 2.5, .6, 0, 35, 1.2) : null,
+    null,
+    null];
 }
 
 /** Static stadium detailing is merged by material: no per-frame work or new lights. */
@@ -2163,6 +2328,7 @@ function buildStands() {
       }
       for (let col = 0; col < stand.columns; col++) {
         if (col % 27 < 2 || (row > 9 && Math.random() < .06)) continue; // access aisles
+        if (LOW_QUALITY && (col + row) % 2) continue; // every other seat
         const across = (col - (stand.columns - 1) / 2) * .72 + (Math.random() - .5) * .12;
         const pose = (Math.random() * 3) | 0;
         supporters[pose].push({ x: stand.x + across * cos - sin * depth,
@@ -2373,7 +2539,69 @@ export function loadBall() { return Promise.resolve(); }
 // Arcade target: a block frame hung in the goal mouth, just behind the line so
 // the ball flies through it. Purely visual; app.js scores the crossing point.
 // ---------------------------------------------------------------------------
-const target = { group: null, ring: null, bull: null, fill: null, heart: null, collected: 0, time: 0 };
+const target = { group: null, ring: null, bull: null, fill: null, heart: null, collected: 0, time: 0,
+  zone: null, core: null, glow: null, sparks: null, burst: null, ringHalf: .7, bullHalf: .34,
+  faceCanvas: null, style: null };
+const TARGET_BURST = 28;
+const burst = { time: -1, count: 0, position: new Float32Array(TARGET_BURST * 3), velocity: new Float32Array(TARGET_BURST * 3) };
+const _spark = new THREE.Object3D();
+
+/**
+ * The target face: a round pixel-art archery target. The ring zone (scored
+ * 'target') is four bands, the bullseye a gold disc with a darker rim, all
+ * inside a black outline. Redrawn per chance: the bull's share of the ring
+ * changes with the level, and specials repaint it in their colours.
+ */
+const FACE = 48;
+const ARCHERY = [0xf4f4ee, 0x1c1c22, 0x2f8bff, 0xe8322b];   // outer band -> inner band
+function drawTargetFace() {
+  const canvas = target.faceCanvas, paint = canvas.getContext('2d');
+  const image = paint.createImageData(FACE, FACE), data = image.data;
+  const bullShare = target.bullHalf / target.ringHalf;
+  const bands = target.style ? [target.style.ring, 0xffffff, target.style.ring, 0xffffff] : ARCHERY;
+  const bull = target.style ? target.style.bull : 0xffd23f;
+  const rim = target.style ? shadeHex(target.style.bull, .7) : 0xd99a1e;
+  for (let y = 0; y < FACE; y++) for (let x = 0; x < FACE; x++) {
+    const d = Math.hypot(x + .5 - FACE / 2, y + .5 - FACE / 2) / (FACE / 2);
+    let colour = null;
+    if (d <= 1) {
+      if (d > .94) colour = 0x000000;
+      else if (d <= bullShare) colour = d > bullShare - .08 ? rim : bull;
+      else colour = bands[Math.min(3, Math.floor((1 - d) / (1 - bullShare) * 4))];
+    }
+    const i = (y * FACE + x) * 4;
+    if (colour === null) { data[i + 3] = 0; continue; }
+    data[i] = colour >> 16 & 255; data[i + 1] = colour >> 8 & 255; data[i + 2] = colour & 255; data[i + 3] = 255;
+  }
+  paint.putImageData(image, 0, 0);
+  target.fill.material.map.needsUpdate = true;
+}
+const shadeHex = (hex, f) => (Math.round((hex >> 16 & 255) * f) << 16) | (Math.round((hex >> 8 & 255) * f) << 8)
+  | Math.round((hex & 255) * f);
+
+function faceTexture() {
+  target.faceCanvas = document.createElement('canvas');
+  target.faceCanvas.width = target.faceCanvas.height = FACE;
+  const map = new THREE.CanvasTexture(target.faceCanvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.magFilter = map.minFilter = THREE.NearestFilter;
+  map.generateMipmaps = false;
+  return map;
+}
+
+/** Soft round glow for behind the target, additive. */
+function glowTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 64;
+  const paint = canvas.getContext('2d');
+  const gradient = paint.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gradient.addColorStop(0, 'rgba(255,255,255,1)');
+  gradient.addColorStop(.45, 'rgba(255,255,255,.35)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  paint.fillStyle = gradient;
+  paint.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(canvas);
+}
 const HEART_PIXELS = ['.XX.XX.', 'XXXXXXX', 'XXXXXXX', '.XXXXX.', '..XXX..', '...X...'];
 const TARGET_BAR = .09;
 const targetBar = new THREE.Object3D();
@@ -2404,12 +2632,33 @@ function buildTarget() {
   group.visible = false;
   const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xffd23f, toneMapped: false });
   const bullMaterial = new THREE.MeshBasicMaterial({ color: 0xff4d3a, toneMapped: false });
-  const fillMaterial = new THREE.MeshBasicMaterial({ color: 0xff4d3a, transparent: true, opacity: .35,
-    depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
+  // The bullseye face: pixel bands in the target's colour, a white core, a
+  // faint gold zone out to the ring, a pulsing glow behind and twinkling corners.
+  const fillMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, map: faceTexture(), transparent: true,
+    alphaTest: .5, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
   target.ring = blockFrame(ringMaterial);
   target.bull = blockFrame(bullMaterial);
   target.fill = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), fillMaterial);
-  group.add(target.ring, target.bull, target.fill);
+  target.zone = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0xffd23f,
+    transparent: true, opacity: .14, depthWrite: false, toneMapped: false, side: THREE.DoubleSide }));
+  target.zone.position.z = -.01;
+  target.core = new THREE.Mesh(new THREE.BoxGeometry(1, 1, .04),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
+  target.core.position.z = .03;
+  target.glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: 0xffd23f, transparent: true,
+    opacity: .35, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+  target.glow.position.z = -.06;
+  target.sparks = new THREE.InstancedMesh(new THREE.BoxGeometry(.07, .07, .07),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), 4);
+  target.burst = new THREE.InstancedMesh(new THREE.BoxGeometry(.1, .1, .1),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), TARGET_BURST);
+  const confetti = new THREE.Color();
+  for (let i = 0; i < TARGET_BURST; i++) target.burst.setColorAt(i, confetti.setHex([0xffd23f, 0xff4d3a, 0xffffff][i % 3]));
+  target.burst.visible = false;
+  target.sparks.frustumCulled = target.burst.frustumCulled = false;
+  // The round face replaces the square frames, zone and core (kept for their materials only).
+  target.ring.visible = target.bull.visible = target.zone.visible = target.core.visible = false;
+  group.add(target.glow, target.zone, target.ring, target.bull, target.fill, target.core, target.sparks, target.burst);
   // Extra life: a pixel heart built from cubes, floating in the bullseye.
   const cube = .085;
   const heart = new THREE.InstancedMesh(new THREE.BoxGeometry(cube, cube, cube),
@@ -2442,7 +2691,76 @@ export function setTarget(x, y, ringHalf, bullHalf, heart = false) {
   target.group.position.y = y;
   sizeFrame(target.ring, ringHalf);
   sizeFrame(target.bull, bullHalf);
-  target.fill.scale.set(bullHalf * 2, bullHalf * 2, 1);
+  target.fill.scale.set(ringHalf * 2, ringHalf * 2, 1);
+  target.zone.scale.set(ringHalf * 2, ringHalf * 2, 1);
+  target.glow.scale.setScalar(ringHalf * 3.6);
+  target.ringHalf = ringHalf;
+  target.bullHalf = bullHalf;
+  drawTargetFace();
+  burst.time = -1;
+  target.burst.visible = false;
+}
+
+// ---- Free-aim crosshair (shot mode 'aim') -----------------------------------
+const crosshair = { group: null };
+const _ray = new THREE.Raycaster(), _ndc = new THREE.Vector2(), _goalHit = new THREE.Vector3();
+const _goalPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+
+function buildCrosshair() {
+  const group = new THREE.Group();
+  group.name = 'aim-crosshair';
+  const white = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false, depthTest: false });
+  const red = new THREE.MeshBasicMaterial({ color: 0xff3b2f, toneMapped: false, depthTest: false });
+  const black = new THREE.MeshBasicMaterial({ color: 0x000000, toneMapped: false, depthTest: false });
+  // Four bars and a dot, each on a black outline so it reads against the net and the crowd.
+  const piece = (w, h, x, y, material) => {
+    for (const [pad, mat, order] of [[.05, black, 10], [0, material, 11]]) {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w + pad, h + pad, .02), mat);
+      mesh.position.set(x, y, 0);
+      mesh.renderOrder = order;
+      group.add(mesh);
+    }
+  };
+  for (const [w, h, x, y] of [[.36, .08, -.34, 0], [.36, .08, .34, 0], [.08, .36, 0, -.34], [.08, .36, 0, .34]]) piece(w, h, x, y, white);
+  piece(.11, .11, 0, 0, red);
+  group.visible = false;
+  scene.add(group);
+  crosshair.group = group;
+}
+
+export function showCrosshair(on) { crosshair.group.visible = on; }
+
+/** The crosshair on the goal line at (x, y); `spread` widens it as the shot charges. */
+export function setCrosshair(x, y, spread = 0) {
+  crosshair.group.position.set(x, y, GOAL.PLANE_Z + .2);
+  crosshair.group.scale.setScalar(1 + spread);
+}
+
+/** Where a screen point (client pixels) meets the goal line's plane, or false. */
+export function pointerToGoal(clientX, clientY, out) {
+  _ndc.set(clientX / innerWidth * 2 - 1, -(clientY / innerHeight) * 2 + 1);
+  _ray.setFromCamera(_ndc, camera);
+  _goalPlane.constant = -GOAL.PLANE_Z;
+  if (!_ray.ray.intersectPlane(_goalPlane, _goalHit)) return false;
+  out.x = _goalHit.x;
+  out.y = _goalHit.y;
+  return true;
+}
+
+/** Pixel confetti from the bullseye: a full burst for a bullseye, half for the ring. */
+export function burstTarget(tier) {
+  burst.count = tier === 'bullseye' ? TARGET_BURST : TARGET_BURST >> 1;
+  burst.time = 0;
+  for (let i = 0; i < burst.count; i++) {
+    const angle = Math.random() * Math.PI * 2, speed = 1.6 + Math.random() * 2.4;
+    burst.position[i * 3] = burst.position[i * 3 + 1] = 0;
+    burst.position[i * 3 + 2] = .1;
+    burst.velocity[i * 3] = Math.cos(angle) * speed;
+    burst.velocity[i * 3 + 1] = Math.sin(angle) * speed + 1.2;
+    burst.velocity[i * 3 + 2] = 1 + Math.random() * 2;
+  }
+  target.burst.count = burst.count;
+  target.burst.visible = true;
 }
 
 export function showTarget(on) { target.group.visible = on; }
@@ -2453,7 +2771,34 @@ export function collectTargetHeart() { target.collected = 1e-3; }
 function updateTarget(dt) {
   if (!target.group.visible) return;
   target.time += dt;
-  target.fill.material.opacity = .28 + .18 * Math.sin(target.time * 6);
+  // The core breathes and the glow pulses with it; the corner stars twinkle in turn.
+  const beat = .5 + .5 * Math.sin(target.time * 5);
+  target.core.scale.set(target.bullHalf * (.42 + .1 * beat), target.bullHalf * (.42 + .1 * beat), 1);
+  target.glow.material.opacity = .22 + .2 * beat;
+  const r = (target.ringHalf + .08) * Math.SQRT1_2;
+  for (let i = 0; i < 4; i++) {
+    const twinkle = Math.max(0, Math.sin(target.time * 4 + i * 1.57));
+    _spark.position.set(i & 1 ? r : -r, i & 2 ? r : -r, .04);
+    _spark.rotation.z = target.time * 2;
+    _spark.scale.setScalar(.35 + twinkle);
+    _spark.updateMatrix();
+    target.sparks.setMatrixAt(i, _spark.matrix);
+  }
+  target.sparks.instanceMatrix.needsUpdate = true;
+  if (burst.time >= 0) {
+    burst.time += dt;
+    for (let i = 0; i < burst.count; i++) {
+      burst.velocity[i * 3 + 1] -= 9 * dt;
+      for (let k = 0; k < 3; k++) burst.position[i * 3 + k] += burst.velocity[i * 3 + k] * dt;
+      _spark.position.set(burst.position[i * 3], burst.position[i * 3 + 1], burst.position[i * 3 + 2]);
+      _spark.rotation.set(burst.time * 6 + i, burst.time * 4, 0);
+      _spark.scale.setScalar(Math.max(0, 1 - burst.time / .9));
+      _spark.updateMatrix();
+      target.burst.setMatrixAt(i, _spark.matrix);
+    }
+    target.burst.instanceMatrix.needsUpdate = true;
+    if (burst.time > .9) { burst.time = -1; target.burst.visible = false; }
+  }
   if (!target.heart.visible) return;
   if (target.collected > 0) {
     target.collected += dt;
@@ -2688,6 +3033,7 @@ export function blockerBallDistance(i) {
 
 export function setBlocker(i, x, lunge, side, airY, slideTime = -1) {
   const r = blockerSets[i].rig;
+  r.root.position.y = airY || 0;   // a wall jumps; everyone else stays grounded
   if (defenderReactions.active && r.avatar?.goalWalk) return r.root.position.x;
   if (r.avatar?.passTime >= 0) return r.root.position.x;
   const p = formation.pressers[0]?.rig === r ? formation.pressers[0]
@@ -2799,7 +3145,7 @@ const ambient = {
   to: { x: 0, z: -6 },
   t: 1, dur: 1, holder: 0, wait: 0, passReceiver: -1, possessionTime: 0,
 };
-export const matchView = { mode: 'broadcast', speed: 1, simulatedSeconds: 0 };
+export const matchView = { mode: 'broadcast', speed: 1, simulatedSeconds: 0, portrait: false };
 let matchFrameDt = 0;
 export const formation = { actors: ambient.actors, pressers: [null, null], attacker: null };
 
@@ -3658,6 +4004,9 @@ export const chance = {
 
 const shotCameraHome = new THREE.Vector3();
 const shotCameraTarget = new THREE.Vector3();
+const PORTRAIT_CAMERA_BACK = 18;
+const PORTRAIT_CAMERA_SIDE = 1.35;
+const PORTRAIT_CAMERA_HEIGHT = 5.4;
 
 /** Camera: behind the striker, offset so he never masks the goalmouth. */
 function aimCameraAt(origin) {
@@ -3665,19 +4014,34 @@ function aimCameraAt(origin) {
   const dx = 0 - origin.x, dz = GOAL.PLANE_Z - origin.z;
   const len = Math.hypot(dx, dz) || 1;
   const dirX = dx / len, dirZ = dz / len;
+  const back = matchView.portrait ? PORTRAIT_CAMERA_BACK : 10.2;
+  const side = matchView.portrait ? PORTRAIT_CAMERA_SIDE : 3.1;
   _camHome.set(
-    origin.x - dirX * 10.2 - dirZ * 3.1, 4.8,
-    origin.z - dirZ * 10.2 + dirX * 3.1);
+    origin.x - dirX * back - dirZ * side, matchView.portrait ? PORTRAIT_CAMERA_HEIGHT : 4.8,
+    origin.z - dirZ * back + dirX * side);
   // Aim low: it tilts the camera down, which lifts the ball clear of the
   // ticker and stops the shot being framed against empty stand.
-  _camTargetWant.set(origin.x * 0.16, 1.1, GOAL.PLANE_Z + 1.5);
+  _camTargetWant.set(origin.x * (matchView.portrait ? .12 : .16), 1.1, GOAL.PLANE_Z + 1.5);
   shotCameraHome.copy(_camHome);
   shotCameraTarget.copy(_camTargetWant);
 }
 
-/** 90%-displacement dolly, smoothed by the existing camera rig. */
+/** Shot dolly, smoothed by the existing camera rig; landscape retains its 90% chase. */
 export function followShotCamera() {
   const ball = objects.ball.position;
+  if (matchView.portrait) {
+    // A shallow dolly retains the striker at the foot of the tall frame while
+    // the ball travels to goal. The landscape camera keeps its closer chase.
+    _camHome.set(
+      shotCameraHome.x + clamp((ball.x - chance.origin.x) * .12, -1.5, 1.5),
+      shotCameraHome.y + clamp((ball.y - chance.origin.y) * .1, 0, .5),
+      shotCameraHome.z + clamp((ball.z - chance.origin.z) * .06, -2.2, 1));
+    _camTargetWant.set(
+      shotCameraTarget.x + clamp((ball.x - chance.origin.x) * .12, -1.5, 1.5),
+      shotCameraTarget.y + clamp((ball.y - chance.origin.y) * .1, 0, .5),
+      shotCameraTarget.z);
+    return;
+  }
   _camHome.set(
     shotCameraHome.x + clamp((ball.x - chance.origin.x) * .9, -10, 10),
     shotCameraHome.y + clamp((ball.y - chance.origin.y) * .9, 0, 3),
@@ -3695,7 +4059,7 @@ export function followShotCamera() {
  * The hard path teleports the scenario into place, and is used when a chance
  * appears with no move behind it (a Super Sub injection).
  */
-export function setupChance(origin, blockerCount, soft) {
+export function setupChance(origin, blockerCount, soft, layout = 'marking') {
   matchView.mode = 'chance';
   matchView.speed = 1;
   releaseNetPockets();
@@ -3722,6 +4086,14 @@ export function setupChance(origin, blockerCount, soft) {
       origin.z - chance.dirZ * 0.5 - chance.perpZ * 0.55);
 
     for (let i = 0; i < chance.blockerCount; i++) {
+      if (layout === 'wall') {
+        // A free-kick wall: shoulder to shoulder, 9.15 m out, square to the ball.
+        const across = (i - (chance.blockerCount - 1) / 2) * .62;
+        blockerSets[i].rig.root.position.set(
+          origin.x + chance.dirX * 9.15 + chance.perpX * across, 0,
+          origin.z + chance.dirZ * 9.15 + chance.perpZ * across);
+        continue;
+      }
       const along = 5.5 + i * 3.0 + Math.random() * 1.6;
       blockerSets[i].rig.root.position.set(
         origin.x + chance.dirX * along + (Math.random() - 0.5) * 7.0, 0,
@@ -3908,6 +4280,8 @@ const _pixelBuffer = new THREE.Vector2();
 
 function renderFrame() {
   renderState.frames++;
+  // Low quality: shadows refresh on alternate gameplay frames; a menu backdrop always gets a fresh one.
+  if (LOW_QUALITY) renderer.shadowMap.needsUpdate = !renderState.gameplayActive || (shadowFrame = !shadowFrame);
   if (!pixelLook.enabled) { renderer.render(scene, camera); return; }
   if (pixelRows() !== pixelRowsUsed) resizePixelPass();
   renderer.setRenderTarget(pixelTarget);
@@ -3923,11 +4297,17 @@ export function init(canvas) {
   if (started) return;
   started = true;
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: !pixelLook.enabled, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  renderer.shadowMap.enabled = true;
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: !pixelLook.enabled && !LOW_QUALITY,
+    powerPreference: 'high-performance' });
+  renderState.pixelRatio = Math.min(devicePixelRatio, MAX_PIXEL_RATIO);
+  renderer.setPixelRatio(renderState.pixelRatio);
+  // Low quality has no shadow map at all: blob shadows under the players and
+  // the ball instead (no depth pass, no per-pixel shadow sampling).
+  renderer.shadowMap.enabled = !LOW_QUALITY;
   // Hard shadow edges read as pixel art; soft penumbrae turn to mush at low resolution.
-  renderer.shadowMap.type = pixelLook.enabled ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = pixelLook.enabled || LOW_QUALITY ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+  // Low quality re-renders the shadow pass (every player block) every other frame.
+  renderer.shadowMap.autoUpdate = !LOW_QUALITY;
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(CLEAR);
@@ -3940,8 +4320,8 @@ export function init(canvas) {
   scene.add(new THREE.HemisphereLight(0xe4f3ff, 0x4f7d35, 1.35));
   const key = new THREE.DirectionalLight(0xfff1d6, 2.5);
   key.position.set(9, 22, 6);
-  key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
+  key.castShadow = !LOW_QUALITY;
+  key.shadow.mapSize.setScalar(LOW_QUALITY ? 1024 : 2048);
   key.shadow.bias = -0.0008;
   const sc = key.shadow.camera;
   sc.left = -30; sc.right = 30; sc.top = 14; sc.bottom = -34; sc.near = 1; sc.far = 80;
@@ -3961,6 +4341,7 @@ export function init(canvas) {
   buildBall();
   buildAimRig();
   buildTarget();
+  buildCrosshair();
   buildClouds();
 
   keeperSet = makeCapsuleSet(squad.keeper);
@@ -3968,6 +4349,19 @@ export function init(canvas) {
 
   initAmbient();
   frameAmbient();
+  if (LOW_QUALITY) {
+    buildBlobShadows();
+    cheapenMaterials();
+    // The linesmen and photographers are scenery, and some 40 draws on a phone.
+    sidelineStaff.root.visible = false;
+  }
+
+  if (_query.has('stats')) {
+    statsPanel = document.createElement('div');
+    statsPanel.style.cssText = 'position:fixed;left:4px;bottom:4px;z-index:9999;padding:2px 6px;'
+      + 'font:12px monospace;color:#d6ff3f;background:#000a;pointer-events:none';
+    document.body.append(statsPanel);
+  }
 
   clock = new THREE.Clock();
   addEventListener('resize', resize);
@@ -3977,10 +4371,13 @@ export function init(canvas) {
 
 function resize() {
   const w = innerWidth, h = innerHeight;
+  const portraitChanged = matchView.portrait !== (h > w);
+  matchView.portrait = h > w;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
   if (pixelLook.enabled) resizePixelPass();
+  if (portraitChanged && matchView.mode === 'chance') aimCameraAt(chance.origin);
   renderPending = true;
 }
 
@@ -4077,9 +4474,97 @@ function holdPlayerPoses() {
   pauseCaptured = true;
 }
 
+// ---- Low quality: blob shadows and cheaper lighting -------------------------
+const blobs = { mesh: null };
+const _blob = new THREE.Object3D();
+function buildBlobShadows() {
+  const material = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: .32, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2 });
+  // Capacity for the whole squad, staff and the ball (players load after init).
+  blobs.mesh = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 12).rotateX(-Math.PI / 2), material, 48);
+  blobs.mesh.name = 'blob-shadows';
+  blobs.mesh.frustumCulled = false;
+  scene.add(blobs.mesh);
+}
+
+/** A soft disc under every visible player and the ball; the ball's shrinks as it rises. */
+function updateBlobShadows() {
+  let n = 0;
+  for (const player of players) {
+    if (!player.root.visible || n >= 47) continue;
+    _blob.position.set(player.root.position.x, .015, player.root.position.z);
+    _blob.scale.set(.42 * player.root.scale.x, 1, .3 * player.root.scale.x);
+    _blob.updateMatrix();
+    blobs.mesh.setMatrixAt(n++, _blob.matrix);
+  }
+  const ball = objects.ball.position, lift = Math.max(0, ball.y - BALL_R);
+  _blob.position.set(ball.x, .016, ball.z);
+  _blob.scale.setScalar(Math.max(.05, .16 - lift * .03));
+  _blob.updateMatrix();
+  blobs.mesh.setMatrixAt(n++, _blob.matrix);
+  blobs.mesh.count = n;
+  blobs.mesh.instanceMatrix.needsUpdate = true;
+}
+
+/**
+ * Physically based materials are the most expensive lighting three.js has;
+ * on low quality every plain one becomes a Lambert material with the same
+ * colour and map. Materials with their own shader code (crowd, ball) keep it.
+ */
+function cheapenMaterials() {
+  const swapped = new Map();
+  scene.traverse(node => {
+    if (!node.isMesh || !node.material) return;
+    const swap = material => {
+      if (!material.isMeshStandardMaterial || material.onBeforeCompile !== THREE.Material.prototype.onBeforeCompile) return material;
+      if (!swapped.has(material)) {
+        const lambert = new THREE.MeshLambertMaterial({ color: material.color, map: material.map,
+          vertexColors: material.vertexColors, transparent: material.transparent, opacity: material.opacity,
+          alphaTest: material.alphaTest, side: material.side, emissive: material.emissive,
+          emissiveIntensity: material.emissiveIntensity, emissiveMap: material.emissiveMap });
+        lambert.name = material.name;
+        swapped.set(material, lambert);
+      }
+      return swapped.get(material);
+    };
+    node.material = Array.isArray(node.material) ? node.material.map(swap) : swap(node.material);
+  });
+}
+
+// Resolution steps down 0.25 whenever the median frame over the last 90
+// misses 45 fps. It never climbs back, so it cannot oscillate.
+const frameTimes = new Float32Array(90);
+let frameSample = 0, resolutionHold = 3;
+function adaptResolution(frameTime) {
+  if (resolutionHold > 0) { resolutionHold -= frameTime; return; }   // shader warm-up, last change
+  frameTimes[frameSample++] = frameTime;
+  if (frameSample < frameTimes.length) return;
+  frameSample = 0;
+  frameTimes.sort();
+  if (frameTimes[frameTimes.length >> 1] > 1 / 45 && renderState.pixelRatio > MIN_PIXEL_RATIO) {
+    renderState.pixelRatio = Math.max(MIN_PIXEL_RATIO, renderState.pixelRatio - .25);
+    renderer.setPixelRatio(renderState.pixelRatio);
+    if (pixelLook.enabled) resizePixelPass();
+    resolutionHold = 1;
+  }
+}
+
+let statsPanel = null, statsFrames = 0, statsTime = 0, shadowFrame = false;
+function updateStats(frameTime) {
+  statsFrames++;
+  statsTime += frameTime;
+  if (statsTime < .5) return;
+  const info = renderer.info.render;
+  statsPanel.textContent = `${Math.round(statsFrames / statsTime)} fps  ${QUALITY} x${renderState.pixelRatio}  `
+    + `${info.calls} calls  ${(info.triangles / 1e6).toFixed(2)}M tris  `
+    + `upd ${renderState.updateMs.toFixed(1)}ms  draw ${renderState.renderMs.toFixed(1)}ms`;
+  statsFrames = 0; statsTime = 0;
+}
+
 function tick() {
   // Single delta source: every consumer scales its displacement against this.
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const frameTime = clock.getDelta();
+  const dt = Math.min(frameTime, 0.05);
   matchFrameDt = 0;
   if (!renderState.gameplayActive) {
     if (renderPending) {
@@ -4088,6 +4573,8 @@ function tick() {
     }
     return;
   }
+  adaptResolution(frameTime);
+  const updateStart = performance.now();
   if (frameCb) frameCb(dt);
   // A frame callback may open pause/game-over. Freeze immediately and leave a
   // single current backdrop for the DOM menu instead of simulating behind it.
@@ -4120,15 +4607,44 @@ function tick() {
     _camWant.x += (Math.random() - 0.5) * shakeAmp;
     _camWant.y += (Math.random() - 0.5) * shakeAmp;
   }
-  camera.position.lerp(_camWant, Math.min(1, dt * 3.2));
-  _camTarget.lerp(_camTargetWant, Math.min(1, dt * 3.2));
+  if (cameraIntro.active) {
+    // Run intro: from further back and higher, eased into the aim view.
+    cameraIntro.time += dt;
+    const t = Math.min(1, cameraIntro.time / CAMERA_INTRO.SECONDS), ease = t * t * (3 - 2 * t);
+    camera.position.lerpVectors(cameraIntro.from, _camWant, ease);
+    _camTarget.copy(_camTargetWant);
+    if (t >= 1) cameraIntro.active = false;
+  } else {
+    camera.position.lerp(_camWant, Math.min(1, dt * 3.2));
+    _camTarget.lerp(_camTargetWant, Math.min(1, dt * 3.2));
+  }
   camera.lookAt(_camTarget);
 
   // Keep the pitch visible above the normal low broadcast camera's fog range.
   const fogLift = Math.max(0, camera.position.y - 13.5);
   scene.fog.near = 100 + fogLift;
   scene.fog.far = 300 + fogLift;
+  if (blobs.mesh) updateBlobShadows();
+  const renderStart = performance.now();
   renderFrame();
+  // CPU milliseconds per frame, smoothed: game and animation update, then the draw submission.
+  renderState.updateMs += (renderStart - updateStart - renderState.updateMs) * .05;
+  renderState.renderMs += (performance.now() - renderStart - renderState.renderMs) * .05;
+  if (statsPanel) updateStats(frameTime);
+}
+
+// A run opens with the camera further behind the striker, easing in over 1.5 s.
+const CAMERA_INTRO = { SECONDS: 1.5, BACK: 7, UP: 2.2 };
+const cameraIntro = { active: false, time: 0, from: new THREE.Vector3() };
+export function startCameraIntro() {
+  cameraIntro.active = true;
+  cameraIntro.time = 0;
+  cameraIntro.from.set(_camHome.x - chance.dirX * CAMERA_INTRO.BACK, _camHome.y + CAMERA_INTRO.UP,
+    _camHome.z - chance.dirZ * CAMERA_INTRO.BACK);
+  camera.position.copy(cameraIntro.from);
+  _camTarget.copy(_camTargetWant);
+  camera.lookAt(_camTarget);
+  renderPending = true;
 }
 
 export const onFrame = (cb) => { frameCb = cb; };
@@ -4158,6 +4674,26 @@ export function followReboundCamera(dt) {
   const ball = objects.ball.position;
   const x = clamp(ball.x, -PITCH.WIDTH / 2, PITCH.WIDTH / 2);
   const z = clamp(ball.z, GOAL.PLANE_Z - 2, GOAL.PLANE_Z + PITCH.LENGTH);
+  if (matchView.portrait) {
+    const response = 1 - Math.exp(-dt * 2);
+    const backX = shotCameraHome.x - chance.origin.x;
+    const backZ = shotCameraHome.z - chance.origin.z;
+    const backLength = Math.hypot(backX, backZ) || 1;
+    const retreat = Math.min(3, Math.abs(x - chance.origin.x) * .35);
+    _camHome.x = lerp(_camHome.x,
+      shotCameraHome.x + backX / backLength * retreat
+        + clamp((x - chance.origin.x) * .2, -4, 4), response);
+    _camHome.y = lerp(_camHome.y,
+      shotCameraHome.y + clamp((ball.y - chance.origin.y) * .65, 0, 1.2), response);
+    _camHome.z = lerp(_camHome.z,
+      shotCameraHome.z + backZ / backLength * retreat
+        + clamp((z - chance.origin.z) * .05, -2, 1), response);
+    _camTargetWant.set(
+      shotCameraTarget.x + clamp((x - chance.origin.x) * .25, -3, 3),
+      Math.max(1, ball.y),
+      clamp((z + GOAL.PLANE_Z) * .5, GOAL.PLANE_Z, GOAL.PLANE_Z + 8));
+    return;
+  }
   const side = clamp((x - chance.origin.x) / 18, -1, 1);
   const response = 1 - Math.exp(-dt * 2);
   _camHome.x = lerp(_camHome.x, x - side * 8, response);

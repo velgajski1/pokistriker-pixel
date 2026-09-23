@@ -61,6 +61,15 @@ export async function rewardedBreak(onPause, onResume) {
   return success;
 }
 
+/**
+ * Analytics: Poki's game events. `category`, `what`, `action` are stable
+ * strings without '/' or '^'; progress uses the actions start, complete and
+ * fail, buttons visible and interact.
+ */
+export function measure(category, what, action) {
+  try { sdk()?.measure?.(String(category), String(what), String(action)); } catch { /* optional */ }
+}
+
 /** Mobile only: moves Poki's pill down to `topPx`, clear of the score. */
 export function movePill(topPx) {
   try { sdk()?.movePill(0, Math.round(topPx)); } catch { /* optional */ }

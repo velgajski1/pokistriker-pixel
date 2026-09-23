@@ -15,7 +15,7 @@ try {
   const { page } = session;
   page.setDefaultTimeout(30000);
   report.gpu = await gpuString(page);
-  await page.evaluate(() => localStorage.removeItem('blockstriker.best.v1'));
+  await page.evaluate(() => localStorage.removeItem('pokisavedgame.blockstriker.best.v1'));
   // Poki: straight into play, no menus; gameplay starts on the first input, not on load.
   assert(await page.evaluate(() => __demo.state.screen === 'MATCH' && __demo.state.phase === 'AIM'),
     'Boot must go straight into the first chance');
@@ -161,7 +161,7 @@ try {
     && document.getElementById('hud').inert && !document.getElementById('overlay').inert),
     'Game-over menu must disable gameplay and own the input layer');
   await page.screenshot({ path: `${CAPTURES}/${name}-gameover.png` });
-  const saved = await page.evaluate(() => ({ best: Number(localStorage.getItem('blockstriker.best.v1')),
+  const saved = await page.evaluate(() => ({ best: Number(localStorage.getItem('pokisavedgame.blockstriker.best.v1')),
     score: __demo.state.run.score }));
   assert(saved.best === saved.score && saved.best > 0, 'Game over must save the best score');
   assert(await page.getByRole('button', { name: 'PLAY AGAIN', exact: true }).isVisible(), 'Game over must offer PLAY AGAIN');

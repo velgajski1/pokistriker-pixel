@@ -24,7 +24,13 @@ Run browser tools with real Chrome, not Playwright's bundled headless shell:
 
 `window.__demo`, set in `boot()` in `js/app.js`, is what every tool in `tools/` reads:
 `renderer`, `scene`, `camera`, `state` (`screen`, `phase`, `run`, `best`), `shot`, `ball`,
-`target`, `arcade`, `prediction`, `ready`. Extend it; don't rename it.
+`target`, `arcade`, `prediction`, `ready`, plus `progress()` (the saved progression record),
+`specials` and `forceSpecial(kind)` (the next chance is that special). Extend it; don't rename it.
+`npm run check:hooks` covers special chances and progression, `npm run check:ads` every ad break.
+Boot goes straight into the first chance (no menu before play). The shot mode is
+`?shot=flick|aim|timing` (default timing, the two-tap shot); `lib.open()` loads `?shot=timing` because the checks
+aim with Space presses, and `npm run check:shots` drives flick and free aim with the mouse. The striker select
+(`state.screen === 'SELECT'`) opens from the results screen; `lib.pastSelect(page)` plays on from it.
 
 ## Specs
 
