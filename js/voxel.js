@@ -8,7 +8,7 @@
  *
  * Nothing here runs per frame.
  */
-import * as THREE from 'three';
+import * as THREE from '../vendor/three/build/three.module.min.js';
 
 export const FACE_PX = 1, FACE_NX = 2, FACE_PY = 4, FACE_NY = 8, FACE_PZ = 16, FACE_NZ = 32;
 

@@ -65,6 +65,17 @@ export function init() {
   el.toast = $('toast');
   el.swipe = $('swipe');
   el.swipeLine = el.swipe.querySelector('polyline');
+  // The pull shot's band: from where the finger went down to where it is now.
+  const svg = 'http://www.w3.org/2000/svg';
+  el.pullBand = document.createElementNS(svg, 'line');
+  el.pullAnchor = document.createElementNS(svg, 'circle');
+  el.pullKnob = document.createElementNS(svg, 'circle');
+  el.pullBand.setAttribute('class', 'pull-band');
+  el.pullAnchor.setAttribute('class', 'pull-anchor');
+  el.pullKnob.setAttribute('class', 'pull-knob');
+  el.pullAnchor.setAttribute('r', 8);
+  el.pullKnob.setAttribute('r', 18);
+  el.swipe.append(el.pullBand, el.pullAnchor, el.pullKnob);
   el.charge = $('charge');
   el.hearts = $('hud-hearts');
   el.prompt = $('phase-prompt');
@@ -118,9 +129,10 @@ export async function finishLoading() {
   $('preloader').classList.add('hidden');
 }
 
-export function showLoadingError() {
+export function showLoadingError(message = 'COULD NOT LOAD THE GAME. TRY AGAIN.') {
+  $('preloader').classList.remove('hidden');
   $('preloader').classList.add('failed');
-  $('preloader-message').textContent = 'COULD NOT LOAD THE GAME. TRY AGAIN.';
+  $('preloader-message').textContent = message;
   const retry = $('preloader-retry');
   retry.classList.remove('hidden');
   retry.onclick = () => location.reload();
@@ -152,7 +164,7 @@ const hex = value => '#' + value.toString(16).padStart(6, '0');
 const thousands = value => value.toLocaleString('en-US');
 
 export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProgress, levelSteps = 3, best,
-  rank = '', daily = null, special = null, progress = null }) {
+  rank = '', daily = null, special = null, progress = null, tutorial = null }) {
   if (score !== lastScore) {
     el.score.textContent = String(score).padStart(6, '0');
     lastScore = score;
@@ -160,15 +172,15 @@ export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProg
   el.best.textContent = `BEST ${String(Math.max(best, score)).padStart(6, '0')}`;
   el.combo.textContent = combo > 1 ? `x${combo}` : '';
   el.combo.classList.toggle('show', combo > 1);
-  el.level.textContent = daily ? `DAILY ${daily.shot}/${daily.of}` : `LEVEL ${level}`;
-  el.rank.textContent = daily ? `LEVEL ${level}` : rank;
+  el.level.textContent = tutorial ? 'TUTORIAL' : daily ? `DAILY ${daily.shot}/${daily.of}` : `LEVEL ${level}`;
+  el.rank.textContent = tutorial ? `SHOT ${tutorial.shot}/${tutorial.of}` : daily ? `LEVEL ${level}` : rank;
   if (progress !== null && el.progress.dataset.percent !== String(progress)) {
     el.progress.dataset.percent = progress;
     el.progress.firstChild.textContent = `PROGRESS ${progress}%`;
     el.progress.style.setProperty('--fill', `${progress}%`);
   }
   const blocks = [];
-  if (!daily) for (let i = 0; i < levelSteps; i++) {
+  if (!daily && !tutorial) for (let i = 0; i < levelSteps; i++) {
     blocks.push(node('i', i < Math.round(levelProgress * levelSteps) ? 'on' : ''));
   }
   el.levelBlocks.replaceChildren(...blocks);
@@ -205,6 +217,22 @@ export function showTutorialStep(step) {
     node('strong', 'tutorial-title', step === 1 ? 'Aim at the target' : 'Set the shot height'),
     node('span', 'tutorial-instruction', step === 1
       ? `${tap} to stop the moving arrow.` : `${tap} again to stop the height marker and shoot.`));
+  el.prompt.classList.add('show', 'tutorial');
+}
+
+/**
+ * A coaching card in the tutorial style: a step label, a big title, one line
+ * of instruction, and optionally an animated hand showing the pull-back.
+ */
+export function coach(step, title, instruction, hand = false) {
+  const parts = [node('span', 'tutorial-step', step), node('strong', 'tutorial-title', title),
+    node('span', 'tutorial-instruction', instruction)];
+  if (hand) {
+    const demo = node('span', 'coach-demo');
+    demo.append(node('i', 'coach-anchor'), node('i', 'coach-band'), node('i', 'coach-hand', '\u{1F446}'));
+    parts.unshift(demo);
+  }
+  el.prompt.replaceChildren(...parts);
   el.prompt.classList.add('show', 'tutorial');
 }
 
@@ -268,6 +296,16 @@ export function drawSwipe(xs, ys, count) {
   el.swipe.classList.remove('fade');
 }
 export function fadeSwipe() { el.swipe.classList.add('fade'); }
+
+/** The pull shot's band from (ax, ay) to the finger at (x, y), in `colour` (a CSS colour). */
+export function drawPull(ax, ay, x, y, colour) {
+  for (const [node, attrs] of [[el.pullBand, { x1: ax, y1: ay, x2: x, y2: y }], [el.pullAnchor, { cx: ax, cy: ay }],
+    [el.pullKnob, { cx: x, cy: y }]]) for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, Math.round(value));
+  el.swipe.style.setProperty('--pull', colour);
+  el.swipe.classList.add('pulling');
+  el.swipe.classList.remove('fade');
+}
+export function hidePull() { el.swipe.classList.remove('pulling'); }
 
 /** Free aim's charge meter, 0..1; null hides it. */
 export function setCharge(value) {
@@ -370,6 +408,7 @@ export function initPauseButton(onPause) {
  */
 export function showGameOver({ score, isBest, level, goals, bullseyes, bestCombo, precision, rank, toBest,
   daily, xpGained, unlocked, next, missions, finished, boosted, lockerNew, dailyStatus, collection, game,
+  rewards = [], onUseUnlock = null,
   onReplay, onContinue, onBoost, onCheckpoint, checkpoint, onDaily, onLocker, onStriker }) {
   const panel = node('div', 'panel results-panel');
 
@@ -377,7 +416,8 @@ export function showGameOver({ score, isBest, level, goals, bullseyes, bestCombo
   const hero = node('div', 'r-hero');
   hero.append(node('h2', 'r-title' + (isBest && score > 0 && !daily ? ' best' : ''),
     daily ? 'DAILY DONE' : isBest && score > 0 ? 'NEW BEST!' : 'GAME OVER'));
-  hero.append(node('p', 'r-score', thousands(score)));
+  const scoreLine = node('p', 'r-score', thousands(score));
+  hero.append(scoreLine);
   const gap = daily
     ? (daily.newBest ? 'New daily best!' : `Today's best: ${thousands(daily.best)}`)
     : toBest > 0 ? `${thousands(toBest)} points to beat your best` : isBest && score > 0 ? 'Your best run ever' : '';
@@ -396,7 +436,7 @@ export function showGameOver({ score, isBest, level, goals, bullseyes, bestCombo
   const foot = node('div', 'r-row r-small');
   foot.append(node('span', '', next ? `${thousands(next.need)} XP to go` : ''));
   progress.append(foot);
-  for (const item of unlocked) progress.append(node('p', 'r-unlocked', `Unlocked: ${item.name}`));
+  // Unlocks get their own big card under the score (see unlockCard).
   progress.append(gameProgressBlock(game));
 
   // Missions.
@@ -429,8 +469,47 @@ export function showGameOver({ score, isBest, level, goals, bullseyes, bestCombo
   actions.append(more);
   if (!onContinue && !onBoost && boosted) actions.append(node('p', 'r-small r-boost', 'Boost ready: your next run starts with an extra heart'));
 
+  for (const reward of rewards) hero.append(unlockCard(reward, onUseUnlock));
   panel.append(hero, progress, tasks, actions);
   mount(panel);
+  countUp(scoreLine, score);
+}
+
+/** The result's number counts up from zero (skipped when motion is reduced). */
+function countUp(target, value, ms = 900) {
+  if (value <= 0 || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const start = performance.now();
+  const step = now => {
+    if (!target.isConnected) return;
+    const t = Math.min(1, (now - start) / ms);
+    target.textContent = thousands(Math.round(value * (1 - (1 - t) ** 3)));
+    if (t < 1) requestAnimationFrame(step);
+  };
+  target.textContent = '0';
+  requestAnimationFrame(step);
+}
+
+/** The run's unlock: a preview of the item, its name, and a button to use it straight away. */
+const UNLOCK_KIND = { kit: 'NEW KIT', boots: 'NEW BOOTS', ball: 'NEW BALL', celebration: 'NEW CELEBRATION', striker: 'NEW STRIKER' };
+function unlockCard(item, onUse) {
+  const card = node('div', `unlock-card ${item.type}`);
+  const preview = node('div', 'unlock-preview');
+  if (item.sprite) { item.sprite.className = 'sprite'; preview.append(item.sprite); }
+  else {
+    const swatch = node('i', 'swatch', item.type === 'celebration' ? '\u2605' : '');
+    if (item.color != null) swatch.style.background = hex(item.color);
+    if (item.accent != null) swatch.style.setProperty('--accent', hex(item.accent));
+    preview.append(swatch);
+  }
+  const text = node('div', 'unlock-text');
+  text.append(node('span', 'unlock-kind', `\u{1F513} ${UNLOCK_KIND[item.type]} UNLOCKED!`), node('strong', 'unlock-name', item.name));
+  if (item.style) text.append(node('span', 'unlock-style', item.style));
+  card.append(preview, text);
+  if (item.type !== 'celebration' && onUse) {
+    card.append(item.inUse ? node('span', 'unlock-inuse', '\u2714 IN USE')
+      : button(item.type === 'striker' ? 'PLAY AS' : 'EQUIP', () => onUse(item.id), 'small unlock-use'));
+  }
+  return card;
 }
 
 /** The locker: every kit, pair of boots, ball and celebration, and how to get it. */

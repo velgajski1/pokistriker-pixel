@@ -8,7 +8,7 @@
  * skin canvas, texel for texel, so kit colours, numbers and looks are just a
  * repaint. Nothing here runs per frame; repaints happen on kit or look changes.
  */
-import * as THREE from 'three';
+import * as THREE from '../vendor/three/build/three.module.min.js';
 
 // Minecraft proportions, 32 px tall: head 8, body 12 (shirt 9 + shorts 3), legs 12.
 export const BLOCK_PX = 0.0575;  // one skin texel, in model units

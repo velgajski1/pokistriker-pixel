@@ -165,6 +165,7 @@ function load() {
     runs: Number.isFinite(saved.runs) ? saved.runs : 0,
     boost: saved.boost === true,
     striker: typeof saved.striker === 'string' ? saved.striker : null,
+    tutorialDone: saved.tutorialDone === true,   // the pull tutorial plays once, ever
     // Every mission ever finished (the achievements), for the game-progress metric.
     achieved: Array.isArray(saved.achieved) ? saved.achieved.filter(id => MISSIONS.some(m => m.id === id)) : [],
     daily: { day: saved.daily?.day || '', best: saved.daily?.best || 0,
@@ -259,6 +260,17 @@ export function gameProgress() {
 
 /** The chosen striker's id, or null before the first (or after a locked) choice. */
 export const striker = () => (data.striker && isUnlocked(`striker:${data.striker}`) ? data.striker : null);
+export const tutorialDone = () => data.tutorialDone;
+
+/** Everything the results screen needs to show an unlocked item. */
+export function unlockInfo(id) {
+  const [type, key] = id.split(':');
+  const item = allItems().find(entry => entry.id === id);
+  return { id, type, key, name: type === 'striker' ? STRIKERS[key].name : item.short, full: itemName(id),
+    color: item.color, accent: item.accent, style: type === 'striker' ? STRIKERS[key].style : '' };
+}
+export function setTutorialDone() { data.tutorialDone = true; persist(); }
+
 export function setStriker(id) {
   if (!isUnlocked(`striker:${id}`)) return false;
   data.striker = id;
@@ -367,7 +379,14 @@ export function finishRun(run) {
     dailyResult = { best: data.daily.best, newBest, streak: data.daily.streak };
   }
   const done = settleMissions(run);
-  const unlocked = UNLOCKS.filter(u => before < u.xp && data.xp >= u.xp).map(u => ({ id: u.id, name: itemName(u.id) }));
+  // Every finished run unlocks something: if its XP opened nothing, the next item
+  // on the track is the run's reward (the XP bar moves up to it).
+  let reward = false;
+  if (run.shots > 0 && !UNLOCKS.some(u => before < u.xp && data.xp >= u.xp)) {
+    const next = UNLOCKS.find(u => data.xp < u.xp);
+    if (next) { data.xp = next.xp; reward = true; }
+  }
+  const unlocked = UNLOCKS.filter(u => before < u.xp && data.xp >= u.xp).map(u => ({ id: u.id, name: itemName(u.id), reward }));
   persist();
   return { gained, unlocked, missions: done, daily: dailyResult };
 }

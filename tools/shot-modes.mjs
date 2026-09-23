@@ -163,17 +163,60 @@ try {
     JSON.stringify({ crosshair: dragged.x, shot: r }));
   await skipHold();
 
+  // ---- Slingshot line -------------------------------------------------------
+  await load('sling');
+  const slingScreen = await page.evaluate(async () => {
+    const T = await import('three'), d = __demo;
+    const ball = d.ball.position.clone();
+    const dx = -ball.x, dz = d.dimensions.goal.PLANE_Z - ball.z;
+    const length = Math.hypot(dx, dz);
+    const pull = new T.Vector3(ball.x - dx / length * 5, 0, ball.z - dz / length * 5);
+    const screen = v => {
+      const p = v.clone().project(d.camera);
+      return { x: (p.x + 1) / 2 * innerWidth, y: (1 - p.y) / 2 * innerHeight };
+    };
+    return { ball: screen(ball), pull: screen(pull), height: innerHeight };
+  });
+  await page.mouse.move(slingScreen.pull.x, slingScreen.pull.y);
+  await page.waitForTimeout(100);
+  const slingHover = await page.evaluate(() => {
+    const group = __demo.scene.getObjectByName('slingshot-guide');
+    const values = [...__demo.scene.getObjectByName('slingshot-line').geometry.attributes.position.array];
+    return { visible: group.visible, values };
+  });
+  check('Sling: camera leaves usable turf below the ball', slingScreen.pull.y > slingScreen.ball.y + 30
+    && slingScreen.pull.y < slingScreen.height, JSON.stringify(slingScreen));
+  check('Sling: desktop hover shows the whole pointer-ball-goal guide', slingHover.visible
+    && Math.hypot(slingHover.values[0] - slingHover.values[3], slingHover.values[2] - slingHover.values[5]) > 1
+    && Math.abs(slingHover.values[8] - (await page.evaluate(() => __demo.dimensions.goal.PLANE_Z + .08))) < .01,
+  JSON.stringify(slingHover));
+  await page.mouse.down();
+  await page.waitForFunction(() => __demo.shot.power >= .5);
+  const slingRaised = await page.evaluate(() => {
+    const values = __demo.scene.getObjectByName('slingshot-line').geometry.attributes.position.array;
+    return { y: values[7], x: values[6], charge: __demo.shot.power };
+  });
+  await page.screenshot({ path: '.captures/shot-sling-charge.png' });
+  await page.mouse.up();
+  r = await launched();
+  check('Sling: holding raises the forward arrow', slingRaised.charge >= .5 && slingRaised.y > 1.5,
+    JSON.stringify(slingRaised));
+  check('Sling: release follows the guide', Math.abs(r.x - slingRaised.x) < .6 && r.curve === 0,
+    JSON.stringify({ guide: slingRaised, shot: r }));
+  await skipHold();
+
   // ---- Alt+9 cycles the modes ----------------------------------------------------
   await page.goto(BASE, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => window.__demo?.ready);
-  check('Timing remains the release default', await page.evaluate(() => __demo.shotMode === 'timing'));
+  check('Press-and-hold aim is the release default', await page.evaluate(() => __demo.shotMode === 'aim'));
   const modes = [];
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     await page.keyboard.press('Alt+Digit9');
     await page.waitForTimeout(150);
     modes.push(await page.evaluate(() => __demo.shotMode));
   }
-  check('Alt+9 cycles timing -> drag -> flick -> aim -> timing', modes.join(',') === 'drag,flick,aim,timing', modes.join(','));
+  check('Alt+9 cycles aim -> timing -> drag -> sling -> flick -> aim',
+    modes.join(',') === 'timing,drag,sling,flick,aim', modes.join(','));
 } catch (error) {
   report.checks.push({ label: String(error).split('\n')[0], ok: false });
 }

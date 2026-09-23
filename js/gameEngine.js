@@ -16,8 +16,8 @@
  * straight off their animated joints, so what you see reaching for the ball is
  * exactly what the save/block test uses.
  */
-import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import * as THREE from '../vendor/three/build/three.module.min.js';
+import { mergeGeometries } from '../vendor/three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GOAL, PITCH, BALL_START, BALL_R, GRAVITY, NET, netPockets, releaseNetPockets,
   AD_BOARDS, BOARD_HEIGHT, BOARD_THICKNESS } from './physics.js';
 import { voxelShade, voxelizeGeometry } from './voxel.js';
@@ -29,6 +29,8 @@ const _camTargetWant = new THREE.Vector3(0, 1.35, GOAL.PLANE_Z);
 const _camHome = new THREE.Vector3(0, 3.6, 8.2);
 const _camWant = new THREE.Vector3();
 const _wp = new THREE.Vector3();
+const _slingDirection = new THREE.Vector3();
+const _slingAxis = new THREE.Vector3(0, 1, 0);
 
 const CLEAR = 0x8fcaff;   // daytime sky; also the fog colour
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -46,11 +48,36 @@ let renderPending = true;
 // crowd. `?quality=low|high` overrides the detection; `?stats=1` shows a
 // frame-rate readout. Every tier lowers resolution while frames run slow.
 const _query = new URLSearchParams(location.search);
-export const QUALITY = ['low', 'high'].includes(_query.get('quality')) ? _query.get('quality')
+export let QUALITY = ['low', 'high'].includes(_query.get('quality')) ? _query.get('quality')
   : matchMedia('(pointer: coarse)').matches || (navigator.hardwareConcurrency || 8) <= 4 ? 'low' : 'high';
-const LOW_QUALITY = QUALITY === 'low';
-const MAX_PIXEL_RATIO = LOW_QUALITY ? 1.25 : 2;
-const MIN_PIXEL_RATIO = LOW_QUALITY ? .6 : .75;
+let LOW_QUALITY = QUALITY === 'low';
+let MAX_PIXEL_RATIO = LOW_QUALITY ? 1.25 : 2;
+let MIN_PIXEL_RATIO = LOW_QUALITY ? .6 : .75;
+
+/**
+ * Integrated, mobile and software GPUs get low quality even on a desktop: a
+ * frame too heavy for them can trip the driver's watchdog, which resets the
+ * GPU, and Chrome then blocks WebGL for the page ("caused context loss and was
+ * blocked"). The GPU is named by a throwaway probe context, released at once.
+ */
+const WEAK_GPU = /swiftshader|llvmpipe|software|basic render|mali|adreno|powervr|videocore|intel\(r\) (u?hd|gma)|intel (u?hd|gma)|mesa (dri )?intel/i;
+function gpuName() {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2') || document.createElement('canvas').getContext('webgl');
+    if (!gl) return '';
+    const info = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return name;
+  } catch { return ''; }
+}
+function setQuality(tier) {
+  QUALITY = tier;
+  LOW_QUALITY = tier === 'low';
+  MAX_PIXEL_RATIO = LOW_QUALITY ? 1.25 : 2;
+  MIN_PIXEL_RATIO = LOW_QUALITY ? .6 : .75;
+  renderState.quality = tier;
+}
 // Low quality: the body alone casts the (blurred, every-other-frame) shadow.
 const LOW_SHADOW_PARTS = new Set(['head', 'torso', 'hips', 'thighL', 'thighR', 'shinL', 'shinR']);
 const castsShadow = name => !LOW_QUALITY || LOW_SHADOW_PARTS.has(name);
@@ -823,12 +850,12 @@ async function loadCaptain() {
   let timer;
   try {
     const [gltf, data, skeletonUtils] = await Promise.race([
-      Promise.all([import('three/addons/loaders/GLTFLoader.js').then(({ GLTFLoader }) =>
+      Promise.all([import('../vendor/three/examples/jsm/loaders/GLTFLoader.js').then(({ GLTFLoader }) =>
         new GLTFLoader().loadAsync('assets/squad.glb')),
         fetch('assets/squad.json').then(response => {
           if (!response.ok) throw new Error('Striker sidecar unavailable');
           return response.json();
-        }), import('three/addons/utils/SkeletonUtils.js')]),
+        }), import('../vendor/three/examples/jsm/utils/SkeletonUtils.js')]),
       new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Striker load timed out')), 10000); }),
     ]);
     relaxIdle(gltf.animations);
@@ -2603,27 +2630,28 @@ const burst = { time: -1, count: 0, position: new Float32Array(TARGET_BURST * 3)
 const _spark = new THREE.Object3D();
 
 /**
- * The target face: a round pixel-art archery target. The ring zone (scored
- * 'target') is four bands, the bullseye a gold disc with a darker rim, all
- * inside a black outline. Redrawn per chance: the bull's share of the ring
- * changes with the level, and specials repaint it in their colours.
+ * The target face: simple rings on a see-through face, so the goal and the
+ * keeper stay visible through it. A bold outer ring marks the scoring edge,
+ * a thin ring the bullseye, a dot the centre; each has a dark edge so it reads
+ * against the net, the crowd and the sky. Redrawn per chance: the bull's share
+ * of the ring changes with the level, and specials repaint it in their colours.
  */
-const FACE = 48;
-const ARCHERY = [0xf4f4ee, 0x1c1c22, 0x2f8bff, 0xe8322b];   // outer band -> inner band
+const FACE = 64;
 function drawTargetFace() {
   const canvas = target.faceCanvas, paint = canvas.getContext('2d');
   const image = paint.createImageData(FACE, FACE), data = image.data;
   const bullShare = target.bullHalf / target.ringHalf;
-  const bands = target.style ? [target.style.ring, 0xffffff, target.style.ring, 0xffffff] : ARCHERY;
-  const bull = target.style ? target.style.bull : 0xffd23f;
-  const rim = target.style ? shadeHex(target.style.bull, .7) : 0xd99a1e;
+  const ring = target.style ? target.style.ring : 0xffd23f;
+  const bull = target.style ? target.style.bull : 0xff4d3a;
+  const edge = 0x1a1a1f, px = 1 / (FACE / 2);
+  // [inner radius, outer radius, colour] bands, drawn with a dark edge either side.
+  const bands = [[1 - 5 * px, 1, ring], [bullShare - 3 * px, bullShare, bull], [0, 3.5 * px, bull]];
   for (let y = 0; y < FACE; y++) for (let x = 0; x < FACE; x++) {
     const d = Math.hypot(x + .5 - FACE / 2, y + .5 - FACE / 2) / (FACE / 2);
     let colour = null;
-    if (d <= 1) {
-      if (d > .94) colour = 0x000000;
-      else if (d <= bullShare) colour = d > bullShare - .08 ? rim : bull;
-      else colour = bands[Math.min(3, Math.floor((1 - d) / (1 - bullShare) * 4))];
+    for (const [inner, outer, c] of bands) {
+      if (d >= inner && d <= outer) colour = c;
+      else if (d >= inner - px && d <= outer + px) colour ??= edge;
     }
     const i = (y * FACE + x) * 4;
     if (colour === null) { data[i + 3] = 0; continue; }
@@ -2632,9 +2660,6 @@ function drawTargetFace() {
   paint.putImageData(image, 0, 0);
   target.fill.material.map.needsUpdate = true;
 }
-const shadeHex = (hex, f) => (Math.round((hex >> 16 & 255) * f) << 16) | (Math.round((hex >> 8 & 255) * f) << 8)
-  | Math.round((hex & 255) * f);
-
 function faceTexture() {
   target.faceCanvas = document.createElement('canvas');
   target.faceCanvas.width = target.faceCanvas.height = FACE;
@@ -2760,7 +2785,9 @@ export function setTarget(x, y, ringHalf, bullHalf, heart = false) {
 // ---- Free-aim crosshair (shot mode 'aim') -----------------------------------
 const crosshair = { group: null };
 const _ray = new THREE.Raycaster(), _ndc = new THREE.Vector2(), _goalHit = new THREE.Vector3();
+const _pitchHit = new THREE.Vector3();
 const _goalPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+const _pitchPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
 function buildCrosshair() {
   const group = new THREE.Group();
@@ -2792,6 +2819,45 @@ export function setCrosshair(x, y, spread = 0) {
   crosshair.group.scale.setScalar(1 + spread);
 }
 
+// ---- Pull shot: the dotted flight preview ------------------------------------------
+const TRAJECTORY_DOTS = 22;
+const trajectory = { mesh: null };
+const _dot = new THREE.Object3D();
+function buildTrajectory() {
+  const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(.09, .09, .09),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), TRAJECTORY_DOTS);
+  mesh.name = 'trajectory';
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  scene.add(mesh);
+  trajectory.mesh = mesh;
+}
+
+/**
+ * Dots along the ball's real flight (gravity and sideways curve) from `from`
+ * with velocity `v`, over `share` (0..1) of the way to the goal line: the
+ * rest is the player's to judge. Dots shrink along the way; `tint` colours them.
+ */
+export function showTrajectory(from, v, curve, share, tint) {
+  const mesh = trajectory.mesh, end = (GOAL.PLANE_Z - from.z) / v.z;
+  let count = 0;
+  if (end > 0) for (let i = 1; i <= TRAJECTORY_DOTS; i++) {
+    const f = i / TRAJECTORY_DOTS;
+    if (f > share) break;
+    const t = end * f, y = from.y + v.y * t + .5 * GRAVITY * t * t;
+    if (y < BALL_R * .5) break;
+    _dot.position.set(from.x + v.x * t + .5 * curve * t * t, y, from.z + v.z * t);
+    _dot.scale.setScalar(1 - .45 * f);
+    _dot.updateMatrix();
+    mesh.setMatrixAt(count++, _dot.matrix);
+  }
+  mesh.count = count;
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.material.color.setHex(tint);
+  mesh.visible = count > 0;
+}
+export function hideTrajectory() { trajectory.mesh.visible = false; }
+
 /** Where a screen point (client pixels) meets the goal line's plane, or false. */
 export function pointerToGoal(clientX, clientY, out) {
   _ndc.set(clientX / innerWidth * 2 - 1, -(clientY / innerHeight) * 2 + 1);
@@ -2800,6 +2866,19 @@ export function pointerToGoal(clientX, clientY, out) {
   if (!_ray.ray.intersectPlane(_goalPlane, _goalHit)) return false;
   out.x = _goalHit.x;
   out.y = _goalHit.y;
+  return true;
+}
+
+/** A screen point on the turf behind the ball: the slingshot input area. */
+export function pointerToSlingshot(clientX, clientY, out) {
+  _ndc.set(clientX / innerWidth * 2 - 1, -(clientY / innerHeight) * 2 + 1);
+  _ray.setFromCamera(_ndc, camera);
+  if (!_ray.ray.intersectPlane(_pitchPlane, _pitchHit)) return false;
+  const ball = objects.ball.position;
+  const behind = -((_pitchHit.x - ball.x) * chance.dirX + (_pitchHit.z - ball.z) * chance.dirZ);
+  if (behind < .65) return false;
+  out.x = _pitchHit.x;
+  out.z = _pitchHit.z;
   return true;
 }
 
@@ -2830,7 +2909,7 @@ function updateTarget(dt) {
   // The core breathes and the glow pulses with it; the corner stars twinkle in turn.
   const beat = .5 + .5 * Math.sin(target.time * 5);
   target.core.scale.set(target.bullHalf * (.42 + .1 * beat), target.bullHalf * (.42 + .1 * beat), 1);
-  target.glow.material.opacity = .22 + .2 * beat;
+  target.glow.material.opacity = .1 + .1 * beat;
   const r = (target.ringHalf + .08) * Math.SQRT1_2;
   for (let i = 0; i < 4; i++) {
     const twinkle = Math.max(0, Math.sin(target.time * 4 + i * 1.57));
@@ -2929,6 +3008,32 @@ function buildAimRig() {
   ring.visible = false;
   scene.add(ring);
   objects.elevation = ring;
+}
+
+const slingshotGuide = { group: null, line: null, arrow: null };
+function buildSlingshotGuide() {
+  const positions = new Float32Array(9);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const material = new THREE.LineBasicMaterial({ color: 0xffdf54, transparent: true,
+    opacity: .95, depthTest: false, toneMapped: false });
+  const line = new THREE.Line(geometry, material);
+  line.name = 'slingshot-line';
+  line.renderOrder = 20;
+
+  const arrow = new THREE.Mesh(new THREE.ConeGeometry(.18, .55, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffdf54, depthTest: false, toneMapped: false }));
+  arrow.name = 'slingshot-arrowhead';
+  arrow.renderOrder = 21;
+
+  const group = new THREE.Group();
+  group.name = 'slingshot-guide';
+  group.visible = false;
+  group.add(line, arrow);
+  scene.add(group);
+  slingshotGuide.group = group;
+  slingshotGuide.line = line;
+  slingshotGuide.arrow = arrow;
 }
 
 // ---------------------------------------------------------------------------
@@ -3201,7 +3306,7 @@ const ambient = {
   to: { x: 0, z: -6 },
   t: 1, dur: 1, holder: 0, wait: 0, passReceiver: -1, possessionTime: 0,
 };
-export const matchView = { mode: 'broadcast', speed: 1, simulatedSeconds: 0, portrait: false };
+export const matchView = { mode: 'broadcast', speed: 1, simulatedSeconds: 0, portrait: false, slingshot: false };
 let matchFrameDt = 0;
 export const formation = { actors: ambient.actors, pressers: [null, null], attacker: null };
 
@@ -4070,16 +4175,26 @@ function aimCameraAt(origin) {
   const dx = 0 - origin.x, dz = GOAL.PLANE_Z - origin.z;
   const len = Math.hypot(dx, dz) || 1;
   const dirX = dx / len, dirZ = dz / len;
-  const back = matchView.portrait ? PORTRAIT_CAMERA_BACK : 10.2;
-  const side = matchView.portrait ? PORTRAIT_CAMERA_SIDE : 3.1;
+  const back = matchView.slingshot ? (matchView.portrait ? 23 : 16)
+    : matchView.portrait ? PORTRAIT_CAMERA_BACK : 10.2;
+  const side = matchView.slingshot ? (matchView.portrait ? .5 : 1)
+    : matchView.portrait ? PORTRAIT_CAMERA_SIDE : 3.1;
   _camHome.set(
-    origin.x - dirX * back - dirZ * side, matchView.portrait ? PORTRAIT_CAMERA_HEIGHT : 4.8,
+    origin.x - dirX * back - dirZ * side, matchView.slingshot ? (matchView.portrait ? 7 : 6)
+      : matchView.portrait ? PORTRAIT_CAMERA_HEIGHT : 4.8,
     origin.z - dirZ * back + dirX * side);
   // Aim low: it tilts the camera down, which lifts the ball clear of the
   // ticker and stops the shot being framed against empty stand.
-  _camTargetWant.set(origin.x * (matchView.portrait ? .12 : .16), 1.1, GOAL.PLANE_Z + 1.5);
+  _camTargetWant.set(origin.x * (matchView.portrait ? .12 : .16), matchView.slingshot ? .45 : 1.1,
+    GOAL.PLANE_Z + 1.5);
   shotCameraHome.copy(_camHome);
   shotCameraTarget.copy(_camTargetWant);
+}
+
+/** The slingshot input needs visible turf behind the ball in either orientation. */
+export function setSlingshotView(on) {
+  matchView.slingshot = !!on;
+  if (matchView.mode === 'chance') aimCameraAt(chance.origin);
 }
 
 /** Shot dolly, smoothed by the existing camera rig; landscape retains its 90% chase. */
@@ -4353,8 +4468,15 @@ export function init(canvas) {
   if (started) return;
   started = true;
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: !pixelLook.enabled && !LOW_QUALITY,
-    powerPreference: 'high-performance' });
+  if (!_query.get('quality') && !LOW_QUALITY && WEAK_GPU.test(gpuName())) setQuality('low');
+  // No 'high-performance' request: on dual-GPU laptops it switches GPUs, a common cause of context loss.
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: !pixelLook.enabled && !LOW_QUALITY });
+  } catch (error) {
+    // One more try with the lightest context before giving up.
+    setQuality('low');
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'low-power' });
+  }
   renderState.pixelRatio = Math.min(devicePixelRatio, MAX_PIXEL_RATIO);
   renderer.setPixelRatio(renderState.pixelRatio);
   // Low quality has no shadow map at all: blob shadows under the players and
@@ -4396,8 +4518,10 @@ export function init(canvas) {
   cachePausePoses();
   buildBall();
   buildAimRig();
+  buildSlingshotGuide();
   buildTarget();
   buildCrosshair();
+  buildTrajectory();
   buildClouds();
 
   keeperSet = makeCapsuleSet(squad.keeper);
@@ -4815,6 +4939,22 @@ export function showAimRig(arrow, guide) {
   objects.guide.visible = guide;
   objects.elevation.visible = guide;
 }
+
+/** Full pull-point -> ball -> goal guide for the slingshot shot mode. */
+export function setSlingshotGuide(pullX, pullZ, aimX, aimY) {
+  const array = slingshotGuide.line.geometry.attributes.position.array;
+  const ball = objects.ball.position;
+  array[0] = pullX; array[1] = .04; array[2] = pullZ;
+  array[3] = ball.x; array[4] = ball.y; array[5] = ball.z;
+  array[6] = aimX; array[7] = aimY; array[8] = GOAL.PLANE_Z + .08;
+  slingshotGuide.line.geometry.attributes.position.needsUpdate = true;
+  slingshotGuide.arrow.position.set(array[6], array[7], array[8]);
+  _slingDirection.set(array[6] - array[3], array[7] - array[4], array[8] - array[5]).normalize();
+  slingshotGuide.arrow.quaternion.setFromUnitVectors(_slingAxis, _slingDirection);
+  slingshotGuide.group.visible = true;
+}
+
+export function showSlingshotGuide(on) { slingshotGuide.group.visible = !!on; }
 
 export function setBall(p) { objects.ball.position.set(p.x, p.y, p.z); }
 

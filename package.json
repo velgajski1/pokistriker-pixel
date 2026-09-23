@@ -12,6 +12,7 @@
     "check:hooks": "node tools/hooks.mjs",
     "check:shots": "node tools/shot-modes.mjs",
     "check:keeper": "node tools/keeper-reach.mjs",
+    "check:pull": "node tools/pull-shot.mjs",
     "balance": "node tools/balance-simulation.mjs",
     "package:release": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/package-release.ps1"
   },

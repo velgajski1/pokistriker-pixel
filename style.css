@@ -185,4 +185,177 @@ body.loading .audio-toggle{display:none}
   .pause-panel{gap:12px}.pause-panel .logo{display:flex;justify-content:center;gap:8px;align-items:baseline}
   .pause-panel .logo-striker{margin-top:0}
 }
+
+/* ==========================================================================
+   Look and feel. The rules above lay the interface out (regions, sizes,
+   scrolling, tap targets); this layer only dresses it: colours, depth,
+   borders and motion. Game identity: a grass-block edge on every panel,
+   night-pitch gradients, chunky 3D buttons that press down, and headlines
+   with a block drop shadow.
+   ========================================================================== */
+:root{
+  --grass:#3ddc84;--grass-deep:#1f9d57;--gold:#ffd24a;--gold-deep:#c98a14;--red:#ff6b6b;--violet:#8b5cf6;--violet-deep:#5b32c4;
+  --blue:#3b82f6;--blue-deep:#1e4fb8;--muted:#a9bfd2;--ink:#0a1622;
+  --surface:linear-gradient(180deg,#17344ced,#0c1d2bf2);
+  --card:#ffffff0d;--line:#ffffff1f;
+  --drop:0 2px 0 #0007,0 4px 0 #0003;
+}
+.block-button,.locker-item,.striker-card{-webkit-tap-highlight-color:transparent}
+
+/* ---- Panels: grass-block top edge, night-pitch body ----------------------- */
+#overlay{background:radial-gradient(ellipse at 50% 40%,#06121b33,#06121bb3 75%)}
+.panel{background:linear-gradient(var(--grass) 0 6px,var(--grass-deep) 6px 9px,#6b4a2b 9px 11px,transparent 11px),
+  linear-gradient(180deg,#17344c,#0c1d2b);border:1px solid #ffffff26;
+  box-shadow:0 18px 50px #000a,inset 0 1px 0 #ffffff1a;animation:panel-in .28s ease-out both}
+@keyframes panel-in{from{opacity:0}}
+.r-card{background:linear-gradient(180deg,#ffffff10,#ffffff06);border-color:#ffffff1c;box-shadow:inset 0 1px 0 #ffffff12}
+
+/* ---- Headlines: heavy, uppercase, a block drop ----------------------------- */
+.r-title,.over-title,.locker-title,#hud-level,.banner strong,.verdict strong,.tutorial-title,.preloader-brand,.logo{
+  font-weight:800;letter-spacing:.02em;text-shadow:var(--drop)}
+.r-title{color:#ff7a7a;letter-spacing:.06em}
+.r-title.best{color:var(--gold)}
+.r-score{color:#fff;text-shadow:0 3px 0 var(--gold-deep),0 6px 0 #0006,0 0 30px #ffd24a33;font-variant-numeric:tabular-nums}
+.over-title,.locker-title{color:var(--gold)}
+.logo-block{color:var(--grass);text-shadow:0 3px 0 var(--grass-deep),0 6px 0 #6b4a2b,0 9px 0 #0005}
+.logo-striker{color:var(--gold);text-shadow:0 3px 0 var(--gold-deep),0 6px 0 #0005}
+.tagline{letter-spacing:.3em;font-weight:700}
+.r-xp,.gp-percent{text-shadow:0 2px 0 #0006}
+
+/* ---- Buttons: chunky blocks that press down --------------------------------- */
+.block-button{border:0;border-radius:12px;background:linear-gradient(180deg,#355a78,#264460);
+  box-shadow:0 4px 0 #18293a,0 7px 14px #0005,inset 0 1px 0 #ffffff2e;text-shadow:0 1px 0 #0006;
+  transition:transform .08s,box-shadow .08s,filter .12s}
+.block-button:hover{background:linear-gradient(180deg,#416b8d,#2e5171);transform:translateY(-1px)}
+.block-button:active{transform:translateY(3px);box-shadow:0 1px 0 #18293a,0 2px 6px #0005,inset 0 1px 0 #ffffff2e;filter:none}
+.block-button.primary{color:#07301b;text-shadow:0 1px 0 #ffffff5c;letter-spacing:.04em;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 1l7 4-7 4z' fill='%2307301b'/%3E%3C/svg%3E") left 16px center/14px no-repeat,
+    linear-gradient(180deg,#6ef3a8,#2cc873);
+  box-shadow:0 5px 0 var(--grass-deep),0 9px 18px #0006,inset 0 2px 0 #ffffff66}
+.block-button.primary:hover{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 1l7 4-7 4z' fill='%2307301b'/%3E%3C/svg%3E") left 16px center/14px no-repeat,
+    linear-gradient(180deg,#86f7b8,#3dd682)}
+.block-button.primary:active{box-shadow:0 1px 0 var(--grass-deep),0 3px 8px #0006,inset 0 2px 0 #ffffff66}
+.block-button.reward{color:#fff;background:linear-gradient(110deg,var(--violet) 0 40%,#b794ff 50%,var(--violet) 60% 100%) 0 0/250% 100%,var(--violet);
+  box-shadow:0 5px 0 var(--violet-deep),0 9px 18px #0006,inset 0 1px 0 #ffffff40;animation:shimmer 2.6s linear infinite}
+@keyframes shimmer{from{background-position:120% 0}to{background-position:-120% 0}}
+.block-button.locker-cta{color:#fff;background:linear-gradient(180deg,#5b9bff,var(--blue));box-shadow:0 5px 0 var(--blue-deep),0 9px 18px #0006,inset 0 1px 0 #ffffff40}
+.block-button.glow,.block-button.locker-cta.has-new,.block-button.tab.active{color:#3a2600;text-shadow:0 1px 0 #ffffff66;
+  background:linear-gradient(180deg,#ffe48a,var(--gold));box-shadow:0 4px 0 var(--gold-deep),0 7px 14px #0005,inset 0 1px 0 #ffffffaa}
+.block-button.locker-cta.has-new{animation:glow-pulse 1.6s ease-in-out infinite}
+@keyframes glow-pulse{50%{box-shadow:0 4px 0 var(--gold-deep),0 0 22px #ffd24aaa,inset 0 1px 0 #ffffffaa}}
+.block-button em,.locker-item em,.striker-card em{background:linear-gradient(180deg,#ff6b6b,#d9304a);box-shadow:0 2px 0 #8b1d2e;
+  font-weight:800;animation:badge-bob 1.2s ease-in-out infinite}
+@keyframes badge-bob{50%{transform:translateY(-2px)}}
+.audio-toggle{background:linear-gradient(180deg,#17344cee,#0c1d2bee);border:1px solid #ffffff26}
+
+/* ---- HUD: glass cards with a coloured top edge ------------------------------- */
+.hud-score,.hud-level,.hud-controls,.special-tag,.phase-prompt{background:linear-gradient(180deg,#17344ce6,#0c1d2be6);
+  border:1px solid #ffffff22;box-shadow:0 6px 18px #0005,inset 0 1px 0 #ffffff14}
+.hud-score{border-top:3px solid var(--gold)}
+.hud-level{border-top:3px solid var(--grass)}
+.hud-controls{border-top:3px solid var(--red)}
+.score{text-shadow:0 2px 0 var(--gold-deep),0 4px 0 #0005;font-variant-numeric:tabular-nums}
+.hud-progress i,.level-blocks i{border-radius:3px}
+.level-blocks i.on{background:linear-gradient(180deg,#6ef3a8,var(--grass));box-shadow:0 0 8px #3ddc8488}
+.heart.full{filter:drop-shadow(0 0 4px #ff4d4d88)}
+.combo.show{color:var(--gold);text-shadow:0 2px 0 #0006;animation:badge-bob .9s ease-in-out infinite}
+.special-tag{border:2px solid var(--gold)}
+.special-tag strong{letter-spacing:.04em}
+.special-tag.golden{background:linear-gradient(180deg,#ffe48a,#f5b82a);border-color:#fff3c0;color:#3a2600}
+.special-tag.golden strong,.special-tag.golden span{color:#3a2600}
+.special-tag.moving{border-color:#54e0ff}.special-tag.moving strong{color:#8feaff}
+.special-tag.freekick{border-color:#fff}.special-tag.freekick strong{color:#fff}
+.special-tag.boss{background:linear-gradient(180deg,#5b32c4,#2e1a6b);border-color:#b794ff}.special-tag.boss strong{color:#e6d9ff}
+.special-tag.bonus{border-color:var(--grass)}.special-tag.bonus strong{color:#8ff5b9}
+.special-tag.keeper{border-color:var(--red)}.special-tag.keeper strong{color:#ffb0b0}
+
+/* ---- Notices: the shot verdict pops, level-ups are a ribbon, missions a star -- */
+.verdict,.banner,.toast{border:1px solid #ffffff22;box-shadow:0 8px 24px #0006}
+.verdict{background:linear-gradient(180deg,#0f2436f0,#081521f0)}
+.verdict.show{animation:pop .35s cubic-bezier(.2,1.6,.4,1) both}
+@keyframes pop{from{transform:scale(.6);opacity:0}}
+.verdict strong{color:#fff;font-size:clamp(28px,4.4vw,44px)}
+.verdict.target strong{color:var(--gold);text-shadow:0 3px 0 var(--gold-deep),0 5px 0 #0006}
+.verdict.bullseye{border-color:var(--gold);box-shadow:0 0 28px #ffd24a55,0 8px 24px #0006}
+.verdict.bullseye strong{color:var(--gold);text-shadow:0 3px 0 var(--gold-deep),0 5px 0 #0006,0 0 24px #ffd24a88}
+.verdict.miss strong{color:var(--red);text-shadow:0 3px 0 #8b1d2e,0 5px 0 #0006}
+.verdict.miss.show{animation:shake .35s ease-out both}
+@keyframes shake{20%{transform:translateX(-8px)}40%{transform:translateX(7px)}60%{transform:translateX(-4px)}80%{transform:translateX(2px)}}
+.verdict b{text-shadow:0 2px 0 #0006}
+.banner{background:linear-gradient(180deg,#3ddc84,#1f9d57);border-color:#8ff5b9;color:#062414}
+.banner strong{color:#fff;text-shadow:0 3px 0 #146b3b,0 5px 0 #0004}
+.banner span{color:#063b1f;font-weight:700}
+.banner.show{animation:pop .4s cubic-bezier(.2,1.6,.4,1) both}
+.toast{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M5 .5l1.3 2.9 3.2.3-2.4 2.1.7 3.1L5 7.3 2.2 8.9l.7-3.1L.5 3.7l3.2-.3z' fill='%23ffd24a'/%3E%3C/svg%3E") 14px center/22px no-repeat,
+  linear-gradient(180deg,#17344cf2,#0c1d2bf2);border:2px solid var(--gold);padding-left:46px}
+.toast.show{animation:pop .35s cubic-bezier(.2,1.6,.4,1) both}
+.phase-prompt.tutorial.show{border:2px solid var(--gold);box-shadow:0 0 24px #ffd24a33,0 8px 24px #0006}
+.tutorial-step{display:inline-block;justify-self:center;padding:2px 10px;border-radius:99px;background:var(--gold);color:#3a2600}
+
+/* ---- Progress bars fill in; missions tick off ----------------------------------- */
+.bar{position:relative;height:8px;background:#ffffff1a;box-shadow:inset 0 1px 2px #0006}
+.bar::after{content:'';position:absolute;inset:0 auto 0 0;width:var(--fill,0%);border-radius:inherit;
+  background:linear-gradient(90deg,#2cc873,#8ff5b9);box-shadow:0 0 8px #3ddc8466;animation:fill-in .9s ease-out both}
+@keyframes fill-in{from{width:0}}
+.bar,.game-progress .bar{background-image:none}
+.game-progress .bar::after{background:linear-gradient(90deg,#2f9bff,#8feaff);box-shadow:0 0 8px #54e0ff66}
+.missions li.done .tick{background:linear-gradient(180deg,#6ef3a8,var(--grass));box-shadow:0 0 8px #3ddc8488}
+.r-unlocked{background:linear-gradient(180deg,#ffe48a,var(--gold));box-shadow:0 3px 0 var(--gold-deep);animation:glow-pulse 1.6s ease-in-out infinite}
+
+/* ---- Locker and striker cards ------------------------------------------------------ */
+.locker-item,.striker-card{background:linear-gradient(180deg,#ffffff12,#ffffff05);border:1px solid #ffffff1f;
+  box-shadow:0 4px 0 #0a1622,inset 0 1px 0 #ffffff14;transition:transform .1s,box-shadow .1s}
+.locker-item:hover:not(:disabled),.striker-card:hover:not(:disabled){background:linear-gradient(180deg,#ffffff1c,#ffffff0a);transform:translateY(-2px)}
+.locker-item.equipped,.striker-card.selected{border:2px solid var(--grass);background:linear-gradient(180deg,#1f5a3f,#123827);
+  box-shadow:0 4px 0 #0a1622,0 0 18px #3ddc8455}
+.swatch{border-radius:8px;box-shadow:inset -10px 0 0 var(--accent,transparent),0 3px 0 #0006}
+.locker-item.ball .swatch{border-radius:50%}
+.striker-card .sprite{filter:drop-shadow(0 4px 0 #0005)}
+.locker-item.locked,.striker-card.locked{opacity:.8}
+
+/* ---- Loading screen ------------------------------------------------------------------- */
+#preloader{background:linear-gradient(180deg,#8fcaff 0 55%,var(--grass) 55% calc(55% + 14px),var(--grass-deep) 0 calc(55% + 20px),#6b4a2b 0)}
+.preloader-brand{color:var(--gold);text-shadow:0 4px 0 var(--gold-deep),0 8px 0 #0004}
+.preloader-brand span{color:#fff;text-shadow:0 4px 0 var(--grass-deep),0 8px 0 #0004}
+.preloader-track{background:#0006;box-shadow:inset 0 2px 4px #0008}
+#preloader p{color:#fff;font-weight:700;text-shadow:0 2px 0 #0006}
+
+/* Room for the play icon on either side, so the label stays centred. */
+.block-button.primary{padding-left:40px;padding-right:40px}
+
+/* Wide results: result and progress on the left; actions, then missions, on the
+   right, so neither column runs long while the other sits half empty. */
+@media(min-width:600px){
+  .results-panel{grid-template-areas:"hero actions" "progress tasks"}
+  .r-actions{position:static}
+}
+@media(prefers-reduced-motion:reduce){.bar::after{animation:none}}
+/* Pull coach: a small looping demo of the gesture, a dot, a band and a finger pulling down. */
+.coach-demo{position:relative;justify-self:center;width:60px;height:74px;margin-bottom:2px}
+.coach-anchor{position:absolute;left:25px;top:4px;width:10px;height:10px;border-radius:50%;background:#fff}
+.coach-band{position:absolute;left:27px;top:9px;width:6px;height:0;border-radius:3px;background:var(--grass);animation:coach-band 1.8s ease-in-out infinite}
+.coach-hand{position:absolute;left:14px;top:0;font-size:30px;font-style:normal;line-height:1;animation:coach-hand 1.8s ease-in-out infinite}
+@keyframes coach-hand{0%,15%{transform:translateY(0)}55%,75%{transform:translateY(40px)}100%{transform:translateY(0)}}
+@keyframes coach-band{0%,15%{height:0}55%,75%{height:40px}100%{height:0}}
+/* The run's unlock: a gold card under the score with a preview and a use button. */
+.unlock-card{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:14px;width:100%;margin-top:6px;padding:12px 14px;
+  border-radius:14px;border:2px solid var(--gold);background:linear-gradient(180deg,#3a2f0cee,#1c1606ee);text-align:left;
+  box-shadow:0 0 26px #ffd24a55,0 8px 20px #0006;animation:unlock-in .6s cubic-bezier(.2,1.6,.4,1) both,glow-pulse 1.8s ease-in-out .6s infinite}
+@keyframes unlock-in{from{transform:scale(.5) rotate(-4deg);opacity:0}}
+.unlock-preview{display:grid;place-items:center;width:64px;height:64px;border-radius:12px;background:#0008}
+.unlock-preview .swatch{width:44px;height:44px}
+.unlock-card.ball .unlock-preview .swatch{border-radius:50%}
+.unlock-preview .sprite{width:30px;height:60px;image-rendering:pixelated}
+.unlock-text{display:grid;gap:2px;min-width:0}
+.unlock-kind{font-size:12px;font-weight:800;letter-spacing:.08em;color:var(--gold)}
+.unlock-name{font-size:20px;font-weight:800;color:#fff;text-shadow:0 2px 0 #0006;overflow-wrap:anywhere}
+.unlock-style{font-size:12px;color:var(--muted)}
+.unlock-inuse{font-size:13px;font-weight:800;color:var(--grass)}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+/* The pull shot's band: an anchor where the finger went down, a band, a knob at the finger. */
+.swipe .pull-band,.swipe .pull-anchor,.swipe .pull-knob{display:none}
+.swipe.pulling .pull-band,.swipe.pulling .pull-anchor,.swipe.pulling .pull-knob{display:inline}
+.pull-band{stroke:var(--pull,#6ef3a8);stroke-width:10px;stroke-linecap:round;opacity:.9;filter:drop-shadow(0 3px 0 #0007)}
+.pull-anchor{fill:#fff;stroke:#0008;stroke-width:3px}
+.pull-knob{fill:var(--pull,#6ef3a8);stroke:#fff;stroke-width:4px;filter:drop-shadow(0 4px 0 #0007)}

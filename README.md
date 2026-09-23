@@ -47,17 +47,30 @@ look a team-mate or opponent already has swaps theirs, so nobody is on the
 pitch twice.
 Every run opens with the camera further behind the striker, easing into the
 aim view over 1.5 s. How a shot is taken depends on the shot mode
-(`?shot=flick|aim|timing|drag`; on localhost Alt+9 cycles them; releases default to
-the two-tap timing shot, `DEFAULT_SHOT_MODE` in `js/app.js`):
+(`?shot=flick|aim|timing|drag|sling`; on localhost Alt+9 cycles them; releases default to
+the press-and-hold free-aim shot, `DEFAULT_SHOT_MODE` in `js/app.js`):
 
 | Mode | Shot |
 |---|---|
+| Pull (default) | Touch or click anywhere and pull back like a slingshot; let go to shoot. Pulling down-left shoots right, down-right shoots left; a longer pull shoots higher and harder. A dotted arc shows the start of the flight (all of it for a session's first two shots, then 75% at level 1 shrinking to 30%). The band's colour is the shot: blue too weak (the keeper can save it even on target, and dives further), green and gold good (gold is the top corner), red over the bar. With the level, blue and red grow and green narrows (`PULL.WEAK`/`WEAK_LATE`, `TOP_LATE`, `ZONE_RAMP`). Hold still and the band bounces: release on the white flash for a SNAP (12% more pace, "PERFECT SNAP!"). Held too long, the aim trembles sideways and up and down. Keyboard: hold Space, steer with the arrows. |
 | Flick | Swipe up from anywhere. The swipe's direction sets where the ball crosses the line (5.5 m across per unit of sideways-over-up slope), its length the height (up to 2.9 m), its speed the pace (25-40 m/s). A swipe that bows to one side curls the ball back the other way, up to 14 m/s^2 sideways; the launch is corrected so a curler still finishes where it was aimed, but the keeper and a wall read it as a straight shot. No aim preview. |
 | Free aim | Press a point on the goal and hold (click, touch, Space) to charge pace. The pressed point is fixed, but the crosshair randomly spirals left or right and increasingly far from it as charge builds: a quick release is accurate and an overcharged shot will almost certainly miss. Release to shoot at the visible crosshair. |
 | Timing | The original: the first press locks the sweeping aim arrow, the second sets the height from the pulsing meter. The meter is the height on the goal line (5 cm at the bottom to 3.3 m at the top, at any distance), so a late press misses high. |
 | Classic drag | Hold to fill the power bar, drag horizontally and vertically to aim the crosshair, then release to shoot. Arrow keys aim while Space is held as a keyboard alternative. |
+| Slingshot | The camera pulls back to leave turf below the ball. Move the pointer into that area to show a complete guide from the pointer through the ball and toward the goal; on desktop it previews before clicking. Hold to raise the forward arrow, then release to shoot. Touch shows the guide during the press. |
 
-A press during the replay skips it. Esc or P (or the II button)
+A press during the replay skips it.
+
+**Pull tutorial.** A separate phase before Level 1, played once per player
+(finishing it saves `tutorialDone` with the progress; `?tutorial=1` replays it).
+The HUD reads TUTORIAL, SHOT n/3. Three coached shots (an animated finger, then
+"Pull back", "Further!", "Let go to shoot!", "Too far!" as the pull changes)
+that are nearly unmissable: any pull is strong, none goes over the bar, the aim
+stays inside the posts, no tremble, and the keeper cannot reach an on-frame
+shot. They score points but never cost a heart or count toward a level. Then
+"TUTORIAL COMPLETE", and Level 1: no target and a rookie keeper. Targets arrive
+at Level 2 with their own banner and card; golden shots move to Level 3.
+`npm run check:pull` covers all of it. Esc or P (or the II button)
 pauses; the SOUND button in the corner switches all sound on or off.
 
 The first shot of each level-1 arcade run in timing mode is a guided tutorial:
