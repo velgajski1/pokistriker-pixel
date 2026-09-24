@@ -55,7 +55,7 @@ try {
       const panel = page.locator('.panel');
       await panel.evaluate(el => { el.scrollTop = 0; });
       if (key === 3 && width >= 600) {
-        const primary = await panel.locator('.primary').boundingBox();
+        const primary = await panel.locator('.primary:visible').first().boundingBox();
         const bounds = await panel.boundingBox();
         assert(primary.y >= bounds.y && primary.y + primary.height <= bounds.y + bounds.height,
           'Play Again visible without scrolling in desktop frames');

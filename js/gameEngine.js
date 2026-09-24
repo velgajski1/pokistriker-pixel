@@ -555,7 +555,9 @@ const BODY_BOUNDS_PAD = 1.6;   // metres: arms, dives and celebrations beyond th
  */
 function buildBlockMesh(rig) {
   const { parts, skeleton } = rig.blocks;
-  const shown = parts.filter(part => blockPartVisible(part.name, rig.look));
+  // A hat covers the hair's volume and bun.
+  const shown = parts.filter(part => blockPartVisible(part.name, rig.look)
+    && !(rig.gearHat && (part.name === 'hat' || part.name === 'bun')));
   const key = shown.map(part => part.name).join();
   if (key === rig.blocks.shown) return;
   rig.blocks.shown = key;
@@ -691,6 +693,67 @@ export function strikerSprite(id, kit, boots) {
   paintSkin(skin, { look: LOOKS[STRIKER_LOOKS[id]], kit: { ...kit, boots }, number: 9,
     pattern: kit.pattern || null, accent: kit.accent ?? kit.kit });
   return frontSprite(skin);
+}
+
+/**
+ * Block gear on the striker's head, in skin pixels about the head's centre
+ * (+y up, +z the face): [w, h, d, x, y, z, colour] boxes.
+ */
+const GEAR = {
+  hat: {
+    cap: [[8.6, 2.2, 8.6, 0, 4, 0, 0xd8322e], [8, .5, 4.4, 0, 3.05, 5.9, 0xb3221f], [1.2, .6, 1.2, 0, 5.3, 0, 0xffffff]],
+    beanie: [[8.8, 3, 8.8, 0, 4.1, 0, 0x2f6bff], [9.1, 1.3, 9.1, 0, 2.7, 0, 0xf2f2f2], [2.2, 2.2, 2.2, 0, 6.6, 0, 0xffffff]],
+    phones: [[9.4, .9, 1.6, 0, 4.5, 0, 0x2b3038], [1.2, 1.6, 1.4, -4.5, 3.4, 0, 0x2b3038], [1.2, 1.6, 1.4, 4.5, 3.4, 0, 0x2b3038],
+      [1.6, 3.4, 3.4, -4.8, -.4, 0, 0x1a1a1f], [1.6, 3.4, 3.4, 4.8, -.4, 0, 0x1a1a1f],
+      [.4, 2, 2, -5.7, -.4, 0, 0xff3b3b], [.4, 2, 2, 5.7, -.4, 0, 0xff3b3b]],
+    tophat: [[11, .5, 11, 0, 4.25, 0, 0x15171c], [7, 6.4, 7, 0, 7.7, 0, 0x15171c], [7.2, 1.1, 7.2, 0, 5.1, 0, 0xd02b3a]],
+    viking: [[9, 3.2, 9, 0, 4, 0, 0x9aa3ad], [9.2, .8, 9.2, 0, 2.7, 0, 0x6b7480], [1.8, 1.8, 1.8, -5.2, 3.6, 0, 0xf2eee3],
+      [1.3, 2.6, 1.3, -5.9, 5.4, 0, 0xf2eee3], [1.8, 1.8, 1.8, 5.2, 3.6, 0, 0xf2eee3], [1.3, 2.6, 1.3, 5.9, 5.4, 0, 0xf2eee3]],
+    crown: [[8.8, 1.8, 8.8, 0, 4.8, 0, 0xffcf3a], [1.6, 2.4, 1.6, -3.6, 6.7, 3.6, 0xffcf3a], [1.6, 2.4, 1.6, 3.6, 6.7, 3.6, 0xffcf3a],
+      [1.6, 2.4, 1.6, -3.6, 6.7, -3.6, 0xffcf3a], [1.6, 2.4, 1.6, 3.6, 6.7, -3.6, 0xffcf3a],
+      [1.2, 1.2, .5, 0, 4.8, 4.55, 0xd02b3a], [1.2, 1.2, .5, -2.8, 4.8, 4.55, 0x2f6bff], [1.2, 1.2, .5, 2.8, 4.8, 4.55, 0x3ddc84]],
+  },
+  glasses: {
+    shades: [[8.6, .6, .6, 0, 1.55, 4.35, 0x15171c], [3.4, 1.9, .5, -2, 0.4, 4.3, 0x1f2430], [3.4, 1.9, .5, 2, 0.4, 4.3, 0x1f2430],
+      [.5, .5, 4.4, -4.35, 1.55, 2.2, 0x15171c], [.5, .5, 4.4, 4.35, 1.55, 2.2, 0x15171c]],
+    star: [[3.8, 2.6, .5, -2.1, 0.7, 4.3, 0xff5fae], [3.8, 2.6, .5, 2.1, 0.7, 4.3, 0xff5fae], [1, .5, .5, 0, 1.0, 4.35, 0xffffff],
+      [1.2, 1.2, .6, -2.1, 2.7, 4.35, 0xffd24a], [1.2, 1.2, .6, 2.1, 2.7, 4.35, 0xffd24a]],
+    threed: [[8.6, .6, .6, 0, 1.55, 4.35, 0xf2f2f2], [3.2, 1.8, .5, -2, 0.5, 4.3, 0xff3b3b], [3.2, 1.8, .5, 2, 0.5, 4.3, 0x3bd4ff],
+      [.5, .5, 4.4, -4.35, 1.55, 2.2, 0xf2f2f2], [.5, .5, 4.4, 4.35, 1.55, 2.2, 0xf2f2f2]],
+    gold: [[8.6, .6, .6, 0, 1.55, 4.35, 0xffcf3a], [3.4, 1.9, .5, -2, 0.4, 4.3, 0x3a2a08], [3.4, 1.9, .5, 2, 0.4, 4.3, 0x3a2a08],
+      [.5, .5, 4.4, -4.35, 1.55, 2.2, 0xffcf3a], [.5, .5, 4.4, 4.35, 1.55, 2.2, 0xffcf3a]],
+  },
+};
+let gearGroup = null;
+const gearMaterials = new Map();
+const gearMaterial = colour => {
+  if (!gearMaterials.has(colour)) gearMaterials.set(colour, LOW_QUALITY
+    ? new THREE.MeshLambertMaterial({ color: colour }) : new THREE.MeshStandardMaterial({ color: colour, roughness: .6 }));
+  return gearMaterials.get(colour);
+};
+
+/** The striker's hat and glasses (keys of GEAR; 'none' for nothing). A hat hides the hair's volume blocks. */
+export function setStrikerGear(hat, glasses) {
+  const rig = squad.striker;
+  if (!rig?.blocks) return;
+  const head = rig.blocks.parts.find(part => part.name === 'head');
+  if (!gearGroup) {
+    gearGroup = new THREE.Group();
+    gearGroup.name = 'striker-gear';
+    gearGroup.matrixAutoUpdate = false;
+    gearGroup.matrix.copy(head.local);
+    rig.blocks.owner.getObjectByName(head.bone).add(gearGroup);
+  }
+  for (const child of [...gearGroup.children]) { child.geometry.dispose(); gearGroup.remove(child); }
+  const P = BLOCK_PX;
+  for (const [w, h, d, x, y, z, colour] of [...(GEAR.hat[hat] || []), ...(GEAR.glasses[glasses] || [])]) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w * P, h * P, d * P).translate(x * P, y * P, z * P), gearMaterial(colour));
+    mesh.castShadow = !LOW_QUALITY;
+    gearGroup.add(mesh);
+  }
+  rig.gearHat = !!GEAR.hat[hat];
+  buildBlockMesh(rig);
+  renderPending = true;
 }
 
 /** Tints the ball's white panels (the black patches stay dark). */
@@ -1793,6 +1856,31 @@ const blockerSets = [];
 const _keeperCaps = [];
 const _blockerCaps = [];
 
+/**
+ * A free-kick wall slides `offset` metres across the ball's line (positive:
+ * toward +x, roughly), so it covers one side of the goal.
+ */
+export function shiftWall(offset) {
+  for (let i = 0; i < chance.blockerCount; i++) {
+    const root = blockerSets[i].rig.root;
+    root.position.x += chance.perpX * offset;
+    root.position.z += chance.perpZ * offset;
+    chance.blockers[i].baseX = root.position.x;
+    chance.blockers[i].z = root.position.z;
+    const actor = ambient.actors.find(p => p.rig === blockerSets[i].rig);
+    if (actor) { actor.x = root.position.x; actor.z = root.position.z; }
+  }
+}
+
+/** Which defender a capsule from getBlockerCapsules() belongs to. */
+export function blockerOfCapsule(index) {
+  for (let i = 0, n = 0; i < chance.blockerCount; i++) {
+    n += blockerSets[i].caps.length;
+    if (index < n) return i;
+  }
+  return -1;
+}
+
 /** Keeper's world-space collision capsules, refreshed from his live pose. */
 export function getKeeperCapsules() {
   _keeperCaps.length = refreshCapsules(keeperSet, _keeperCaps, 0);
@@ -2684,6 +2772,9 @@ function glowTexture() {
   return new THREE.CanvasTexture(canvas);
 }
 const HEART_PIXELS = ['.XX.XX.', 'XXXXXXX', 'XXXXXXX', '.XXXXX.', '..XXX..', '...X...'];
+/** The rush's bonus pickup: a pixel stopwatch (B button, R rim, F face, H hands). */
+const CLOCK_PIXELS = ['..BBB..', '...B...', '.RRRRR.', 'RFFHFFR', 'RFFHFFR', 'RFFHHFR', 'RFFFFFR', '.RRRRR.'];
+const CLOCK_COLOURS = { B: 0xffd24a, R: 0xffd24a, F: 0xffffff, H: 0x1a1a1f };
 const TARGET_BAR = .09;
 const targetBar = new THREE.Object3D();
 
@@ -2743,23 +2834,36 @@ function buildTarget() {
   // Extra life: a pixel heart built from cubes, floating in the bullseye.
   const cube = .085;
   const heart = new THREE.InstancedMesh(new THREE.BoxGeometry(cube, cube, cube),
-    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), 30);
-  const place = new THREE.Object3D(), tint = new THREE.Color();
-  let n = 0;
-  HEART_PIXELS.forEach((row, y) => [...row].forEach((cell, x) => {
-    if (cell !== 'X') return;
-    place.position.set((x - 3) * cube, (2.5 - y) * cube, .12);
-    place.updateMatrix();
-    heart.setMatrixAt(n, place.matrix);
-    heart.setColorAt(n++, tint.setHex(y === 1 && (x === 1 || x === 2) ? 0xffc2b8 : 0xe8322b));
-  }));
-  heart.count = n;
+    new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), 64);
   heart.name = 'target-extra-life';
+  target.heart = heart;
+  setPickupLook('heart');
   heart.visible = false;
   group.add(heart);
   target.heart = heart;
   scene.add(group);
   target.group = group;
+}
+
+/** The pickup floating in some targets: an extra-life heart, or (in the rush) a +5 s stopwatch. */
+let pickupLook = '';
+export function setPickupLook(look) {
+  if (look === pickupLook) return;
+  pickupLook = look;
+  const mesh = target.heart, cube = .085, place = new THREE.Object3D(), tint = new THREE.Color();
+  const pixels = look === 'clock' ? CLOCK_PIXELS : HEART_PIXELS;
+  let n = 0;
+  pixels.forEach((row, y) => [...row].forEach((cell, x) => {
+    if (cell === '.') return;
+    place.position.set((x - 3) * cube, ((pixels.length - 1) / 2 - y) * cube, .12);
+    place.updateMatrix();
+    mesh.setMatrixAt(n, place.matrix);
+    mesh.setColorAt(n++, tint.setHex(look === 'clock' ? CLOCK_COLOURS[cell]
+      : y === 1 && (x === 1 || x === 2) ? 0xffc2b8 : 0xe8322b));
+  }));
+  mesh.count = n;
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
 }
 
 /** Places the target: centre (x, y) on the goal plane, ring and bullseye
@@ -2945,6 +3049,138 @@ function updateTarget(dt) {
     target.heart.position.set(0, Math.round(Math.sin(target.time * 3) * 2) * .02, 0);
     target.heart.rotation.y = Math.sin(target.time * 2) * .5;
   }
+}
+
+// ---------------------------------------------------------------------------
+// On fire: block flames lick up the striker while a fire round lasts, and the
+// ball trails fire in flight. One pool of additive cubes, instanced; nothing
+// is allocated per frame.
+// ---------------------------------------------------------------------------
+const FIRE_CUBES = 110;
+const FIRE_RATE = { striker: 80, ball: 140 };   // flames per second
+const FIRE_COLOURS = [0xfff6b0, 0xffd23f, 0xff9a1a, 0xff5a1a, 0xd8261a, 0x5a1a14];
+const fire = { mesh: null, striker: false, ball: false, spawn: 0, trail: 0, next: 0, live: 0,
+  life: new Float32Array(FIRE_CUBES), age: new Float32Array(FIRE_CUBES), size: new Float32Array(FIRE_CUBES),
+  position: new Float32Array(FIRE_CUBES * 3), velocity: new Float32Array(FIRE_CUBES * 3), colour: new Uint8Array(FIRE_CUBES) };
+const _flame = new THREE.Object3D(), _flameColour = new THREE.Color(), _firePoint = new THREE.Vector3();
+
+function buildFire() {
+  fire.mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial({ color: 0xffffff,
+    transparent: true, opacity: .92, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }), FIRE_CUBES);
+  fire.mesh.name = 'fire';
+  fire.mesh.frustumCulled = false;
+  fire.mesh.visible = false;
+  _flame.scale.setScalar(0);
+  _flame.updateMatrix();
+  for (let i = 0; i < FIRE_CUBES; i++) {
+    fire.mesh.setMatrixAt(i, _flame.matrix);
+    fire.mesh.setColorAt(i, _flameColour.setHex(FIRE_COLOURS[0]));
+  }
+  scene.add(fire.mesh);
+}
+
+/** The striker burns (a fire round is on). */
+export function setOnFire(on) {
+  fire.striker = on;
+  if (on) fire.mesh.visible = true;
+}
+/** The ball trails flames (a fire shot in flight). */
+export function setFireBall(on) {
+  fire.ball = on;
+  if (on) fire.mesh.visible = true;
+}
+export const fireState = () => ({ striker: fire.striker, ball: fire.ball, live: fire.live });
+
+function emitFlame(x, y, z, spread, rise, size, life) {
+  const i = fire.next;
+  fire.next = (fire.next + 1) % FIRE_CUBES;
+  fire.position[i * 3] = x + (Math.random() * 2 - 1) * spread;
+  fire.position[i * 3 + 1] = y + (Math.random() * 2 - 1) * spread * .6;
+  fire.position[i * 3 + 2] = z + (Math.random() * 2 - 1) * spread;
+  fire.velocity[i * 3] = (Math.random() * 2 - 1) * .35;
+  fire.velocity[i * 3 + 1] = rise * (.6 + Math.random() * .6);
+  fire.velocity[i * 3 + 2] = (Math.random() * 2 - 1) * .35;
+  fire.size[i] = size * (.7 + Math.random() * .6);
+  fire.life[i] = life * (.7 + Math.random() * .6);
+  fire.age[i] = 0;
+  fire.colour[i] = 255;
+}
+
+function updateFire(dt) {
+  if (!fire.mesh?.visible) return;
+  if (fire.striker && squad.striker) {
+    fire.spawn += FIRE_RATE.striker * dt;
+    squad.striker.root.getWorldPosition(_firePoint);
+    while (fire.spawn >= 1) {
+      fire.spawn--;
+      emitFlame(_firePoint.x, .1 + Math.random() * 1.6, _firePoint.z, .32, 1.8, .22, .6);
+    }
+  }
+  if (fire.ball && objects.ball) {
+    fire.trail += FIRE_RATE.ball * dt;
+    const b = objects.ball.position;
+    while (fire.trail >= 1) {
+      fire.trail--;
+      emitFlame(b.x, b.y, b.z, .12, .9, .2, .38);
+    }
+  }
+  fire.live = 0;
+  for (let i = 0; i < FIRE_CUBES; i++) {
+    if (fire.life[i] <= 0) continue;
+    fire.age[i] += dt;
+    const t = fire.age[i] / fire.life[i];
+    if (t >= 1) {
+      fire.life[i] = 0;
+      _flame.scale.setScalar(0);
+      _flame.updateMatrix();
+      fire.mesh.setMatrixAt(i, _flame.matrix);
+      continue;
+    }
+    fire.live++;
+    fire.velocity[i * 3 + 1] += 1.8 * dt;   // flames climb faster as they go
+    for (let k = 0; k < 3; k++) fire.position[i * 3 + k] += fire.velocity[i * 3 + k] * dt;
+    _flame.position.set(fire.position[i * 3], fire.position[i * 3 + 1], fire.position[i * 3 + 2]);
+    _flame.rotation.set(0, fire.age[i] * 3 + i, 0);
+    _flame.scale.setScalar(fire.size[i] * (1 - t * t));
+    _flame.updateMatrix();
+    fire.mesh.setMatrixAt(i, _flame.matrix);
+    // White-hot to yellow, orange, red, then smoke-dark as it dies.
+    const shade = Math.min(FIRE_COLOURS.length - 1, Math.floor(t * FIRE_COLOURS.length));
+    if (shade !== fire.colour[i]) {
+      fire.colour[i] = shade;
+      fire.mesh.setColorAt(i, _flameColour.setHex(FIRE_COLOURS[shade]));
+    }
+  }
+  fire.mesh.instanceMatrix.needsUpdate = true;
+  fire.mesh.instanceColor.needsUpdate = true;
+  if (!fire.live && !fire.striker && !fire.ball) fire.mesh.visible = false;
+}
+
+// ---------------------------------------------------------------------------
+// Bowled over: a fire shot knocks the keeper or a defender flying. app.js
+// moves them; this rolls the whole body about the line of play (`fall`
+// radians toward `dir`, world x), applied just before the frame is drawn.
+// ---------------------------------------------------------------------------
+const knocks = { keeper: { fall: 0, dir: 1 }, blockers: [0, 1, 2, 3].map(() => ({ fall: 0, dir: 1 })) };
+export function setKnock(role, i, fall, dir) {
+  const k = role === 'keeper' ? knocks.keeper : knocks.blockers[i];
+  if (!k) return;
+  k.fall = fall;
+  k.dir = dir;
+}
+export function clearKnocks() {
+  knocks.keeper.fall = 0;
+  if (squad.keeper) squad.keeper.root.rotation.z = 0;
+  knocks.blockers.forEach((k, i) => { k.fall = 0; if (blockerSets[i]) blockerSets[i].rig.root.rotation.z = 0; });
+}
+function rollKnocked(root, k) {
+  // The roll is about the body's own forward axis: flip it for a player facing up the pitch.
+  const facing = Math.cos(root.rotation.y) >= 0 ? 1 : -1;
+  root.rotation.z = -k.dir * facing * k.fall;
+}
+function applyKnocks() {
+  if (knocks.keeper.fall && squad.keeper) rollKnocked(squad.keeper.root, knocks.keeper);
+  knocks.blockers.forEach((k, i) => { if (k.fall && blockerSets[i]) rollKnocked(blockerSets[i].rig.root, k); });
 }
 
 /** Flat block clouds drifting high over the stadium, like a Minecraft sky. */
@@ -4523,6 +4759,7 @@ export function init(canvas) {
   buildCrosshair();
   buildTrajectory();
   buildClouds();
+  buildFire();
 
   keeperSet = makeCapsuleSet(squad.keeper);
   for (let i = 0; i < 2; i++) blockerSets.push(makeCapsuleSet(squad.foes[i], false));
@@ -4779,6 +5016,8 @@ function tick() {
   updateSidelineStaff(dt);
   captureLaunch();
   updateTarget(dt);
+  updateFire(dt);
+  applyKnocks();
   updateClouds(dt);
 
   _camWant.copy(_camHome);

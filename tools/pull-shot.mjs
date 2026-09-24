@@ -1,6 +1,6 @@
-// The pull (slingshot) shot, driven with the real mouse and keyboard: where
+// The pull (slingshot) shot, driven with the real mouse: where
 // each pull sends the ball on the goal line, the dotted preview, a too-short
-// pull, and the Space-hold keyboard shot. Screenshots mid-pull.
+// pull, and that the keyboard does not shoot. Screenshots mid-pull.
 // Usage: node tools/pull-shot.mjs   (server running)
 import { chromium } from 'playwright';
 import { mkdirSync } from 'node:fs';
@@ -42,7 +42,7 @@ async function pullBy(x, y, dx, dy, { hold = 120, screenshot = null } = {}) {
 }
 
 try {
-  await page.goto(`${BASE}?shot=pull`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}?shot=pull&rush=0`, { waitUntil: 'networkidle' });
   await page.waitForFunction(() => window.__demo?.ready);
   await page.evaluate(() => { __demo.state.run.hearts = 5; });
   await page.waitForTimeout(1700);
@@ -52,9 +52,9 @@ try {
   check('The HUD says TUTORIAL, not a level', await page.evaluate(() => document.getElementById('hud-level').textContent === 'TUTORIAL'));
   await page.screenshot({ path: '.captures/pull-coach.png' });
 
-  // A session's first three (coached) shots: even sloppy pulls score.
+  // A session's first two (coached) shots: even sloppy pulls score.
   const warmups = [];
-  for (const [dx, dy] of [[0, 60], [180, 120], [-40, 320]]) {
+  for (const [dx, dy] of [[0, 60], [180, 120]]) {
     await pullBy(640, 300, dx, dy);
     await page.waitForFunction(() => __demo.shot.resolved !== null, null, { timeout: 8000 });
     warmups.push(await page.evaluate(() => __demo.shot.resolved + (__demo.state.run.level === 1 ? '' : '@L' + __demo.state.run.level)));
@@ -62,7 +62,7 @@ try {
     await page.waitForFunction(() => __demo.state.phase === 'AIM', null, { timeout: 8000 });
     await page.evaluate(() => { __demo.state.run.hearts = 5; });
   }
-  check('The first three shots are easy: sloppy pulls still score', warmups.every(o => o === 'goal'), warmups.join(','));
+  check('The first two shots are easy: sloppy pulls still score', warmups.every(o => o === 'goal'), warmups.join(','));
   const after = await page.evaluate(() => ({ level: __demo.state.run.level, tutorial: __demo.state.run.tutorial,
     hud: document.getElementById('hud-level').textContent, banner: document.getElementById('banner').textContent,
     target: __demo.scene.getObjectByName('arcade-target').visible, saved: __demo.progress().tutorialDone }));
@@ -120,8 +120,7 @@ try {
   await page.keyboard.down('Space');
   await page.waitForTimeout(450);
   await page.keyboard.up('Space');
-  const keyed = await launched();
-  check('Holding Space pulls and letting go shoots', Math.abs(keyed.x) < .6 && keyed.y > .1, JSON.stringify(keyed));
+  check('The keyboard does not shoot (touch and mouse only)', await page.evaluate(() => __demo.state.phase === 'AIM'));
 } catch (error) {
   checks.push({ label: String(error).split('\n')[0], ok: false });
 }

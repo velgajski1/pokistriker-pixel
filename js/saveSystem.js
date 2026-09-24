@@ -9,7 +9,9 @@
 // Every key carries the Poki saved-game prefix. Saves written before the
 // prefix (plain 'blockstriker.*') are still read, then rewritten under it.
 const PREFIX = 'pokisavedgame.';
-const BEST_KEY = PREFIX + 'blockstriker.best.v1';
+// The timed rush keeps its own best (rush scores are not comparable with the old arcade's).
+const BEST_KEY = PREFIX + (new URLSearchParams(location.search).get('rush') === '0'
+  ? 'blockstriker.best.v1' : 'blockstriker.rushbest.v1');
 const AUDIO_KEY = PREFIX + 'blockstriker.audio.v1';
 const PROGRESS_KEY = PREFIX + 'blockstriker.progress.v1';
 

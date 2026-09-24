@@ -34,14 +34,21 @@ function heartSvg(full) {
   return svg;
 }
 
-function button(label, onClick, kind = '') {
+/** A button; `icon` (an emoji or glyph) goes before the label, hidden from screen readers. */
+function button(label, onClick, kind = '', icon = '') {
   const b = document.createElement('button');
   b.type = 'button';
   b.className = `block-button ${kind}`.trim();
-  b.textContent = label;
+  if (icon) {
+    const glyph = node('span', 'b-icon', icon);
+    glyph.setAttribute('aria-hidden', 'true');
+    b.append(glyph, node('span', 'b-label', label));
+  } else b.textContent = label;
   b.onclick = onClick;
   return b;
 }
+const ICON = { play: '\u25B6', back: '\u21A9', restart: '\u21BB', locker: '\u{1F392}', daily: '\u{1F4C5}',
+  striker: '\u{1F464}', missions: '\u{1F4CB}', flag: '\u{1F6A9}', video: '\u{1F3AC}' };
 
 function node(tag, className, text = '') {
   const n = document.createElement(tag);
@@ -61,6 +68,10 @@ export function init() {
   el.levelBlocks = $('hud-level-blocks');
   el.rank = $('hud-rank');
   el.progress = $('hud-progress');
+  // The rush clock, where the hearts are in the lives-based arcade.
+  el.clock = node('div', 'hud-clock hidden');
+  el.clockText = node('b', '', '45');
+  el.clock.append(node('i', 'clock-icon', '\u23F1'), el.clockText);
   el.special = $('hud-special');
   el.toast = $('toast');
   el.swipe = $('swipe');
@@ -85,13 +96,19 @@ export function init() {
   // Flow layout keeps changing scores, specials and controls in separate regions.
   const top = node('div', 'hud-top');
   el.controls = node('div', 'hud-controls');
-  el.controls.append(el.hearts);
+  el.controls.append(el.clock, el.hearts);
   top.append(el.score.parentElement, el.level.parentElement, el.controls, el.special);
   const notices = node('div', 'hud-notices');
   notices.append(el.verdict, el.banner, el.toast);
   const bottom = node('div', 'hud-bottom');
   bottom.append(el.charge, el.prompt);
   el.hud.prepend(top, notices, bottom);
+  // The tutorial's gesture on the pitch: a finger presses, drags down, lets go.
+  el.gesture = node('div', 'gesture hidden');
+  el.gesture.setAttribute('aria-hidden', 'true');
+  el.gesture.append(node('i', 'g-anchor'), node('i', 'g-band'), node('i', 'g-finger', '\u{1F446}'),
+    node('i', 'g-shot', '\u26BD'), node('b', 'g-label', 'PULL DOWN'));
+  document.body.append(el.gesture);
   // Menus scroll internally; gameplay still prevents page scrolling.
   el.overlay.addEventListener('wheel', e => e.stopPropagation(), { passive: true });
 }
@@ -164,7 +181,7 @@ const hex = value => '#' + value.toString(16).padStart(6, '0');
 const thousands = value => value.toLocaleString('en-US');
 
 export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProgress, levelSteps = 3, best,
-  rank = '', daily = null, special = null, progress = null, tutorial = null }) {
+  rank = '', daily = null, special = null, progress = null, tutorial = null, rush = null, bonus = null }) {
   if (score !== lastScore) {
     el.score.textContent = String(score).padStart(6, '0');
     lastScore = score;
@@ -172,8 +189,10 @@ export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProg
   el.best.textContent = `BEST ${String(Math.max(best, score)).padStart(6, '0')}`;
   el.combo.textContent = combo > 1 ? `x${combo}` : '';
   el.combo.classList.toggle('show', combo > 1);
-  el.level.textContent = tutorial ? 'TUTORIAL' : daily ? `DAILY ${daily.shot}/${daily.of}` : `LEVEL ${level}`;
-  el.rank.textContent = tutorial ? `SHOT ${tutorial.shot}/${tutorial.of}` : daily ? `LEVEL ${level}` : rank;
+  el.level.textContent = tutorial ? 'TUTORIAL' : bonus ? 'BONUS LEVEL' : daily ? `DAILY ${daily.shot}/${daily.of}` : `LEVEL ${level}`;
+  el.rank.textContent = tutorial ? `SHOT ${tutorial.shot}/${tutorial.of}` : bonus ? `\u{1F525} SHOT ${bonus.shot}/${bonus.of}`
+    : daily ? `LEVEL ${level}` : rank;
+  el.level.parentElement.classList.toggle('bonus', !!bonus);
   if (progress !== null && el.progress.dataset.percent !== String(progress)) {
     el.progress.dataset.percent = progress;
     el.progress.firstChild.textContent = `PROGRESS ${progress}%`;
@@ -184,7 +203,9 @@ export function setArcadeHud({ score, hearts, maxHearts, level, combo, levelProg
     blocks.push(node('i', i < Math.round(levelProgress * levelSteps) ? 'on' : ''));
   }
   el.levelBlocks.replaceChildren(...blocks);
-  el.hearts.classList.toggle('hidden', !!daily);
+  el.hearts.classList.toggle('hidden', !!daily || !!rush);
+  el.clock.classList.toggle('hidden', !rush);
+  if (rush) setClock(rush.time, rush.hurry);
   const specialKey = special ? `${special.kind}:${special.label}` : '';
   if (specialKey !== lastSpecial) {
     lastSpecial = specialKey;
@@ -211,7 +232,7 @@ export function setPrompt(text) {
 }
 
 export function showTutorialStep(step) {
-  const tap = matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click or press Space';
+  const tap = matchMedia('(pointer: coarse)').matches ? 'Tap' : 'Click';
   el.prompt.replaceChildren(
     node('span', 'tutorial-step', `YOUR FIRST SHOT · STEP ${step} OF 2`),
     node('strong', 'tutorial-title', step === 1 ? 'Aim at the target' : 'Set the shot height'),
@@ -281,10 +302,10 @@ export function clearVerdict() {
 }
 
 /** The green banner: a level-up, a new rank, the daily challenge starting. */
-export function showLevelUp(title, note = '') {
+export function showLevelUp(title, note = '', kind = '') {
   el.banner.replaceChildren(node('strong', '', title));
   if (note) el.banner.append(node('span', '', note));
-  el.banner.className = 'banner';
+  el.banner.className = `banner ${kind}`.trim();
   showNotice(el.banner, 2200);
 }
 
@@ -313,6 +334,44 @@ export function setCharge(value) {
   if (value !== null) el.charge.style.setProperty('--fill', `${Math.round(value * 100)}%`);
 }
 
+/** On fire: flames licking up the screen edges and a burning HUD (a fire round). */
+export function setOnFire(on) {
+  document.body.classList.toggle('on-fire', on);
+}
+
+/** The tutorial's big finger showing the pull: press, drag down, let go (the ball flies). */
+let gestureTimer = 0;
+export function showGesture(on) {
+  clearTimeout(gestureTimer);
+  el.gesture.classList.remove('subtle');
+  el.gesture.classList.toggle('hidden', !on);
+}
+/** A pull that went nowhere (a tap, a flick up): the same finger, smaller and fainter, for a moment. */
+export function hintGesture() {
+  showGesture(true);
+  el.gesture.classList.add('subtle');
+  gestureTimer = setTimeout(() => showGesture(false), 2800);
+}
+
+/** The rush clock: whole seconds, tenths in the last ten; red and pulsing in a hurry. */
+let clockShown = '';
+export function setClock(seconds, hurry) {
+  const text = hurry ? Math.max(0, seconds).toFixed(1) : String(Math.ceil(seconds));
+  if (text === clockShown) return;
+  clockShown = text;
+  el.clockText.textContent = text;
+  el.clock.classList.toggle('hurry', hurry);
+}
+
+/** "+2s" floats up from the clock. */
+export function clockBonus(seconds) {
+  const pop = node('span', 'clock-bonus', `+${seconds}s`);
+  el.clock.append(pop);
+  // A timer, not animationend: with reduced motion (or a hidden HUD) the animation never runs.
+  setTimeout(() => pop.remove(), 1100);
+  el.clock.animate([{ transform: 'scale(1.25)' }, { transform: 'scale(1)' }], { duration: 300, easing: 'ease-out' });
+}
+
 /** A mission finished mid-run, queued behind the shot result. */
 export function toast(text, reward = '') {
   el.toast.replaceChildren(node('strong', '', text));
@@ -328,7 +387,12 @@ export function hideOverlay() {
   el.overlay.replaceChildren();
 }
 
-function mount(panel) {
+/** Shows a menu panel; `screen` names it (style.css dresses every named screen as TILES). */
+function mount(panel, screen = '') {
+  if (screen) {
+    panel.dataset.screen = screen;
+    panel.classList.add('tiles');
+  }
   el.overlay.replaceChildren(panel);
   el.overlay.classList.remove('hidden');
   el.overlay.inert = false;
@@ -378,21 +442,55 @@ function missionList(missions, finished = []) {
 }
 
 /** Pause: the game is frozen behind it; RESUME is the big button. */
-export function showPause({ onResume, onRestart, missions = [] }) {
+export function showPause(options) {
+  const { onResume, onRestart, missions = [] } = options;
   const panel = node('div', 'panel pause-panel');
-  panel.append(logo(), node('p', 'tagline', 'PAUSED'));
-  if (missions.length) panel.append(node('h3', 'section-title', 'MISSIONS'), missionList(missions));
-  const actions = node('div', 'actions stack');
-  actions.append(button('RESUME', onResume, 'primary'), button('RESTART', onRestart));
-  panel.append(actions);
-  mount(panel);
+  const main = node('div', 'pause-main'), side = node('div', 'pause-side');
+  main.append(logo(), node('p', 'tagline', 'PAUSED'));
+  if (missions.length) side.append(node('h3', 'section-title', 'MISSIONS'), missionList(missions));
+  const actions = node('div', 'actions stack dock');
+  actions.append(button('RESUME', onResume, 'primary', ICON.play), button('RESTART', onRestart, 'sec', ICON.restart));
+  main.append(actions);
+  panel.append(main);
+  if (missions.length) panel.append(side);
+  mount(panel, 'pause');
+}
+
+/**
+ * Landscape screens never scroll: a grid of cards shows one page at a time,
+ * with page buttons, sized to the screen (one row on short screens). Portrait
+ * shows everything (it scrolls). Returns { show(index) } to turn to a card's page.
+ */
+function pageGrid(grid, startIndex = 0, fixed = null) {
+  const cards = [...grid.children];
+  const landscape = innerWidth > innerHeight;
+  // The actions sit beside the grid in landscape: one card fewer per row.
+  const cols = fixed ? fixed.cols : (innerWidth >= 1000 ? 6 : innerWidth >= 740 ? 5 : 4) - (landscape ? 1 : 0);
+  const perPage = fixed ? fixed.cols : landscape ? cols * (innerHeight >= 700 ? 2 : 1) : cards.length;
+  const pages = Math.max(1, Math.ceil(cards.length / perPage));
+  if (landscape || fixed) grid.style.gridTemplateColumns = `repeat(${Math.min(cols, cards.length)}, minmax(0, 1fr))`;
+  const nav = node('div', 'pager' + (pages > 1 ? '' : ' hidden'));
+  const label = node('span', 'pager-label');
+  let page = 0;
+  const turn = to => {
+    page = (to + pages) % pages;
+    cards.forEach((card, i) => card.classList.toggle('off-page', Math.floor(i / perPage) !== page));
+    label.textContent = `${page + 1} / ${pages}`;
+  };
+  const prev = button('\u25C0', () => turn(page - 1), 'small pager-button');
+  const next = button('\u25B6', () => turn(page + 1), 'small pager-button');
+  prev.setAttribute('aria-label', 'Previous page');
+  next.setAttribute('aria-label', 'Next page');
+  nav.append(prev, label, next);
+  turn(Math.floor(Math.max(0, startIndex) / perPage));
+  return { nav, show: index => { if (Math.floor(index / perPage) !== page) turn(Math.floor(index / perPage)); } };
 }
 
 /** Bottom edge of the score block, in CSS pixels (Poki's pill goes below it). */
 export const scoreBottom = () => document.querySelector('.hud-score').getBoundingClientRect().bottom;
 
-/** "TAP" on touch screens, "SPACE" with a keyboard. */
-export const pressWord = () => matchMedia('(pointer: coarse)').matches ? 'TAP' : 'PRESS SPACE';
+/** "TAP" on touch screens, "CLICK" with a mouse. */
+export const pressWord = () => matchMedia('(pointer: coarse)').matches ? 'TAP' : 'CLICK';
 
 /** The pause button in the HUD (touch has no Esc key). */
 export function initPauseButton(onPause) {
@@ -406,16 +504,17 @@ export function initPauseButton(onPause) {
  * (two columns on a landscape screen): the result, progress toward the next
  * unlock, missions, then what to do next.
  */
-export function showGameOver({ score, isBest, level, goals, bullseyes, bestCombo, precision, rank, toBest,
+export function showGameOver(options) {
+  const { rush = null, score, isBest, level, goals, bullseyes, bestCombo, precision, rank, toBest,
   daily, xpGained, unlocked, next, missions, finished, boosted, lockerNew, dailyStatus, collection, game,
   rewards = [], onUseUnlock = null,
-  onReplay, onContinue, onBoost, onCheckpoint, checkpoint, onDaily, onLocker, onStriker }) {
+  onReplay, onContinue, onBoost, onCheckpoint, checkpoint, onDaily, onLocker, onStriker } = options;
   const panel = node('div', 'panel results-panel');
 
   // The result.
   const hero = node('div', 'r-hero');
   hero.append(node('h2', 'r-title' + (isBest && score > 0 && !daily ? ' best' : ''),
-    daily ? 'DAILY DONE' : isBest && score > 0 ? 'NEW BEST!' : 'GAME OVER'));
+    daily ? 'DAILY DONE' : isBest && score > 0 ? 'NEW BEST!' : rush ? 'TIME UP!' : 'GAME OVER'));
   const scoreLine = node('p', 'r-score', thousands(score));
   hero.append(scoreLine);
   const gap = daily
@@ -446,32 +545,37 @@ export function showGameOver({ score, isBest, level, goals, bullseyes, bestCombo
   // What next. Poki: the standard PLAY AGAIN comes first and is the largest; the
   // rewarded offer sits right under it, prominent but smaller, never green, with
   // the video icon. Then the locker, then the smaller extras.
-  const actions = node('div', 'r-actions');
-  actions.append(button('PLAY AGAIN', onReplay, 'primary'));
+  const actions = node('div', 'r-actions dock');
+  actions.append(button('PLAY AGAIN', onReplay, 'primary', ICON.play));
   if (onContinue) {
-    const reward = button('\u{1F3AC} Continue: +1 heart', onContinue, 'reward big');
+    const reward = button(rush ? `Continue: +${rush.bonus} seconds` : 'Continue: +1 heart', onContinue, 'reward big', ICON.video);
     reward.id = 'continue-button';
     actions.append(reward);
   } else if (onBoost) {
-    const reward = button('\u{1F3AC} Next run: +1 heart', onBoost, 'reward big');
+    const reward = button(rush ? `Next rush: +${rush.bonus} seconds` : 'Next run: +1 heart', onBoost, 'reward big', ICON.video);
     reward.id = 'boost-button';
     actions.append(reward);
   }
-  const lockerButton = button(lockerNew ? 'Locker: new items!' : 'Locker', onLocker,
-    'locker-cta' + (lockerNew ? ' has-new' : ''));
+  const lockerButton = button('Locker', onLocker,
+    'sec locker-cta' + (lockerNew ? ' has-new' : ''), ICON.locker);
   if (lockerNew) lockerButton.append(node('em', 'new', 'NEW'));
   actions.append(lockerButton);
   const more = node('div', 'r-more');
-  const dailyButton = button(dailyStatus.played ? `Daily ✔` : 'Daily', onDaily, 'small' + (dailyStatus.played ? '' : ' glow'));
+  const dailyButton = button(dailyStatus.played ? `Daily ✔` : 'Daily', onDaily, 'small sec daily-button' + (dailyStatus.played ? '' : ' glow'), ICON.daily);
   if (dailyStatus.streak > 0) dailyButton.append(node('em', '', `\u{1F525}${dailyStatus.streak}`));
-  more.append(dailyButton, button('Striker', onStriker, 'small'));
-  if (onCheckpoint) more.append(button(`Start at level ${checkpoint}`, onCheckpoint, 'small'));
+  more.append(dailyButton, button('Striker', onStriker, 'small sec striker-button', ICON.striker));
+  // Short landscape screens: missions and game progress are a click away, not a scroll.
+  const detail = button('Missions', () => panel.classList.add('show-detail'), 'small sec detail-button', ICON.missions);
+  more.append(detail);
+  if (onCheckpoint) more.append(button(`Start at level ${checkpoint}`, onCheckpoint, 'small sec', ICON.flag));
   actions.append(more);
-  if (!onContinue && !onBoost && boosted) actions.append(node('p', 'r-small r-boost', 'Boost ready: your next run starts with an extra heart'));
+  if (!onContinue && !onBoost && boosted) actions.append(node('p', 'r-small r-boost', rush
+    ? `Boost ready: your next rush starts with +${rush.bonus} seconds` : 'Boost ready: your next run starts with an extra heart'));
 
   for (const reward of rewards) hero.append(unlockCard(reward, onUseUnlock));
-  panel.append(hero, progress, tasks, actions);
-  mount(panel);
+  const back = button('BACK', () => panel.classList.remove('show-detail'), 'primary detail-back', ICON.back);
+  panel.append(hero, progress, tasks, actions, back);
+  mount(panel, 'results');
   countUp(scoreLine, score);
 }
 
@@ -489,14 +593,56 @@ function countUp(target, value, ms = 900) {
   requestAnimationFrame(step);
 }
 
+/**
+ * The rush's reward screen: the score, the unlock as the centrepiece, NEXT,
+ * and under it the rewarded offer to keep playing.
+ */
+export function showReward(options) {
+  const { score, isBest, won = false, goals, rewards, onUseUnlock, continueSeconds, onContinue, onNext, focus = null } = options;
+  const panel = node('div', 'panel reward-panel');
+  const head = node('div', 'reward-head'), body = node('div', 'reward-body');
+  head.append(node('h2', 'r-title' + (won || (isBest && score > 0) ? ' best' : ''),
+    won ? '\u{1F3C6} CHAMPION!' : isBest && score > 0 ? 'NEW BEST!' : 'TIME UP!'));
+  const scoreLine = node('p', 'r-score', thousands(score));
+  head.append(scoreLine, node('p', 'r-meta', `${goals} goal${goals === 1 ? '' : 's'}`));
+  panel.append(head);
+  if (rewards.length === 1) {
+    body.append(node('p', 'reward-heading', 'YOUR REWARD'), unlockCard(rewards[0], onUseUnlock, true));
+    panel.append(body);
+  } else if (rewards.length) {
+    // Several unlocks: small cards side by side (three in landscape, two in
+    // portrait), paged, so the screen never scrolls.
+    body.append(node('p', 'reward-heading', `YOUR REWARDS \u00b7 ${rewards.length}`));
+    const cards = node('div', 'reward-cards');
+    for (const reward of rewards) cards.append(unlockCard(reward, onUseUnlock, false));
+    const pager = pageGrid(cards, Math.max(0, rewards.findIndex(reward => reward.id === focus)),
+      { cols: innerWidth > innerHeight ? 3 : 2 });
+    body.append(cards, pager.nav);
+    panel.append(body);
+  }
+  const actions = node('div', 'r-actions dock');
+  const next = button('NEXT', onNext, 'primary', ICON.play);
+  next.id = 'reward-next';
+  actions.append(next);
+  if (onContinue) {
+    const reward = button(`+${continueSeconds} seconds: keep playing`, onContinue, 'reward big', ICON.video);
+    reward.id = 'continue-button';
+    actions.append(reward);
+  }
+  panel.append(actions);
+  mount(panel, 'reward');
+  countUp(scoreLine, score);
+}
+
 /** The run's unlock: a preview of the item, its name, and a button to use it straight away. */
-const UNLOCK_KIND = { kit: 'NEW KIT', boots: 'NEW BOOTS', ball: 'NEW BALL', celebration: 'NEW CELEBRATION', striker: 'NEW STRIKER' };
-function unlockCard(item, onUse) {
-  const card = node('div', `unlock-card ${item.type}`);
+const UNLOCK_KIND = { kit: 'NEW KIT', boots: 'NEW BOOTS', ball: 'NEW BALL', celebration: 'NEW CELEBRATION', striker: 'NEW STRIKER',
+  hat: 'NEW HAT', glasses: 'NEW GLASSES' };
+function unlockCard(item, onUse, big = false) {
+  const card = node('div', `unlock-card ${item.type}${big ? ' big' : ''}`);
   const preview = node('div', 'unlock-preview');
   if (item.sprite) { item.sprite.className = 'sprite'; preview.append(item.sprite); }
   else {
-    const swatch = node('i', 'swatch', item.type === 'celebration' ? '\u2605' : '');
+    const swatch = node('i', 'swatch' + (item.icon ? ' icon' : ''), item.icon || (item.type === 'celebration' ? '\u2605' : ''));
     if (item.color != null) swatch.style.background = hex(item.color);
     if (item.accent != null) swatch.style.setProperty('--accent', hex(item.accent));
     preview.append(swatch);
@@ -505,7 +651,7 @@ function unlockCard(item, onUse) {
   text.append(node('span', 'unlock-kind', `\u{1F513} ${UNLOCK_KIND[item.type]} UNLOCKED!`), node('strong', 'unlock-name', item.name));
   if (item.style) text.append(node('span', 'unlock-style', item.style));
   card.append(preview, text);
-  if (item.type !== 'celebration' && onUse) {
+  if (onUse) {
     card.append(item.inUse ? node('span', 'unlock-inuse', '\u2714 IN USE')
       : button(item.type === 'striker' ? 'PLAY AS' : 'EQUIP', () => onUse(item.id), 'small unlock-use'));
   }
@@ -513,7 +659,8 @@ function unlockCard(item, onUse) {
 }
 
 /** The locker: every kit, pair of boots, ball and celebration, and how to get it. */
-export function showLocker({ items, tab, tabs, onTab, xp, next, collection, game, onEquip, onBack }) {
+export function showLocker(options) {
+  const { items, tab, tabs, onTab, xp, next, game, onEquip, onBack } = options;
   const panel = node('div', 'panel locker-panel');
   panel.append(node('h2', 'over-title locker-title', 'LOCKER'),
     node('p', 'over-rank', `${thousands(xp)} XP${next ? `  \u00b7  NEXT: ${next.name} AT ${thousands(next.xp)}` : ''}`));
@@ -529,27 +676,28 @@ export function showLocker({ items, tab, tabs, onTab, xp, next, collection, game
   }
   panel.append(tabRow);
   const grid = node('div', 'locker');
-  const labels = { kit: 'KIT', boots: 'BOOTS', ball: 'BALL', celebration: 'MOVE' };
+  const labels = { kit: 'KIT', boots: 'BOOTS', ball: 'BALL', celebration: 'MOVE', hat: 'HAT', glasses: 'GLASSES' };
   for (const item of items.filter(entry => entry.type === tab)) {
     const tile = document.createElement('button');
     tile.type = 'button';
     tile.className = `locker-item ${item.type}${item.unlocked ? '' : ' locked'}${item.equipped ? ' equipped' : ''}`;
-    tile.disabled = !item.unlocked || item.type === 'celebration';
+    tile.disabled = !item.unlocked;
     const swatch = node('i', 'swatch');
     if (item.color != null) swatch.style.background = hex(item.color);
     if (item.accent != null) swatch.style.setProperty('--accent', hex(item.accent));
-    if (item.type === 'celebration') swatch.textContent = '\u2605';
+    if (item.type === 'celebration' && !item.icon) swatch.textContent = '\u2605';
+    if (item.icon) { swatch.textContent = item.icon; swatch.classList.add('icon'); }
     tile.append(swatch, node('span', 'item-type', labels[item.type]), node('span', 'item-name', item.short),
-      node('span', 'item-state', !item.unlocked ? `${thousands(item.xp)} XP` : item.equipped ? 'EQUIPPED'
-        : item.type === 'celebration' ? 'UNLOCKED' : 'EQUIP'));
+      node('span', 'item-state', !item.unlocked ? `${thousands(item.xp)} XP` : item.equipped ? 'EQUIPPED' : 'EQUIP'));
     if (item.isNew) tile.append(node('em', 'new', 'NEW'));
-    if (item.unlocked && item.type !== 'celebration' && !item.equipped) tile.onclick = () => onEquip(item.id);
+    if (item.unlocked && !item.equipped) tile.onclick = () => onEquip(item.id);
     grid.append(tile);
   }
-  const actions = node('div', 'actions');
-  actions.append(button('BACK', onBack, 'primary'));
+  const pager = pageGrid(grid, Math.max(0, items.filter(entry => entry.type === tab).findIndex(item => item.equipped)));
+  const actions = node('div', 'actions dock');
+  actions.append(pager.nav, button('BACK', onBack, 'primary', ICON.back));
   panel.append(grid, actions);
-  mount(panel);
+  mount(panel, 'locker');
 }
 
 /**
@@ -557,7 +705,8 @@ export function showLocker({ items, tab, tabs, onTab, xp, next, collection, game
  * card calls `onPick` at once (the striker on the pitch changes behind the
  * panel); PLAY starts, BACK (from the results) returns.
  */
-export function showStrikerSelect({ strikers, selected, onPick, onPlay, onBack = null }) {
+export function showStrikerSelect(options) {
+  const { strikers, selected, onPick, onPlay, onBack = null } = options;
   const panel = node('div', 'panel select-panel');
   panel.append(node('h2', 'over-title locker-title', 'CHOOSE YOUR STRIKER'));
   const grid = node('div', 'strikers');
@@ -573,16 +722,18 @@ export function showStrikerSelect({ strikers, selected, onPick, onPlay, onBack =
     if (striker.isNew) card.append(node('em', 'new', 'NEW'));
     card.onclick = () => {
       for (const other of grid.children) other.classList.toggle('selected', other === card);
+      pager?.show([...grid.children].indexOf(card));
       onPick(striker.id);
     };
     grid.append(card);
   }
-  const actions = node('div', 'actions');
-  actions.append(button('PLAY', onPlay, 'primary'));
-  if (onBack) actions.append(button('BACK', onBack));
-  const hint = pressWord() === 'TAP' ? 'TAP A STRIKER, THEN PLAY' : '← → TO CHOOSE, SPACE TO PLAY';
+  const pager = pageGrid(grid, strikers.findIndex(striker => striker.id === selected));
+  const actions = node('div', 'actions dock');
+  actions.append(pager.nav, button('PLAY', onPlay, 'primary', ICON.play));
+  if (onBack) actions.append(button('BACK', onBack, 'sec', ICON.back));
+  const hint = pressWord() === 'TAP' ? 'TAP A STRIKER, THEN PLAY' : 'CLICK A STRIKER, THEN PLAY';
   panel.append(grid, node('p', 'select-hint', hint), actions);
-  mount(panel);
+  mount(panel, 'select');
 }
 
 /** Arrow keys on the striker screen: move the selection one card. */

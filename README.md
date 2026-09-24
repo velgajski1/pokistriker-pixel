@@ -80,6 +80,27 @@ travel up to 60% of the target radius from its centre, safely inside the ring. E
 tap timing hits the target. The shot has no special, heart pickup or miss
 penalty; normal controls resume on shot 2. Daily and checkpoint runs skip it.
 
+## Timed rush (the arcade mode)
+
+A clock instead of hearts: 30 seconds (plus 10 with the rewarded boost), starting
+with the first shot (and, after a rewarded continue, with the next shot), and
+no cap. Goals buy time: +0.5 s for a plain goal, +1 s inside the ring, +2 s for
+a bullseye, +0.5 s more for a SNAP, +3 s for a golden ball or the target's
+bonus pickup (a stopwatch), and +3 s for every 5 goals in a row. A miss costs
+nothing but the seconds it took; the next ball is ready 0.55 s after a miss,
+0.8 s after a goal. Only a 5-in-a-row milestone gets a (2.2 s) celebration, and
+the clock stops for it; the first-time tutorial also runs before the clock
+starts. In the last 10 seconds the clock turns red and ticks. A shot struck
+before zero is played out, and a goal counts as a BUZZER BEATER. Targets are on
+from the first shot; levels still rise with goals and tighten the keeper and
+the pull zones; bonus rounds are off. Below 15 seconds everything eases a
+little (up to 30% at zero), so the end of a rush is a rally rather than a wall. Results: a reward screen first (the run's
+unlock and the rewarded +15 s continue), then NEXT to the full results with the
+next-rush boost (+10 s), missions and the rest. The rush keeps its own best
+(`pokisavedgame.blockstriker.rushbest.v1`). All numbers are `RUSH` in
+`js/app.js`. `?rush=0` plays the old lives-based arcade (the automated checks
+use it); `npm run check:rush` plays a rush.
+
 ## Poki
 
 `js/poki.js` is the only module that talks to the Poki SDK, loaded by
@@ -138,7 +159,9 @@ and shot-distance growth together.
 
 - **Keeper:** good from the first shot: 55% of the way from a rookie to the
   original game's elite keeper at level 1, rising to 90% (`ARCADE.KEEPER_FLOOR`,
-  `KEEPER_CAP`). He reads and dives at everything, so shots outside the target
+  `KEEPER_CAP`), now 45% to 80%. Players far into the game progress get a
+  secretly softer keeper, pull zones and defenders from level 4 (up to 20%
+  easier at 50% progress). He reads and dives at everything, so shots outside the target
   are usually saved; only the target beats him.
   Long shots add a little on top.
 - **Defenders:** ordinary chances have none before level 5, then a 40% chance
@@ -214,6 +237,11 @@ applies to that one shot, while later specials use normal heart rules.
   cycling. "In one run" missions count within a run; the others add up across
   runs from when they start. A mission finished mid-run pays at once with a
   toast.
+- **Gear.** Hats (baseball cap, bobble beanie, headphones, top hat, Viking
+  helmet, gold crown) and glasses (cool shades, star, 3D, gold) are block
+  pieces on the striker's head; a hat hides the hair's volume. The unlock track
+  front-loads the coolest things (shades first, then a cap, the backflip, a
+  Viking helmet, gold shades...); plain kits, balls and boots come later.
 - **Game progress.** 0-100%: the average of reaching level 10, finishing every
   mission once (the achievements) and unlocking every item on the track. Shown
   under the best score in the HUD, on the game-over screen with its three parts,
@@ -255,15 +283,14 @@ applies to that one shot, while later specials use normal heart rules.
   `js/uiManager.js` owns every DOM write.
 - **Sound.** Everything is synthesized with Web Audio (`js/audio.js`), no
   samples: pulse-wave and triangle chip voices, noise drums, a reverb send and a
-  lead echo. A C-major title anthem for the menus, and four match songs, one
-  per band of levels: Kickoff (levels 1-3, 132 bpm, F major), Pressure (4-6,
-  150 bpm, A minor), Night Match (7-9, 156 bpm, E minor) and Final Whistle (10+,
-  168 bpm, D minor). Each is about a minute of verse, chorus and a lead-free
-  breakdown, with its own drum (four-on-the-floor, rock, breakbeat, half-time)
-  and bass (pump, drive, walk, syncopated, held) patterns per section; a new
-  song takes over on a bar line. Layers and tempo build with the level and
-  combo. During play the music sits at a quarter of its menu level, under the
-  crowd and the shot sounds, and ducks further while you aim. A live crowd bed roars on goals and groans on
+  lead echo. Music plays only in menus: a 90s rock track in E minor (138 bpm;
+  a palm-muted power-chord riff in the verse, ringing chords under a soaring
+  lead in the chorus, a half-time breakdown). During play there is no music at
+  all: the crowd, the kick and the net carry it. The songs for later levels
+  (Pressure, Night Match, Final Whistle) are still in `js/audio.js`, unused
+  while match music is off. Every cheer gets a random flavour on top of the
+  roar, never the same twice running: an "o-le" chant, rhythmic clapping,
+  stadium horns, whistles, or none.
   misses. Stingers for every beat of a shot: aim and power blips, the kick,
   woodwork clang, net swish, tiered goal / target / bullseye fanfares (the
   bullseye adds a coin sparkle), combo blips that climb with the combo, a 1-UP

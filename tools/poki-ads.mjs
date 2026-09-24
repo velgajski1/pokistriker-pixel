@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 const STUB = readFileSync(process.env.POKI_STUB
   || join(homedir(), '.claude/skills/poki-sdk/scripts/poki-stub.js'), 'utf8');
-const URL = process.env.GAME_URL || 'http://localhost:5174/?shot=timing';
+const URL = process.env.GAME_URL || 'http://localhost:5174/?shot=timing&rush=0';
 
 // ---- GAME-SPECIFIC ----------------------------------------------------------
 // Example filled in for Block Striker (window.__demo test hook). Replace per game.

@@ -42,13 +42,13 @@ try {
     check('Combo ramps gently and caps', app.timingFactor(0) === 1 && app.timingFactor(2) === 1.025
       && app.timingFactor(5) === 1.1 && app.timingFactor(50) === 1.1);
     check('Shot distance never accelerates aim', app.sweepSpeedAt(5, 9) === app.sweepSpeedAt(5, 32));
-    check('Early difficulty stays intact and later growth halves', app.difficultyLevel(1) === 1
-      && app.difficultyLevel(5) === 5 && app.difficultyLevel(7) === 6 && app.difficultyLevel(13) === 9);
-    check('Level 7 no longer guarantees defenders', app.defenceFor(7, 18, () => .54).blockers === 1
-      && app.defenceFor(7, 18, () => .56).blockers === 0);
-    check('Defenders gain strength gradually', Math.abs(app.defenceFor(7, 18).strength - 1 / 6) < 1e-9);
-    check('Guaranteed and double defenders arrive later', app.defenceFor(13, 18, () => .999).blockers === 1
-      && app.defenceFor(14, 18, () => 0).blockers === 1 && app.defenceFor(17, 18, () => 0).blockers === 2);
+    check('Early difficulty stays intact and later growth slows', app.difficultyLevel(1) === 1
+      && app.difficultyLevel(5) === 5 && Math.abs(app.difficultyLevel(7) - 5.7) < 1e-9 && Math.abs(app.difficultyLevel(15) - 8.5) < 1e-9);
+    check('No defenders before level 7', app.defenceFor(6, 18, () => 0).blockers === 0);
+    check('Level 7 brings a defender about a third of the time', app.defenceFor(7, 18, () => .29).blockers === 1
+      && app.defenceFor(7, 18, () => .31).blockers === 0);
+    check('Defenders gain strength gradually', Math.abs(app.defenceFor(7, 18).strength - .2 / 6) < 1e-9);
+    check('Never two defenders in the fifteen levels', app.defenceFor(15, 30, () => 0).blockers === 1);
     check('Level 5 timing remains close to opening speed', app.sweepSpeedAt(5) / app.sweepSpeedAt(1) < 1.1
       && app.powerCycle(5) / app.powerCycle(1) < 1.1);
     check('Recovery overrides combo', app.timingFactor(5, true) === .85);
@@ -89,14 +89,14 @@ try {
   assert(!combo.assisted && combo.timing === 1.1, 'Real chance uses combo boost');
   const boss = await next({ level: 3, levelGoals: 1, hearts: 3, levelGoal: true });
   assert(boss.special === 'boss' && boss.banner.includes('BOSS KEEPER'), `Level 4 opens with boss and announces it: ${JSON.stringify(boss)}`);
-  assert(await page.evaluate(() => __demo.state.run.bonusLeft === 0), 'Level 4 queues no bonus round');
+  assert(await page.evaluate(() => __demo.state.run.fireLeft === 0), 'Level 4 queues no fire round');
   await next({ levelGoal: false });
   const five = await next({ level: 4, levelGoals: 2, levelGoal: true });
-  assert(five.special !== 'boss' && five.special !== 'bonus', 'Level 5 does not repeat the first boss');
-  const eight = await next({ level: 7, levelGoals: 2, levelGoal: true });
-  assert(eight.special === 'bonus', 'Later bonus schedule is preserved');
-  const ten = await next({ level: 9, levelGoals: 2, bonusLeft: 0, levelGoal: true });
-  assert(ten.special === 'boss', 'Later boss schedule is preserved');
+  assert(five.special !== 'boss' && five.special !== 'fire', 'Level 5 does not repeat the first boss');
+  const seven = await next({ level: 6, levelGoals: 2, levelGoal: true });
+  assert(seven.special === 'fire', 'Finishing level 6 earns a fire bonus level');
+  const last = await next({ level: 14, levelGoals: 2, fireLeft: 0, levelGoal: true });
+  assert(last.special === 'boss', 'The final level (15) is the boss keeper');
   await next({ levelGoal: false });
   const daily = await next({ daily: true, assistShots: 2, combo: 5 });
   assert(!daily.assisted && daily.timing === 1, 'Daily chance ignores adaptive tuning');

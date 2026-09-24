@@ -54,20 +54,21 @@ const TITLE = {
 
 /** Match songs, by level: 1-3, 4-6, 7-9, 10 and up. */
 const MATCH_SONGS = [
-  { // Kickoff: sunny and bouncy, F major.
-    name: 'kickoff', bpm: 132, form: ['A', 'B', 'A', 'C'], lead_volume: .06, stabs: .026, arp: .024,
+  { // Kickoff: 90s rock in E minor. A palm-muted riff in the verse, ringing
+    // power chords under a soaring lead in the chorus, a half-time breakdown.
+    name: 'kickoff', bpm: 138, form: ['A', 'B', 'A', 'C', 'B'], lead_volume: .065, stabs: .045, arp: 0,
     sections: {
-      A: { drums: 'rock', bass: 'walk', chords: [F, C, Dm, Bb, F, C, Bb, C],
-        lead: bars(`C6 - A5 - F5 - A5 - C6 - D6 - C6 - A5 - | G5 - - - E5 - G5 - C6 ~ ~ - G5 - E5 - |
-          F5 - A5 - D6 - F6 - E6 - D6 - C6 - A5 - | Bb5 ~ ~ - D6 - F6 - D6 ~ ~ - C6 - Bb5 - |
-          A5 - C6 - F6 - E6 - F6 - C6 - A5 - C6 - | G5 - C6 - E6 - D6 - C6 - G5 - E5 - G5 - |
-          F5 - Bb5 - D6 - C6 - Bb5 - A5 - G5 - A5 - | C6 ~ ~ ~ G5 ~ ~ ~ C6 ~ ~ ~ - - - -`) },
-      B: { drums: 'four', bass: 'pump', chords: [Dm, Bb, F, C, Dm, Bb, C, C],
-        lead: bars(`D6 - - D6 - C6 - A5 - - F5 - A5 - C6 - | D6 - - D6 - F6 - D6 C6 ~ ~ - Bb5 - A5 - |
-          A5 - - A5 - C6 - F6 - - E6 - D6 - C6 - | E6 ~ ~ ~ D6 ~ C6 ~ G5 ~ ~ ~ - - - - |
-          F6 - E6 - D6 - A5 - D6 - E6 - F6 - A6 - | G6 ~ ~ - F6 - D6 - Bb5 ~ ~ - D6 - F6 - |
-          E6 - G6 - E6 - C6 - G5 - C6 - E6 - G6 - | E6 ~ ~ ~ ~ ~ ~ ~ - - C6 - D6 - E6 -`) },
-      C: { drums: 'half', bass: 'hold', chords: [Bb, C, Dm, Dm, Bb, C, F, F], lead: null },
+      A: { drums: 'rock', bass: 'drive', guitar: 'chug', chords: [E, E, G, A, E, E, C, D],
+        lead: bars(`- - - - - - - - - - - - E5 - G5 - | A5 - G5 - E5 - - - - - - - - - - - |
+          - - - - - - - - - - - - D5 - E5 - | G5 ~ ~ - E5 - D5 - E5 ~ ~ ~ - - - - |
+          - - - - - - - - - - - - E5 - G5 - | A5 - B5 - D6 - B5 - A5 - G5 - E5 - - - |
+          - - - - - - - - G5 - A5 - G5 - E5 - | D5 ~ ~ ~ ~ ~ ~ ~ - - - - - - - -`) },
+      B: { drums: 'four', bass: 'pump', guitar: 'ring', chords: [C, G, D, E, C, G, D, D],
+        lead: bars(`G5 ~ ~ ~ E5 ~ G5 ~ A5 ~ ~ ~ G5 ~ E5 ~ | D5 ~ ~ ~ ~ ~ B4 ~ D5 ~ E5 ~ G5 ~ ~ ~ |
+          A5 ~ ~ ~ G5 ~ A5 ~ B5 ~ ~ ~ A5 ~ G5 ~ | E5 ~ ~ ~ ~ ~ ~ ~ - - D5 ~ E5 ~ G5 ~ |
+          G5 ~ ~ ~ E5 ~ G5 ~ A5 ~ ~ ~ B5 ~ D6 ~ | B5 ~ ~ ~ ~ ~ A5 ~ G5 ~ ~ ~ E5 ~ D5 ~ |
+          E5 ~ ~ ~ G5 ~ ~ ~ A5 ~ ~ ~ B5 ~ ~ ~ | A5 ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ - - - -`) },
+      C: { drums: 'half', bass: 'hold', guitar: 'chug', chords: [A, A, C, D, A, A, D, E], lead: null },
     },
   },
   { // Pressure: the minor-key chase, with a new chorus and a breakdown.
@@ -294,18 +295,20 @@ function buildCrowd() {
 }
 
 // ---- Music sequencer ------------------------------------------------------------
-// During play the music sits well under the game (the crowd, the kick, the net);
-// menus get it at full level. Aiming ducks it further.
-const MATCH_MUSIC = .25;
+// No music during play (the crowd, the kick and the net carry it); menus get
+// the rock track at full level.
+const MATCH_MUSIC = 0;
 const musicLevel = () => settings.music * (scene === 'match' ? MATCH_MUSIC : 1) * duck;
 
-let song = TITLE, nextSong = TITLE, matchSong = MATCH_SONGS[0];
+// The rock track is the menu music too (the old title anthem is kept but unused).
+const MENU_SONG = MATCH_SONGS[0];
+let song = MENU_SONG, nextSong = MENU_SONG, matchSong = MATCH_SONGS[0];
 
 export function setScene(value) {
   if (scene === value) return;
   scene = value;
   // A new scene starts its song from the top.
-  song = nextSong = scene === 'match' ? matchSong : TITLE;
+  song = nextSong = scene === 'match' ? matchSong : MENU_SONG;
   step = 0;
   if (context) musicBus.gain.setTargetAtTime(musicLevel(), context.currentTime, .4);
   if (context) nextStep = Math.max(nextStep, context.currentTime + .15);
@@ -337,7 +340,7 @@ function schedule() {
     if (step % 16 === 0 && nextSong !== song) { song = nextSong; step = 0; }
     const bpm = song.bpm + (scene === 'match' ? 8 * intensity : 0);
     const sixteenth = 60 / bpm / 4;
-    if (settings.music > 0 && !settings.muted && !adMuted) playStep(song, step, nextStep, sixteenth);
+    if (settings.music > 0 && !settings.muted && !adMuted && scene !== 'match') playStep(song, step, nextStep, sixteenth);
     nextStep += sixteenth;
     step++;
   }
@@ -406,8 +409,26 @@ function playStep(song, index, when, sixteenth) {
     voice(midi(bassNote), when, sixteenth * Math.min(hold, 1), { wave: 'p12', volume: .035, bus: musicBus, release: .02 });
   }
 
+  // Rock guitar: power chords (root, fifth, octave) from stacked pulse waves.
+  // 'chug' palm-mutes eighths, accenting each half bar; 'ring' strikes on 1 and
+  // the 'and' of 2 and lets the chord sustain.
+  if (section.guitar) {
+    const root = chord[0] + 12, power = [root, root + 7, root + 12];
+    const strike = (length, volume) => {
+      for (const note of power) {
+        voice(midi(note), when, length, { wave: 'p50', volume, bus: musicBus, release: .05 });
+        voice(midi(note) * 1.006, when, length, { wave: 'p25', volume: volume * .7, bus: musicBus, release: .05 });
+        voice(midi(note - 12), when, length * .6, { wave: 'p12', volume: volume * .35, bus: musicBus, release: .03 });
+      }
+    };
+    const guitar = song.stabs * (match ? .6 + .5 * build : 1);
+    if (section.guitar === 'chug' && beat % 2 === 0) strike(sixteenth * (beat % 8 === 0 ? 1.6 : .9), guitar * (beat % 8 === 0 ? 1.15 : .75));
+    if (section.guitar === 'ring' && (beat === 0 || beat === 6 || beat === 8)) strike(sixteenth * (beat === 6 ? 2 : 6), guitar * 1.05);
+  }
+
   // Chords: offbeat stabs, or a soft held pad in a breakdown.
-  if (breakdown) {
+  if (section.guitar) { /* the guitar carries the harmony */ }
+  else if (breakdown) {
     if (beat === 0) for (const note of chord) voice(midi(note + 12), when, sixteenth * 15, { wave: 'p50', volume: song.stabs * .9,
       bus: musicBus, attack: .08, release: .3, reverb: .45, vibrato: .004 });
   } else if (beat % 4 === 2) {
@@ -451,6 +472,38 @@ function cheer(amount, when, duration = 2.2) {
   hiss(when, duration, { frequency: 900, q: .6, volume: .35 * amount / .4, attack: .25, reverb: .3 });
   for (let i = 0; i < 12; i++) hiss(when + .1 + i * .09 + Math.random() * .05, .08,
     { frequency: 1800 + Math.random() * 1200, q: 3, volume: .05 * amount / .4 });
+  cheerFlavour(amount, when);
+}
+
+/**
+ * Every roar gets a flavour on top, never the same twice running: a plain
+ * roar, an "o-le" chant, rhythmic clapping, stadium horns, or whistles.
+ */
+let lastFlavour = -1;
+function cheerFlavour(amount, when) {
+  let pick = Math.floor(Math.random() * 4);
+  if (pick >= lastFlavour) pick++;
+  lastFlavour = pick;
+  const loud = amount / .4;
+  if (pick === 1) {
+    // "O-le, o-le": swelling crowd vowels on two notes.
+    for (const [at, f] of [[.35, 620], [.75, 520], [1.25, 620], [1.65, 520]]) {
+      hiss(when + at, .38, { frequency: f, q: 4, volume: .16 * loud, attack: .06, reverb: .35 });
+    }
+  } else if (pick === 2) {
+    // Clap, clap, clap-clap-clap.
+    for (const at of [.3, .6, .9, 1.05, 1.2, 1.55, 1.85, 2.15, 2.3, 2.45]) drum.clap(when + at, .16 * loud, sfxBus);
+  } else if (pick === 3) {
+    // Stadium horns: two brassy blasts.
+    for (const [at, note] of [[.25, 58], [.75, 58]]) {
+      voice(midi(note), when + at, .38, { wave: 'sawtooth', volume: .045 * loud, attack: .02, release: .08, reverb: .3 });
+      voice(midi(note + 7) * 1.01, when + at, .38, { wave: 'sawtooth', volume: .03 * loud, attack: .02, release: .08, reverb: .3 });
+    }
+  } else if (pick === 4) {
+    // Whistles: bright slides up.
+    for (let i = 0; i < 3; i++) voice(2200 + Math.random() * 600, when + .2 + i * .28, .22,
+      { wave: 'sine', volume: .03 * loud, slide: 1.35, attack: .01, release: .05 });
+  }
 }
 
 const EFFECTS = {
@@ -499,6 +552,22 @@ const EFFECTS = {
     drum.crash(t + .33, .2, sfxBus);
     // Coin sparkle.
     for (let i = 0; i < 6; i++) voice(midi(96 + (i % 3) * 3), t + .35 + i * .06, .05, { wave: 'sine', volume: .05, reverb: .3 });
+  },
+  // Fire round: a rising roar and a power chord; a fire shot's blast; a player bowled over.
+  onFire: t => {
+    hiss(t, 1.1, { frequency: 300, q: 1.1, volume: .34, attack: .05, sweep: 6 });
+    for (const note of [40, 47, 52]) voice(midi(note), t + .12, .7, { wave: 'sawtooth', volume: .05, release: .2, reverb: .3 });
+    arp([64, 67, 71, 76, 79], t + .1, .06, { wave: 'p25', volume: .08 });
+    cheer(.45, t + .2, 2.4);
+  },
+  fireball: t => {
+    hiss(t, .55, { frequency: 500, q: 1.4, volume: .3, attack: .01, sweep: 4 });
+    voice(90, t, .35, { wave: 'sine', volume: .35, slide: .45 });
+  },
+  bowl: t => {
+    voice(70, t, .18, { wave: 'sine', volume: .55, slide: .4 });
+    hiss(t, .16, { frequency: 520, volume: .35 });
+    for (let i = 0; i < 3; i++) voice(midi(84 - i * 5), t + .05 + i * .07, .06, { wave: 'p25', volume: .05 });
   },
   combo: (t, n = 2) => arp([72 + n * 2, 79 + n * 2], t + .5, .06, { wave: 'p12', volume: .07 }),
   extraLife: t => arp([76, 79, 88, 84, 86, 91], t + .45, .085, { wave: 'p50', volume: .08, length: .09 }),

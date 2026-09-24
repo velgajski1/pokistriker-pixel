@@ -55,29 +55,50 @@ export const STRIKERS = {
 };
 
 /** Unlock track, in order; `xp` is the lifetime XP that opens each item. */
+/** Headwear and eyewear: block pieces on the striker's head (gameEngine.js builds them). */
+export const HATS = { none: { name: 'NO HAT', icon: '\u2716' }, cap: { name: 'BASEBALL CAP', icon: '\u{1F9E2}' },
+  beanie: { name: 'BOBBLE BEANIE', icon: '\u{1F9F6}' }, phones: { name: 'HEADPHONES', icon: '\u{1F3A7}' },
+  tophat: { name: 'TOP HAT', icon: '\u{1F3A9}' }, viking: { name: 'VIKING HELMET', icon: '\u{1FA96}' },
+  crown: { name: 'GOLD CROWN', icon: '\u{1F451}' } };
+export const GLASSES = { none: { name: 'NO GLASSES', icon: '\u2716' }, shades: { name: 'COOL SHADES', icon: '\u{1F576}' },
+  star: { name: 'STAR GLASSES', icon: '\u2B50' }, threed: { name: '3D GLASSES', icon: '\u{1F453}' },
+  gold: { name: 'GOLD SHADES', icon: '\u{1F60E}' } };
+
+/**
+ * Unlock track, in order; `xp` is the lifetime XP that opens each item. The
+ * coolest things come first, while a player is deciding whether to stay
+ * (shades, a cap, the backflip, a Viking helmet, gold shades...); plain kits,
+ * balls and boots wait for later. Every finished run unlocks the next item anyway.
+ */
 export const UNLOCKS = [
-  ['kit:sky', 150], ['striker:bounce', 300], ['ball:neon', 500], ['celebration:celebrate_victory', 700],
-  ['boots:blaze', 950], ['kit:zebra', 1250], ['striker:blaze', 1600], ['kit:forest', 2000],
-  ['celebration:celebrate_heart', 2400], ['ball:ruby', 2850], ['boots:gold', 3300], ['kit:lava', 3800],
-  ['striker:swift', 4300], ['kit:bubblegum', 4900], ['celebration:celebrate_backflip', 5500], ['ball:ice', 6200],
-  ['kit:emerald', 6900], ['boots:ice', 7700], ['striker:chief', 8500], ['kit:ocean', 9400],
-  ['ball:violet', 10400], ['boots:pink', 11400], ['kit:retro', 12500], ['celebration:celebrate_backflip_hooks', 13700],
-  ['striker:maestro', 15000], ['kit:royal', 16400], ['ball:mint', 17900], ['boots:neon', 19500],
-  ['kit:steel', 21200], ['ball:sunburst', 23000], ['striker:frost', 25000], ['kit:sunset', 27200],
-  ['boots:white', 29500], ['ball:rose', 32000], ['kit:volt', 34700], ['boots:crimson', 37500],
-  ['kit:galaxy', 40500], ['kit:midnight', 43800],
+  ['glasses:shades', 150], ['hat:cap', 300], ['celebration:celebrate_backflip', 500], ['hat:viking', 700],
+  ['glasses:gold', 950], ['striker:bounce', 1250], ['hat:tophat', 1600], ['kit:lava', 2000],
+  ['glasses:threed', 2400], ['hat:crown', 2850], ['celebration:celebrate_backflip_hooks', 3300],
+  ['hat:phones', 3800], ['striker:blaze', 4300], ['glasses:star', 4900], ['kit:galaxy', 5500], ['hat:beanie', 6200],
+  ['celebration:celebrate_heart', 6900], ['ball:sunburst', 7700], ['striker:frost', 8500], ['kit:midnight', 9400],
+  ['boots:gold', 10400], ['celebration:celebrate_victory', 11400], ['kit:sky', 12500], ['ball:neon', 13700],
+  ['boots:blaze', 15000], ['kit:zebra', 16400], ['striker:swift', 17900], ['kit:forest', 19500],
+  ['ball:ruby', 21200], ['kit:bubblegum', 23000], ['ball:ice', 25000], ['kit:emerald', 27200], ['boots:ice', 29500],
+  ['striker:chief', 32000], ['kit:ocean', 34700], ['ball:violet', 37500], ['boots:pink', 40500],
+  ['kit:retro', 43800], ['striker:maestro', 47000], ['kit:royal', 50500], ['ball:mint', 54000],
+  ['boots:neon', 58000], ['kit:steel', 62000], ['kit:sunset', 66000], ['boots:white', 70000], ['ball:rose', 74500],
+  ['kit:volt', 79000], ['boots:crimson', 84000],
 ].map(([id, xp]) => ({ id, xp }));
-const FREE = ['kit:home', 'boots:black', 'ball:classic',
+const FREE = ['kit:home', 'boots:black', 'ball:classic', 'hat:none', 'glasses:none', 'celebration:mix',
   'celebration:celebrate_dance', 'celebration:celebrate_cheer', 'celebration:celebrate_jump',
   'striker:blade', 'striker:tank', 'striker:zippy', 'striker:rocket'];
-const CATALOGUE = { kit: KITS, boots: BOOTS, ball: BALLS, striker: STRIKERS };
+/** Celebrations to equip: one favourite, or MIX (every unlocked one in turn). */
+const MOVES = { mix: { name: 'ALL MOVES', short: 'MIX', icon: '\u{1F500}' },
+  ...Object.fromEntries(Object.entries(CELEBRATIONS).map(([key, name]) => [key, { name: `${name} CELEBRATION`, short: name }])) };
+const CATALOGUE = { kit: KITS, boots: BOOTS, ball: BALLS, striker: STRIKERS, hat: HATS, glasses: GLASSES, celebration: MOVES };
 /** The locker's tabs; strikers are chosen on their own screen. */
-export const LOCKER_TABS = [['kit', 'KITS'], ['boots', 'BOOTS'], ['ball', 'BALLS'], ['celebration', 'MOVES']];
+export const LOCKER_TABS = [['hat', 'HATS'], ['glasses', 'GLASSES'], ['kit', 'KITS'], ['boots', 'BOOTS'],
+  ['ball', 'BALLS'], ['celebration', 'MOVES']];
 
 /** Display name of an unlock id such as 'kit:sky'. */
 export function itemName(id) {
   const [type, key] = id.split(':');
-  if (type === 'celebration') return `${CELEBRATIONS[key]} CELEBRATION`;
+  if (type === 'celebration') return MOVES[key].name;
   if (type === 'striker') return `STRIKER ${STRIKERS[key].name}`;
   return CATALOGUE[type][key].name;
 }
@@ -103,7 +124,7 @@ export const MISSIONS = [
   { id: 'combo3', text: 'REACH A X3 COMBO', scope: 'run', stat: 'combo', goal: 3, xp: 120 },
   { id: 'level4', text: 'REACH LEVEL 4', scope: 'run', stat: 'level', goal: 4, xp: 150 },
   { id: 'golden2', text: 'SCORE 2 GOLDEN BALLS', scope: 'total', stat: 'golden', goal: 2, xp: 150 },
-  { id: 'heart1', text: 'COLLECT AN EXTRA LIFE', scope: 'total', stat: 'hearts', goal: 1, xp: 120 },
+  { id: 'heart1', text: 'GRAB A BONUS FROM A TARGET', scope: 'total', stat: 'hearts', goal: 1, xp: 120 },
   { id: 'moving3', text: 'HIT 3 MOVING TARGETS', scope: 'total', stat: 'moving', goal: 3, xp: 180 },
   { id: 'score5k', text: 'SCORE 5,000 IN ONE RUN', scope: 'run', stat: 'score', goal: 5000, xp: 180 },
   { id: 'daily1', text: 'PLAY THE DAILY CHALLENGE', scope: 'total', stat: 'daily', goal: 1, xp: 150 },
@@ -157,7 +178,7 @@ function load() {
   const state = {
     xp: Number.isFinite(saved.xp) ? saved.xp : 0,
     seen: Array.isArray(saved.seen) ? saved.seen : [],
-    equipped: { kit: 'home', boots: 'black', ball: 'classic', ...saved.equipped },
+    equipped: { kit: 'home', boots: 'black', ball: 'classic', hat: 'none', glasses: 'none', celebration: 'mix', ...saved.equipped },
     missions: Array.isArray(saved.missions) ? saved.missions.filter(m => MISSIONS.some(p => p.id === m.id)) : [],
     nextMission: Number.isInteger(saved.nextMission) ? saved.nextMission : 0,
     totals,
@@ -172,7 +193,7 @@ function load() {
       streak: saved.daily?.streak || 0, lastPlayed: saved.daily?.lastPlayed || '' },
   };
   // Equipped items must still exist and be unlocked (a catalogue change, a hand-edited save).
-  for (const type of ['kit', 'boots', 'ball']) {
+  for (const type of ['kit', 'boots', 'ball', 'hat', 'glasses', 'celebration']) {
     if (!CATALOGUE[type][state.equipped[type]] || !isUnlockedIn(state, `${type}:${state.equipped[type]}`)) {
       state.equipped[type] = FREE.find(id => id.startsWith(type + ':')).split(':')[1];
     }
@@ -204,7 +225,11 @@ export const isUnlocked = id => isUnlockedIn(data, id);
 export const kit = () => KITS[data.equipped.kit];
 export const bootsColor = () => BOOTS[data.equipped.boots].color;
 export const ballColor = () => BALLS[data.equipped.ball].color;
+export const gear = () => ({ hat: data.equipped.hat, glasses: data.equipped.glasses });
 export const celebrations = () => Object.keys(CELEBRATIONS).filter(key => isUnlocked(`celebration:${key}`));
+/** The equipped celebration, or null for MIX (every unlocked one in turn). */
+export const favouriteCelebration = () => data.equipped.celebration !== 'mix'
+  && isUnlocked(`celebration:${data.equipped.celebration}`) ? data.equipped.celebration : null;
 
 /** Every item on the track (and the free ones) with its state. */
 function allItems() {
@@ -212,17 +237,18 @@ function allItems() {
   for (const id of [...FREE, ...UNLOCKS.map(u => u.id)]) {
     const [type, key] = id.split(':');
     const unlock = UNLOCKS.find(u => u.id === id);
-    items.push({ id, type, key, name: itemName(id), short: type === 'celebration' ? CELEBRATIONS[key] : itemName(id),
+    items.push({ id, type, key, name: itemName(id), short: type === 'celebration' ? MOVES[key].short : itemName(id),
       xp: unlock?.xp || 0, unlocked: isUnlocked(id),
       isNew: isUnlocked(id) && !FREE.includes(id) && !data.seen.includes(id),
       equipped: WEARABLE.includes(type) ? data.equipped[type] === key : type === 'striker' && data.striker === key,
       color: type === 'kit' ? KITS[key].kit : type === 'boots' ? BOOTS[key].color
         : type === 'ball' ? BALLS[key].color : null,
+      icon: type === 'hat' || type === 'glasses' || type === 'celebration' ? CATALOGUE[type][key].icon || null : null,
       accent: type === 'kit' ? KITS[key].accent ?? KITS[key].shorts : null });
   }
   return items;
 }
-const WEARABLE = ['kit', 'boots', 'ball'];
+const WEARABLE = ['kit', 'boots', 'ball', 'hat', 'glasses', 'celebration'];
 /** The locker's items (kits, boots, balls, celebrations), tab by tab, cheapest first. */
 export function lockerItems() {
   const order = LOCKER_TABS.map(([type]) => type);
@@ -247,7 +273,7 @@ export function collection() {
  * Overall game progress, 0-100%: the average of reaching level 10, finishing
  * every mission once (the achievements) and unlocking every locker item.
  */
-export const PROGRESS_LEVEL = 10;
+export const PROGRESS_LEVEL = 15;   // the last level (app.js ARCADE.LEVELS)
 export function gameProgress() {
   const level = Math.min(PROGRESS_LEVEL, data.bestLevel);
   const items = UNLOCKS.filter(u => data.xp >= u.xp).length;
@@ -267,7 +293,7 @@ export function unlockInfo(id) {
   const [type, key] = id.split(':');
   const item = allItems().find(entry => entry.id === id);
   return { id, type, key, name: type === 'striker' ? STRIKERS[key].name : item.short, full: itemName(id),
-    color: item.color, accent: item.accent, style: type === 'striker' ? STRIKERS[key].style : '' };
+    color: item.color, accent: item.accent, icon: item.icon, style: type === 'striker' ? STRIKERS[key].style : '' };
 }
 export function setTutorialDone() { data.tutorialDone = true; persist(); }
 

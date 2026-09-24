@@ -27,6 +27,7 @@ import {
 // Arcade rules
 // ===========================================================================
 export const ARCADE = {
+  LEVELS: 15,                // the last level is all boss keeper; beating it wins the run
   HEARTS: 3,                 // hearts at the start of a run
   MAX_HEARTS: 5,             // extra lives can take you this far
   GOALS_PER_LEVEL: 3,
@@ -35,14 +36,26 @@ export const ARCADE = {
   POINTS: { bullseye: 300, target: 200, goal: 100 },
   MAX_COMBO: 5,              // consecutive target hits multiply the points
   HEART_ODDS: .2,            // chance a target carries an extra life (never twice running)
-  RAMP_LEVELS: 32,           // a gradual climb in keeper skill, range and timing difficulty
+  RAMP_LEVELS: 45,           // a slow climb in keeper skill, range and timing difficulty
   SOFTEN_AFTER: 5,
-  LATE_LEVEL_SCALE: .5,      // each level past 5 adds half a level of difficulty
+  LATE_LEVEL_SCALE: .35,     // each level past 5 adds a third of a level of difficulty
+  // Veterans: from level 4, players further into the game progress get a
+  // slightly softer keeper, pull zones and defenders (never shown).
+  VETERAN_FROM: 4,
+  VETERAN_RATE: .4,          // easing per unit of game progress (50% progress -> 20% easier)
+  VETERAN_MAX: .2,
+  // The rush's last seconds: below this many seconds everything eases, up to
+  // CLUTCH_MAX at zero, so the end is a rally rather than a wall.
+  CLUTCH_FROM: 15,
+  CLUTCH_MAX: .3,
+  // Levels 1-3 are a little kinder (by level): a softer keeper, a lower weak
+  // threshold on the pull, and targets TARGET.EARLY_GROW of this bigger.
+  EARLY_EASE: [.3, .2, .1],
   // The keeper is good from the first shot and better later (this share of the
   // elite profile, level 1 -> late), and dives at everything - but a shot that
   // crosses inside the target always beats him (see keeperBeaten).
-  KEEPER_FLOOR: .55,
-  KEEPER_CAP: .9,
+  KEEPER_FLOOR: .45,
+  KEEPER_CAP: .8,
   BEATEN_MARGIN: .4,         // ...and so does one just outside the ring: "through his fingers"
   KEEPER_MISS: .9,           // on-target shots: his dive aims this far short of the ball, metres
                              // (keepClearOf then keeps every limb clear of it)
@@ -60,15 +73,15 @@ export const timingFactor = (combo = 0, assisted = false) => assisted ? ADAPTIVE
 /**
  * Special chances. Golden balls, moving targets and free kicks turn up at
  * random from their first level (never two specials running); a boss keeper
- * opens level 4, then every fifth level from 10; every fourth level from 8
- * opens with a three-shot bonus round where misses are free.
+ * opens level 4 and plays every chance of the last level (ARCADE.LEVELS);
+ * finishing levels 6 and 9 earns a three-shot fire round (see FIRE).
  */
 const SPECIALS = {
   golden: { from: 2, odds: .12, points: 2, label: 'GOLDEN BALL', note: 'DOUBLE POINTS', ring: 0xfff27a, bull: 0xffb000 },
   moving: { from: 3, odds: .1, points: 1.5, label: 'MOVING TARGET', note: 'x1.5 POINTS', ring: 0x54e0ff, bull: 0x2f8bff },
   freekick: { from: 5, odds: .1, points: 2, label: 'FREE KICK', note: 'CHIP THE WALL', ring: 0xffd23f, bull: 0xff4d3a },
   boss: { every: 5, points: 3, label: 'BOSS KEEPER', note: 'BEAT HIM: x3 AND A HEART', ring: 0xc07cff, bull: 0x8b3dff },
-  bonus: { every: 4, shots: 3, points: 2, label: 'BONUS ROUND', note: 'NO KEEPER. MISSES ARE FREE', ring: 0x8dff5a, bull: 0x31c75a },
+  fire: { points: 2, label: 'ON FIRE', note: 'ANY SHOT FLIES TO THE TARGET', ring: 0xffb03a, bull: 0xff4d1a },
 };
 const GOLDEN_BALL = 0xffd23f;
 /** The HUD tag for a keeper's moment (a normal chance with a sharp keeper). */
@@ -83,10 +96,49 @@ const OPENING = [null, 'golden', null, 'moving'];
 let sessionRuns = 0;
 const BOSS_SKILL = 0;              // a boss keeper plays this much above the level's keeper (a showpiece, not a wall)
 const MOVING_TARGET = { speed: 1.25, minTravel: .6 };   // radians/s; metres of room needed
-const WALL = { range: [17, 22], lateral: 5, jump: 3.3, delay: [.08, .2] };
+// A free kick's wall covers only the half of the goal away from the target, a
+// little past the middle (SHIFT: metres it stands off the ball-to-goal line).
+const WALL = { range: [17, 22], lateral: 5, jump: 2.8, delay: [.1, .22], SHIFT: .75 };
 
 /** Seconds the result holds before the next chance (a tap skips it). */
 const HOLD = { GOAL: 2.6, MISS: 1, REACTION_MAX: 2.4, CELEBRATION_MAX: 4.2 };
+
+/**
+ * The timed rush (the arcade mode; ?rush=0 plays the old lives-based arcade):
+ * a clock instead of hearts. Goals buy time, misses cost nothing but the
+ * seconds they took, and a shot in the air when the clock hits zero still
+ * counts. Shots come back to back; only every fifth goal in a row gets a
+ * short celebration, with the clock stopped.
+ */
+const RUSH = {
+  START: 30,                                     // no cap: good play can bank as much time as it earns
+  BONUS: { goal: .5, target: 1, bullseye: 2 },  // seconds a goal adds, by precision
+  SNAP: .5, GOLDEN: 3, HEART: 3,                 // extras: a SNAP, a golden ball, the target's bonus pickup
+  STREAK: 5, STREAK_BONUS: 3,                    // every 5 goals in a row: +3 s and a celebration
+  HURRY: 10,                                     // the last seconds: a red clock that ticks
+  HOLD_GOAL: .8, HOLD_MISS: .55, MILESTONE_HOLD: 2.2,
+  CONTINUE: 15, BOOST: 10,                       // rewarded ads: seconds added (continue this rush, boost the next)
+};
+const RUSH_ON = new URLSearchParams(location.search).get('rush') !== '0';
+
+/**
+ * Fire rounds, the reward for finishing levels 6 and 9: the striker is on
+ * fire for three shots.
+ * Any press shoots: the ball flies at the bullseye, fast and flat, and anyone
+ * in its way - keeper or defender - is knocked flying while it carries on.
+ * Fire goals score double and add their seconds with the clock held; they
+ * leave the combo and level progress alone.
+ */
+const FIRE = {
+  AFTER: [6, 9], SHOTS: 3,
+  SPEED: 31,              // m/s
+  SCATTER: .5,            // share of the bullseye's radius the ball may land off centre
+  REACH: 2.2,             // the keeper's dive reaches this much further: he throws himself at it
+  KNOCK_SPEED: 7.5,       // m/s sideways for a player the ball hits
+  KNOCK_HOP: 3.4,         // m/s upward
+  HOLD: 1.3,              // seconds the goal holds (with the rush clock stopped)
+  BALL: 0xffa23a,
+};
 
 /** Where the target sits and how big it is: it shrinks as the level rises. */
 const TARGET = {
@@ -97,6 +149,7 @@ const TARGET = {
                              // on-target ball never passes within a standing keeper's reach, metres
   BULL_CLEAR: 1.7,           // ...and the bullseye centre at least this far: out of his reach
   LENIENCY: .12,             // scoring counts a ball this far outside a painted ring as inside it
+  EARLY_GROW: .5,            // levels 1-3: rings grow by this share of ARCADE.EARLY_EASE
 };
 
 const SHOT = {
@@ -163,19 +216,19 @@ export function keeperAbility(level, distance = 10, special = null, moment = fal
   for (const key of Object.keys(KEEPER_ROOKIE)) {
     ability[key] = KEEPER_ROOKIE[key] + (KEEPER_ELITE[key] - KEEPER_ROOKIE[key]) * skill;
   }
-  // Bonus round: he stands aside by the post and never moves.
-  if (special === 'bonus') { ability.skill = 0; ability.reaction = 99; ability.setSpread = 0; }
+  // Fire round: he reads the ball perfectly and throws himself at it (to be bowled over).
+  if (special === 'fire') { ability.readError = 0; ability.heightError = 0; ability.reaction = Math.min(ability.reaction, .08); }
   return ability;
 }
 
 /** Defenders: none early on, then one, then two; slow at first, sharper later. */
 export function defenceFor(level, range, random = Math.random) {
-  // The first levels are striker against keeper: no defenders until level 5.
+  // The first levels are striker against keeper: no defenders until level 7.
   const difficulty = difficultyLevel(level);
-  const strength = Math.max(0, Math.min(1, (difficulty - 5) / 6));
+  const strength = Math.max(0, Math.min(1, (difficulty - 5.5) / 6));
   let blockers = 0;
-  // Gradual exposure: 40% at level 5, 55% at 7, guaranteed only at 13.
-  if (level >= 5) blockers = random() < Math.min(1, .4 + (difficulty - 5) * .15) ? 1 : 0;
+  // Gradual exposure from level 7: about a third of chances, rising slowly.
+  if (level >= 7) blockers = random() < Math.min(1, .3 + (difficulty - 5.7) * .12) ? 1 : 0;
   // A second defender arrives much later, with odds that also build gradually.
   if (difficulty >= 11 && range > 13 && random() < Math.min(.55, (difficulty - 10) * .1)) blockers = 2;
   return { blockers, strength };
@@ -259,6 +312,9 @@ let balanceSimulation = false;
 
 const shot = {
   tutorial: false, tutorialTime: 0,
+  veteranEase: 0,            // this chance's secret easing for a player far into the game progress
+  earlyEase: 0,              // levels 1-3: the extra easing (part of veteranEase)
+  fire: false,               // a fire shot: any press flies at the bullseye, through anyone in the way
   noTarget: false,           // pull mode's level 1: no target on the goal
   easy: false,               // one of a session's first (coached) pull shots: the keeper cannot reach it
   assisted: false, timingFactor: 1,
@@ -327,7 +383,7 @@ function startRun(mode = 'arcade', level = 1) {
     score: 0, hearts: ARCADE.HEARTS + (boosted ? 1 : 0), level, goals: 0, levelGoals: 0,
     combo: 0, bestCombo: 0, shots: 0, targetHits: 0, bullseyes: 0,
     lastCelebration: undefined, kit: -1, heartOffered: false, extraLives: 0, continued: false,
-    special: null, lastSpecial: null, bonusLeft: 0, bossPending: !daily && level === 4, paidScore: 0, missionsDone: [],
+    special: null, lastSpecial: null, fireLeft: 0, won: false, bossPending: !daily && level === 4, paidScore: 0, missionsDone: [],
     opening: mode !== 'daily' && ++sessionRuns === 1 && level === 1, scriptedMoment: false,
     assistShots: 0, introPending: null, freeMiss: false, recoveryHeart: false,
     tally: progress.newTally(),
@@ -335,6 +391,9 @@ function startRun(mode = 'arcade', level = 1) {
     // (?tutorial=1 replays it). Its shots never cost a heart or count toward a level.
     tutorial: shotMode === 'pull' && mode !== 'daily' && level === 1
       && (!progress.tutorialDone() || FORCE_TUTORIAL), tutorialShots: 0,
+    rush: RUSH_ON && !daily, time: RUSH.START + (RUSH_ON && boosted ? RUSH.BOOST : 0), streak: 0,
+    clockHold: 0, timeUp: false, lastTick: 99,
+    clockStarted: false,   // the rush clock waits for the first shot (and again after a continue)
   };
   applyLevelLook();
   state.screen = 'MATCH';
@@ -348,7 +407,8 @@ function startRun(mode = 'arcade', level = 1) {
   poki.measure('run', mode, 'start');
   poki.measure('level', String(level), 'start');
   if (daily) ui.showLevelUp('DAILY CHALLENGE', `${progress.DAILY_SHOTS} SHOTS. EVERY SHOT COUNTS`);
-  else if (boosted) ui.showLevelUp('BOOST!', 'YOU START WITH AN EXTRA HEART');
+  else if (boosted) ui.showLevelUp('BOOST!', state.run.rush ? `+${RUSH.BOOST} SECONDS ON THE CLOCK` : 'YOU START WITH AN EXTRA HEART');
+  else if (state.run.rush && !state.run.tutorial) ui.showLevelUp('SCORE AS MANY GOALS AS YOU CAN!', `${RUSH.START} SECONDS \u00b7 THE CLOCK STARTS WITH YOUR FIRST SHOT`);
   else if (mode === 'checkpoint') ui.showLevelUp(`LEVEL ${level}`, `${progress.rankFor(level).name} START`);
   pushHud();
   beginChance();
@@ -403,6 +463,7 @@ async function continueRun() {
   if (!success) { ui.dropContinue(); return; }
   run.continued = true;
   run.hearts = 1;
+  if (run.rush) { run.time = RUSH.CONTINUE; run.timeUp = false; run.lastTick = 99; run.clockStarted = false; }
   state.screen = 'MATCH';
   ui.hideOverlay();
   ui.showHud(true);
@@ -486,6 +547,7 @@ function openLocker(tab = null) {
 /** The equipped kit, boots and ball; a golden ball overrides the tint for its chance. */
 function applyCosmetics() {
   engine.setHomeKit(progress.kit(), progress.bootsColor());
+  engine.setStrikerGear(progress.gear().hat, progress.gear().glasses);
   engine.setBallTint(state.run?.special === 'golden' ? GOLDEN_BALL : progress.ballColor());
 }
 
@@ -553,14 +615,19 @@ function pushHud() {
   audio.setLevel(run.level);   // a new song every few levels
   const special = run.special ? SPECIALS[run.special]
     : shot.keeperMoment && state.phase !== 'IDLE' ? HOT_KEEPER : null;
+  // A fire round is its own BONUS LEVEL on the HUD: its shots fill the blocks, the level waits.
+  const bonus = run.special === 'fire' ? { shot: FIRE.SHOTS - run.fireLeft, of: FIRE.SHOTS } : null;
   ui.setArcadeHud({ score: run.score, hearts: run.hearts, maxHearts: Math.max(ARCADE.HEARTS, run.hearts), level: run.level,
-    combo: run.combo, levelProgress: run.levelGoals / goalsForLevel(run.level), levelSteps: goalsForLevel(run.level),
+    combo: run.combo, bonus,
+    levelProgress: bonus ? (bonus.shot - (shot.resolved === null ? 1 : 0)) / bonus.of : run.levelGoals / goalsForLevel(run.level),
+    levelSteps: bonus ? bonus.of : goalsForLevel(run.level),
     best: state.best, rank: progress.rankFor(run.level).name, progress: progress.gameProgress().percent,
     daily: run.daily ? { shot: Math.min(run.shots + 1, progress.DAILY_SHOTS), of: progress.DAILY_SHOTS } : null,
     tutorial: run.tutorial ? { shot: Math.min(run.tutorialShots + 1, COACH_SHOTS), of: COACH_SHOTS } : null,
-    special: special && { label: run.special === 'bonus'
-      ? `${special.label} ${special.shots - run.bonusLeft}/${special.shots}` : special.label,
-      note: run.freeMiss ? `${special.note} · FREE MISS` : special.note, kind: run.special || 'keeper' } });
+    rush: run.rush ? { time: run.time, hurry: run.time <= RUSH.HURRY } : null,
+    special: special && { label: run.special === 'fire' ? `\u{1F525} ${special.label}` : special.label,
+      note: run.rush && run.special === 'boss' ? `BEAT HIM: x${SPECIALS.boss.points} AND +${RUSH.HEART} S`
+        : run.freeMiss ? `${special.note} · FREE MISS` : special.note, kind: run.special || 'keeper' } });
 }
 
 /** Results of the last finished run, kept so the locker can return to them. */
@@ -581,46 +648,73 @@ function gameOver() {
   ui.setDimmed(true);
   setGameplayActive(false);
   const outcome = progress.finishRun(run);
-  poki.measure('level', String(run.level), run.daily ? 'complete' : 'fail');
+  poki.measure('level', String(run.level), run.daily || run.won ? 'complete' : 'fail');
   poki.measure('run', run.mode, 'complete');
   for (const mission of outcome.missions) poki.measure('mission', mission.id, 'complete');
   for (const item of outcome.unlocked) poki.measure('unlock', item.id, 'complete');
   audio.play((isBest && run.score > 0) || outcome.daily?.newBest ? 'newBest' : 'gameOver');
   results = { run, isBest, outcome };
-  showResults();
+  // A rush ends on its reward first (the unlock, and the rewarded +15 s); NEXT opens the results.
+  if (run.rush) showRewardScreen(); else showResults();
 }
 
 /** The game-over (or daily results) panel, rebuilt from the kept results. */
+/** The run's unlocks as the results screens show them. */
+function rewardItems(outcome) {
+  return outcome.unlocked.map(item => {
+    const info = progress.unlockInfo(item.id);
+    if (info.type === 'striker') info.sprite = engine.strikerSprite(info.key, progress.kit(), progress.bootsColor());
+    info.inUse = info.type === 'striker' ? progress.striker() === info.key
+      : progress.equipped()[info.type] === info.key;
+    return info;
+  });
+}
+
+/** Equips (or plays as) an unlock, then redraws the screen it was pressed on. */
+function useUnlock(id, redraw) {
+  const [type, key] = id.split(':');
+  if (type === 'striker') { if (progress.setStriker(key)) engine.setStrikerLook(key); }
+  else if (!progress.equip(id)) return;
+  applyCosmetics();
+  audio.play('confirm');
+  redraw();
+}
+
+/**
+ * The end of a rush, before the results: the score and the run's unlock, big,
+ * and the rewarded offer to keep playing. NEXT (the larger button, as Poki
+ * requires next to a rewarded one) opens the full results.
+ */
+function showRewardScreen(focus = null) {
+  if (!results) return;
+  const { run, isBest, outcome } = results;
+  const continueOffer = !run.continued && !run.won && poki.rewardsAvailable();
+  if (continueOffer) poki.measure('button', 'reward-continue', 'visible');
+  ui.showReward({ score: run.score, isBest, won: run.won, goals: run.goals, rewards: rewardItems(outcome),
+    onUseUnlock: id => useUnlock(id, () => showRewardScreen(id)), focus,
+    continueSeconds: RUSH.CONTINUE, onContinue: continueOffer ? continueRun : null,
+    onNext: () => { if (!poki.isInBreak()) { results.rewardSeen = true; showResults(); } } });
+}
+
 function showResults() {
   if (!results) return;
   const { run, isBest, outcome } = results;
-  const continueOffer = !run.daily && !run.continued && poki.rewardsAvailable();
+  // A rush offered its continue on the reward screen; the results offer the next-rush boost.
+  const continueOffer = !run.daily && !run.continued && !run.rush && poki.rewardsAvailable();
   const boostOffer = !continueOffer && poki.rewardsAvailable() && !progress.hasBoost();
-  const checkpoint = progress.checkpoint();
+  const checkpoint = run.rush ? 0 : progress.checkpoint();
   if (continueOffer) poki.measure('button', 'reward-continue', 'visible');
   if (boostOffer) poki.measure('button', 'reward-boost', 'visible');
-  ui.showGameOver({ score: run.score, best: state.best, isBest, level: run.level, goals: run.goals,
+  ui.showGameOver({ rush: run.rush ? { bonus: RUSH.CONTINUE } : null,
+    score: run.score, best: state.best, isBest, level: run.level, goals: run.goals,
     bullseyes: run.bullseyes, bestCombo: run.bestCombo,
     precision: run.shots ? Math.round(100 * run.targetHits / run.shots) : 0,
     rank: progress.rankFor(run.level).name,
     toBest: !run.daily && !isBest ? state.best - run.score : 0,
     daily: run.daily ? outcome.daily : null,
     xpGained: outcome.gained, unlocked: outcome.unlocked, next: progress.nextUnlock(),
-    rewards: outcome.unlocked.map(item => {
-      const info = progress.unlockInfo(item.id);
-      if (info.type === 'striker') info.sprite = engine.strikerSprite(info.key, progress.kit(), progress.bootsColor());
-      info.inUse = info.type === 'striker' ? progress.striker() === info.key
-        : info.type !== 'celebration' && progress.equipped()[info.type] === info.key;
-      return info;
-    }),
-    onUseUnlock: id => {
-      const [type, key] = id.split(':');
-      if (type === 'striker') { if (progress.setStriker(key)) engine.setStrikerLook(key); }
-      else if (!progress.equip(id)) return;
-      applyCosmetics();
-      audio.play('confirm');
-      showResults();
-    },
+    rewards: run.rush ? [] : rewardItems(outcome),
+    onUseUnlock: id => useUnlock(id, showResults),
     missions: progress.missions(null), finished: [...run.missionsDone, ...outcome.missions],
     boosted: progress.hasBoost(), lockerNew: progress.hasNewItems(), collection: progress.collection(),
     game: progress.gameProgress(),
@@ -654,8 +748,9 @@ function prepareChance() {
   }
   chooseChanceOrigin(origin, run.level, random);
   const defence = defenceFor(run.level, origin.z - GOAL.PLANE_Z, random);
-  blockerCount = run.special === 'bonus' ? 0 : defence.blockers;
-  shot.defenseStrength = defence.strength;
+  // A fire round brings two defenders, sharp ones: someone to bowl over.
+  blockerCount = run.special === 'fire' ? 2 : defence.blockers;
+  shot.defenseStrength = run.special === 'fire' ? 1 : defence.strength;
 }
 
 /** Which special, if any, this chance is. Never two random specials running. */
@@ -665,6 +760,7 @@ function planSpecial(run) {
   run.scriptedMoment = false;
   if (shot.tutorial) { run.freeMiss = true; return null; }
   if (state.forceSpecial) { special = state.forceSpecial; state.forceSpecial = null; }   // test hook
+  else if (run.fireLeft > 0) { run.fireLeft--; special = 'fire'; }   // the bonus level
   else if (openingLevel(run)) special = null;   // level 1: just the goal and the keeper
   else if (run.introPending) {
     special = run.introPending;
@@ -672,11 +768,11 @@ function planSpecial(run) {
     run.freeMiss = true;
   }
   else if (run.bossPending && run.level === 4) { run.bossPending = false; special = 'boss'; }
+  else if (run.level === ARCADE.LEVELS && !run.daily) special = 'boss';   // the final level
   else if (run.opening && run.shots < OPENING.length) {
     special = OPENING[run.shots] === 'moment' ? null : OPENING[run.shots];
     run.scriptedMoment = OPENING[run.shots] === 'moment';
   }
-  else if (run.bonusLeft > 0) { run.bonusLeft--; special = 'bonus'; }
   else if (run.bossPending) { run.bossPending = false; special = 'boss'; }
   else if (run.daily && run.shots === progress.DAILY_SHOTS - 1) special = 'boss';
   else if (!run.lastSpecial) {
@@ -698,11 +794,59 @@ function planSpecial(run) {
  * pulls score; weak ones are still saved, which teaches "pull harder".
  */
 const ROOKIE_SKILL = .15;
-const openingLevel = run => shotMode === 'pull' && run.level === 1 && !run.daily;
+const openingLevel = run => shotMode === 'pull' && run.level === 1 && !run.daily && (!run.rush || run.tutorial);
+
+/** The rush clock: runs while playing (not in the tutorial, not during a milestone celebration). */
+function tickClock(dt) {
+  const run = state.run;
+  if (!run.rush || run.tutorial || run.timeUp || !run.clockStarted) return;
+  if (run.clockHold > 0) { run.clockHold -= dt; return; }
+  run.time = Math.max(0, run.time - dt);
+  const second = Math.ceil(run.time);
+  if (second <= RUSH.HURRY && second < run.lastTick && run.time > 0) {
+    audio.play(second === RUSH.HURRY ? 'warning' : 'hover');
+    run.lastTick = second;
+  }
+  ui.setClock(run.time, run.time <= RUSH.HURRY);
+  if (run.time > 0) return;
+  run.timeUp = true;
+  // A shot already struck still counts (a buzzer beater); otherwise the rush ends now.
+  if (state.phase === 'AIM' || state.phase === 'POWER') endRush();
+}
+
+function endRush() {
+  pull.active = false;
+  ui.hidePull();
+  engine.hideTrajectory();
+  engine.stopCelebration();
+  engine.stopReactions();
+  engine.showTarget(false);
+  endSpecial();
+  gameOver();
+}
+
+/** Seconds a shot adds to the rush clock (and the streak milestone). */
+function rushBonus(run, outcome, tier, result, special) {
+  if (!run.rush || run.tutorial) return 0;
+  run.milestone = false;
+  if (outcome !== 'goal') { run.streak = 0; return 0; }
+  run.streak++;
+  let bonus = RUSH.BONUS[tier] + (shot.snap ? RUSH.SNAP : 0) + (special === 'golden' ? RUSH.GOLDEN : 0)
+    + (result.extraLife ? RUSH.HEART : 0);
+  if (run.streak % RUSH.STREAK === 0) { bonus += RUSH.STREAK_BONUS; run.milestone = true; }
+  if (run.time > 0) {
+    run.time += bonus;
+    ui.clockBonus(bonus);
+  }
+  return run.time > 0 ? bonus : 0;
+}
 
 /** Undo a special chance's looks: keeper size and kit, target colours, ball tint. */
 function endSpecial() {
   engine.setKeeperBoss(false);
+  engine.setOnFire(false);
+  engine.setFireBall(false);
+  ui.setOnFire(false);
   engine.setTargetStyle();
   engine.setBallTint(progress.ballColor());
 }
@@ -720,9 +864,9 @@ function updateMovingTarget(dt) {
  * the keeper - it goes to one side of where he has set himself.
  */
 export function chooseTarget(out, level, keeperX, random = Math.random) {
-  const ramp = levelRamp(level);
-  out.ring = TARGET.RING_HALF[0] + (TARGET.RING_HALF[1] - TARGET.RING_HALF[0]) * ramp;
-  out.bull = TARGET.BULL_HALF[0] + (TARGET.BULL_HALF[1] - TARGET.BULL_HALF[0]) * ramp;
+  const ramp = levelRamp(level), grow = 1 + (ARCADE.EARLY_EASE[level - 1] || 0) * TARGET.EARLY_GROW;
+  out.ring = (TARGET.RING_HALF[0] + (TARGET.RING_HALF[1] - TARGET.RING_HALF[0]) * ramp) * grow;
+  out.bull = (TARGET.BULL_HALF[0] + (TARGET.BULL_HALF[1] - TARGET.BULL_HALF[0]) * ramp) * grow;
   const spanX = GOAL.HALF_W - out.ring - TARGET.MARGIN_X * .5;
   const gap = Math.max(out.ring + TARGET.KEEPER_CLEAR, TARGET.BULL_CLEAR);
   // Free space either side of the keeper, as intervals of allowed centres.
@@ -750,6 +894,10 @@ function beginChance() {
   engine.stopCelebration();
   engine.stopReactions();
   engine.settlePlayers();   // never carry a celebration or reaction pose into the aim
+  // Stand the keeper up before the aim pose is captured: a skipped pause can
+  // start the chance mid-recovery, and the capture would restore that half-dive.
+  engine.setKeeper(shot.keeperX, 0, 1, 0, 0, 0, null, shot.keeperDepth);
+  engine.clearKnocks();   // stand up anyone a fire shot bowled over
   engine.captureSelectionPoses();
   prepareChance();
   shot.keeperDepth = .75;
@@ -795,10 +943,22 @@ function beginChance() {
     || (!(run.opening && run.shots < OPENING.length) && run.random() < ARCADE.KEEPER_MOMENT.odds));
   shot.keeperAbility = keeperAbility(run.level, Math.hypot(origin.x, origin.z - GOAL.PLANE_Z), run.special,
     shot.keeperMoment, shot.assisted);
+  // Veterans get a secretly softer keeper (and zones and defenders) from level 4.
+  shot.veteranEase = run.daily || run.level < ARCADE.VETERAN_FROM ? 0
+    : Math.min(ARCADE.VETERAN_MAX, progress.gameProgress().percent / 100 * ARCADE.VETERAN_RATE);
+  // Levels 1-3 are a little kinder: a softer keeper, a lower weak threshold, bigger targets.
+  shot.earlyEase = run.daily ? 0 : ARCADE.EARLY_EASE[run.level - 1] || 0;
+  shot.veteranEase = Math.min(.45, shot.veteranEase + shot.earlyEase);
+  if (run.rush && run.clockStarted && run.time < ARCADE.CLUTCH_FROM) {
+    shot.veteranEase = Math.min(.45, shot.veteranEase + ARCADE.CLUTCH_MAX * (1 - run.time / ARCADE.CLUTCH_FROM));
+  }
+  if (shot.veteranEase > 0) {
+    shot.keeperAbility = sharpenKeeper(shot.keeperAbility, -shot.keeperAbility.skill * shot.veteranEase);
+    shot.defenseStrength *= 1 - shot.veteranEase;
+  }
   shot.noTarget = openingLevel(run) && !run.special;
   if (shot.noTarget) shot.keeperAbility = sharpenKeeper(shot.keeperAbility, ROOKIE_SKILL - shot.keeperAbility.skill);
-  shot.keeperSetX = run.special === 'bonus' ? (run.random() < .5 ? -1 : 1) * (GOAL.HALF_W + 1.3)
-    : narrow + (run.random() * 2 - 1) * shot.keeperAbility.setSpread;
+  shot.keeperSetX = narrow + (run.random() * 2 - 1) * shot.keeperAbility.setSpread;
   shot.keeperX = shot.keeperSetX;
   shot.keeperDive = 0;
   shot.keeperSide = 1;
@@ -817,17 +977,31 @@ function beginChance() {
       chooseTarget(aimTarget, run.level, shot.keeperSetX, () => shot.keeperSetX >= 0 ? 0 : .999999);
     } else run.special = run.lastSpecial = 'golden';
   }
+  if (shot.wall) {
+    engine.shiftWall(-(Math.sign(aimTarget.x) || 1) * WALL.SHIFT);
+    for (let i = 0; i < blockerCount; i++) {
+      blockers[i].baseX = blockers[i].x = engine.chance.blockers[i].baseX;
+      blockers[i].z = engine.chance.blockers[i].z;
+    }
+  }
   // No target: park it far off the goal, so no shot scores as on target or beats the keeper by it.
   if (shot.noTarget) { aimTarget.x = 99; aimTarget.minX = aimTarget.maxX = 99; }
   aimTarget.phase = run.random() * Math.PI * 2;
   // Now and then the target carries an extra life; never on two targets running.
-  aimTarget.heart = !shot.tutorial && !shot.noTarget && !run.daily && run.special !== 'bonus' && !run.heartOffered
-    && run.hearts < ARCADE.MAX_HEARTS && run.random() < ARCADE.HEART_ODDS;
+  aimTarget.heart = !shot.tutorial && !shot.noTarget && !run.daily && run.special !== 'fire' && !run.heartOffered
+    && (run.rush || run.hearts < ARCADE.MAX_HEARTS) && run.random() < ARCADE.HEART_ODDS;
+  engine.setPickupLook(run.rush ? 'clock' : 'heart');
   run.heartOffered = aimTarget.heart;
   engine.setTarget(aimTarget.x, aimTarget.y, aimTarget.ring, aimTarget.bull, aimTarget.heart);
   const style = run.special && SPECIALS[run.special];
   engine.setTargetStyle(style?.ring, style?.bull);
   applyCosmetics();
+  shot.fire = run.special === 'fire';
+  if (shot.fire) {
+    engine.setOnFire(true);
+    engine.setBallTint(FIRE.BALL);
+    ui.setOnFire(true);
+  }
   updateMovingTarget(0);
   if (run.special) poki.measure('special', run.special, 'start');
   engine.showTarget(!shot.noTarget);
@@ -837,9 +1011,11 @@ function beginChance() {
   prepareShotMode();
   state.phase = 'AIM';
   ui.clearVerdict();
+  if (!coachActive()) ui.showGesture(false);
   if (shot.tutorial) ui.showTutorialStep(1);
+  else if (shot.fire) ui.setPrompt(ui.pressWord() === 'TAP' ? 'TAP ANYWHERE TO FIRE!' : 'CLICK ANYWHERE TO FIRE!');
   else if (shotMode === 'pull' && coachActive()) coachPull(true);
-  else if (shotMode === 'pull' && run.level >= 2 && !run.targetIntroShown && !run.daily) {
+  else if (shotMode === 'pull' && (run.level >= 2 || run.rush) && !run.targetIntroShown && !run.daily) {
     run.targetIntroShown = true;
     ui.coach('NEW: TARGETS', 'Shoot inside the ring', 'The keeper can never stop a strong shot on target.', false);
   } else ui.setPrompt(shotPrompt(run));
@@ -906,7 +1082,7 @@ function updatePower(dt) {
 //   pull   - touch anywhere and pull back like a slingshot: the pull's angle aims,
 //            its length sets height and pace, a dotted arc shows the start of
 //            the flight. Held too long at full stretch, the band trembles.
-// ?shot=flick|aim|timing|drag|sling|pull picks one (default: pull); localhost Alt+9 cycles them.
+// ?shot=flick|aim|timing|drag|sling|pull picks one (default: pull; the tests use timing).
 // ===========================================================================
 export const SHOT_MODES = ['pull', 'flick', 'aim', 'timing', 'drag', 'sling'];
 const DEFAULT_SHOT_MODE = 'pull';     // releases: pull back and release
@@ -957,9 +1133,9 @@ const PULL = {
   // The zones tighten with the level (instead of anything speeding up): the
   // weak (blue) end grows, the height climbs faster so the bar (red) comes
   // sooner, and the comfortable green middle narrows. Gold is a fixed band under the bar.
-  ZONE_RAMP: 12,          // levels over which the zones reach their late values
-  WEAK_LATE: .55,         // weak threshold late in a run (PULL.WEAK at level 1)
-  TOP_LATE: 2.8,          // height of a full pull late in a run (HEIGHT[1] at level 1)
+  ZONE_RAMP: 16,          // (softened) levels over which the zones reach their late values
+  WEAK_LATE: .5,          // weak threshold late in a run (PULL.WEAK at level 1)
+  TOP_LATE: 2.7,          // height of a full pull late in a run (HEIGHT[1] at level 1)
   GOLD: .14,              // width of the gold band under the bar, in pull power
   // A session's first (coached) shots are nearly impossible to miss: almost any
   // pull is strong, none goes over the bar, the aim is gentle and stays inside
@@ -989,10 +1165,8 @@ const PULL = {
   BOUNCE_IN: .3,          // seconds for the bounce to reach full swing
   SNAP_WINDOW: .82,       // release with the stretch above this (of its peak) for a SNAP
   SNAP_PACE: 1.12,        // a SNAP leaves this much faster
-  KEY_RATE: .4,           // screen heights per second Space pulls by itself
-  KEY_AIM: .35,           // arrow keys: screen heights per second sideways
 };
-const pull = { active: false, keyboard: false, ax: 0, ay: 0, x: 0, y: 0, held: 0, slope: 0, power: 0,
+const pull = { active: false, ax: 0, ay: 0, x: 0, y: 0, held: 0, slope: 0, power: 0,
   armed: false, wobble: 0, wobbleY: 0, lastX: 0, lastY: 0, still: 0, stretch: 0, snapReady: false };
 let sessionPullShots = 0;
 const SWIPE_SAMPLES = 96;
@@ -1021,6 +1195,8 @@ function shotPrompt(run) {
   if (shotMode === 'drag') return run.shots === 0 ? 'HOLD FOR POWER · DRAG TO AIM · RELEASE TO SHOOT' : '';
   if (shotMode === 'sling') return run.shots === 0
     ? 'MOVE BEHIND THE BALL TO AIM · HOLD TO LIFT · RELEASE TO SHOOT' : '';
+  if (shotMode === 'pull' && run.rush && !run.clockStarted) return `MOST GOALS IN ${RUSH.START} SECONDS! `
+    + `${ui.pressWord() === 'TAP' ? 'TOUCH' : 'CLICK'}, PULL BACK AND LET GO`;
   if (shotMode === 'pull') return run.shots === 0
     ? `${ui.pressWord() === 'TAP' ? 'TOUCH' : 'CLICK'} ANYWHERE, PULL BACK AND LET GO`
     : run.shots === 1 ? 'PULL SIDEWAYS TO AIM · PULL FURTHER TO SHOOT HIGHER' : '';
@@ -1279,9 +1455,9 @@ function pullPreviewShare() {
 /** This level's zones, in pull power: weak below `weak`, over the bar above `over`, gold just under it. */
 const zones = { weak: 0, gold: 0, over: 0, top: 0 };
 function pullZones() {
-  const r = Math.min(1, Math.max(0, (state.run.level - 1) / PULL.ZONE_RAMP));
+  const r = Math.min(1, Math.max(0, (difficultyLevel(state.run.level) - 1) / PULL.ZONE_RAMP)) * (1 - shot.veteranEase);
   const easy = coachActive();
-  zones.weak = easy ? PULL.EASY_WEAK : PULL.WEAK + (PULL.WEAK_LATE - PULL.WEAK) * r;
+  zones.weak = easy ? PULL.EASY_WEAK : (PULL.WEAK + (PULL.WEAK_LATE - PULL.WEAK) * r) * (1 - shot.earlyEase);
   zones.top = easy ? PULL.EASY_TOP : PULL.HEIGHT[1] + (PULL.TOP_LATE - PULL.HEIGHT[1]) * r;
   zones.over = (GOAL.HEIGHT - PULL.HEIGHT[0]) / (zones.top - PULL.HEIGHT[0]);   // the power that reaches the bar
   zones.gold = zones.over - PULL.GOLD;
@@ -1294,25 +1470,20 @@ function pullColour() {
   return PULL_COLOURS[power < z.weak ? 'weak' : power < z.gold ? 'green' : power < z.over ? 'gold' : 'over'];
 }
 
-function startPull(x, y, keyboard) {
+function startPull(x, y) {
   pull.active = true;
-  pull.keyboard = keyboard;
   pull.ax = pull.x = x;
   pull.ay = pull.y = y;
   pull.held = 0;
   pull.wobble = pull.wobbleY = 0;
   pull.lastX = x; pull.lastY = y;
   pull.still = 0; pull.stretch = 0; pull.snapReady = false;
+  if (!coachActive()) ui.showGesture(false);
   audio.play('aim');
   state.phase = 'POWER';
 }
 
 function updatePull(dt) {
-  if (pull.keyboard) {
-    // Space pulls by itself; the arrows lean it (left aims left: the band goes right).
-    pull.y = Math.min(pull.ay + PULL.FULL * PULL.OVER * innerHeight, pull.y + PULL.KEY_RATE * innerHeight * dt);
-    pull.x -= ((aimKeys.right ? 1 : 0) - (aimKeys.left ? 1 : 0)) * PULL.KEY_AIM * innerHeight * dt;
-  }
   pullShape();
   // The elastic: moving the finger settles the band; holding still lets it bounce.
   const moved = Math.hypot(pull.x - pull.lastX, pull.y - pull.lastY);
@@ -1338,10 +1509,8 @@ function updatePull(dt) {
   // The knob rides the elastic along the band; at the top of a stretch it flashes white.
   const reach = 1 + pull.stretch * .12;
   const kx = pull.ax + (pull.x - pull.ax) * reach, ky = pull.ay + (pull.y - pull.ay) * reach;
-  if (!pull.keyboard) ui.drawPull(pull.ax, pull.ay, kx, ky, pull.snapReady ? '#ffffff' : css);
+  ui.drawPull(pull.ax, pull.ay, kx, ky, pull.snapReady ? '#ffffff' : css);
   if (coachActive()) coachPull();
-  else if (pull.keyboard && pull.snapReady) ui.setPrompt('SNAP!');
-  else if (pull.keyboard && pull.armed) ui.setPrompt('');
 }
 
 function releasePull() {
@@ -1351,9 +1520,13 @@ function releasePull() {
   engine.hideTrajectory();
   pullShape();
   if (!pull.armed) {
+    // A tap or a flick upward: show the pull again, quietly, even mid-run.
     state.phase = 'AIM';
     if (coachActive()) coachPull(true);
-    else ui.setPrompt('PULL BACK A LITTLE FURTHER, THEN LET GO');
+    else {
+      ui.setPrompt(pull.y < pull.ay - 12 ? 'PULL DOWN, TOWARD YOU, THEN LET GO' : 'PULL BACK A LITTLE FURTHER, THEN LET GO');
+      ui.hintGesture();
+    }
     return;
   }
   // A release at the top of the stretch is a SNAP: the same aim, a sharper strike.
@@ -1364,24 +1537,39 @@ function releasePull() {
   pullVelocity(launchVelocity, shot.snap ? PULL.SNAP_PACE : 1);
   sessionPullShots++;
   coachKey = '';
+  ui.showGesture(false);
   commitShot(0);
   if (shot.snap) { audio.play('combo', 3); engine.shake(.35); }
 }
 
+/** A fire shot: straight at the bullseye (a touch off centre), fast and flat. */
+function fireShot() {
+  pull.active = false;
+  ui.hidePull();
+  engine.hideTrajectory();
+  const angle = Math.random() * Math.PI * 2, off = aimTarget.bull * FIRE.SCATTER * Math.random();
+  velocityTo(origin, aimTarget.x + Math.cos(angle) * off, aimTarget.y + Math.sin(angle) * off, FIRE.SPEED, launchVelocity, 0);
+  shot.snap = false;
+  shot.easy = false;
+  shot.weakShot = false;
+  audio.play('fireball');
+  commitShot(0);
+}
+
 // ---- Pull coach: live, step-by-step help for a session's first shots ----------------
-const COACH_SHOTS = 3;
+const COACH_SHOTS = 2;
 const coachActive = () => state.run?.tutorial === true;
 const FORCE_TUTORIAL = new URLSearchParams(location.search).get('tutorial') === '1';
 let coachKey = '';
 
 /** Shows the step that matches what the finger is doing right now. `fresh` resets it for a new chance. */
 function coachPull(fresh = false) {
-  if (!coachActive()) { if (coachKey) { coachKey = ''; ui.setPrompt(''); } return; }
+  if (!coachActive()) { if (coachKey) { coachKey = ''; ui.setPrompt(''); ui.showGesture(false); } return; }
   const touch = ui.pressWord() === 'TAP';
   const shotNo = `TUTORIAL · SHOT ${state.run.tutorialShots + 1} OF ${COACH_SHOTS}`;
   let step;
   if (fresh || !pull.active) step = ['hold', `${shotNo} · STEP 1`, touch ? 'Touch anywhere and hold' : 'Click anywhere and hold',
-    touch ? 'Then drag your finger down toward you.' : 'Then drag down toward you (or hold Space).', true];
+    touch ? 'Then drag your finger down toward you.' : 'Then drag down toward you.', true];
   else if (!pull.armed) step = ['pull', `${shotNo} · STEP 2`, 'Pull back', 'Drag down, away from the goal.', true];
   else {
     const [, css] = pullColour();
@@ -1394,10 +1582,13 @@ function coachPull(fresh = false) {
   if (step[0] === coachKey && !fresh) return;
   coachKey = step[0];
   ui.coach(step[1], step[2], step[3], step[4]);
+  // Before the finger goes down, the pitch shows the whole gesture.
+  ui.showGesture(step[0] === 'hold');
 }
 
 // ---- Input ---------------------------------------------------------------------------
 function shotPointerDown(e) {
+  if (shot.fire && state.phase === 'AIM' && shotInputOpen()) { poki.gameplayStart(); fireShot(); return; }
   if (shotMode === 'timing' || state.phase === 'FLIGHT') { advance(); return; }
   if (!shotInputOpen()) return;
   poki.gameplayStart();
@@ -1415,7 +1606,7 @@ function shotPointerDown(e) {
     && pointSlingshot(e.clientX, e.clientY)) {
     startSlingshot();
   } else if (shotMode === 'pull' && state.phase === 'AIM') {
-    startPull(e.clientX, e.clientY, false);
+    startPull(e.clientX, e.clientY);
   }
 }
 
@@ -1430,7 +1621,7 @@ function shotPointerMove(e) {
     moveHoldDrag(e.clientX, e.clientY);
   } else if (shotMode === 'sling' && shotInputOpen()) {
     pointSlingshot(e.clientX, e.clientY, !slingshot.active);
-  } else if (shotMode === 'pull' && pull.active && !pull.keyboard) {
+  } else if (shotMode === 'pull' && pull.active) {
     pull.x = e.clientX;
     pull.y = e.clientY;
   }
@@ -1445,13 +1636,18 @@ function shotPointerUp(e) {
   } else if (shotMode === 'aim') releaseFreeAim();
   else if (shotMode === 'drag' && holdDrag.active) releaseHoldDrag();
   else if (shotMode === 'sling') releaseSlingshot();
-  else if (shotMode === 'pull' && !pull.keyboard) releasePull();
+  else if (shotMode === 'pull') releasePull();
 }
 
-/** Space and the arrow keys, for the modes that use them. */
+/** Space and the arrow keys, for the modes that use them (the pull shot is touch and mouse only). */
 function shotKey(e, down) {
+  if (shotMode === 'pull') return false;
   const arrow = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[e.code];
-  if ((shotMode === 'aim' || shotMode === 'drag' || shotMode === 'pull') && arrow) { aimKeys[arrow] = down; return true; }
+  if (shot.fire && state.phase === 'AIM' && (arrow || e.code === 'Space' || e.code === 'Enter')) {
+    if (down && !e.repeat && shotInputOpen()) { poki.gameplayStart(); fireShot(); }
+    return true;
+  }
+  if ((shotMode === 'aim' || shotMode === 'drag') && arrow) { aimKeys[arrow] = down; return true; }
   if (e.code !== 'Space' && e.code !== 'Enter') return false;
   if (shotMode === 'timing' || state.phase === 'FLIGHT') { if (down && !e.repeat) advance(); return true; }
   if (shotMode === 'aim') {
@@ -1470,14 +1666,6 @@ function shotKey(e, down) {
   }
   if (shotMode === 'sling') {
     if (down && !e.repeat && state.phase === 'AIM') ui.setPrompt('MOVE THE POINTER BEHIND THE BALL, THEN HOLD AND RELEASE');
-    return true;
-  }
-  if (shotMode === 'pull') {
-    // Hold Space to pull (it stretches by itself), steer with the arrows, let go to shoot.
-    if (down && !e.repeat && shotInputOpen() && state.phase === 'AIM') {
-      poki.gameplayStart();
-      startPull(innerWidth / 2, innerHeight * .5, true);
-    } else if (!down && pull.keyboard) releasePull();
     return true;
   }
   if (down && !e.repeat && shotInputOpen()) ui.setPrompt('SWIPE UP TOWARD THE GOAL TO SHOOT');
@@ -1517,6 +1705,9 @@ function launch() {
   if (!balanceSimulation) {
     audio.play('kick');
     audio.play('whoosh');
+    // The rush clock starts with the first real shot (not a tutorial one).
+    const run = state.run;
+    if (run?.rush && !run.tutorial && !run.clockStarted) run.clockStarted = true;
   }
   ballPos.x = origin.x; ballPos.y = origin.y; ballPos.z = origin.z;
   if (shot.preset) {
@@ -1535,7 +1726,7 @@ function launch() {
   // at most, and his arms have to cover the rest.
   if (shot.weakShot) shot.keeperAbility = sharpenKeeper(shot.keeperAbility, PULL.WEAK_KEEPER);
   // A weak shot gives him time to cover more ground: a longer dive.
-  shot.maxDive = SHOT.KEEPER_MAX_DIVE * (shot.weakShot ? PULL.WEAK_REACH : 1);
+  shot.maxDive = SHOT.KEEPER_MAX_DIVE * (shot.weakShot ? PULL.WEAK_REACH : shot.fire ? FIRE.REACH : 1);
   predictFromVelocity(origin, ballVel, prediction, engine.keeperLineZ());
   const err = (Math.random() * 2 - 1) * shot.keeperAbility.readError;
   shot.keeperReadX = err;
@@ -1557,12 +1748,17 @@ function launch() {
   predictFromVelocity(origin, ballVel, crossing, GOAL.PLANE_Z, shot.curve);
   shot.keeperBeaten = !shot.weakShot && Math.abs(crossing.x) < GOAL.HALF_W && crossing.y < GOAL.HEIGHT
     && (shot.easy || Math.hypot(crossing.x - aimTarget.x, crossing.y - aimTarget.y) <= aimTarget.ring + ARCADE.BEATEN_MARGIN);
+  // A fire shot goes through him instead: he is not kept clear of it.
+  if (shot.fire) shot.keeperBeaten = false;
   if (shot.keeperBeaten) {
     shot.keeperTarget = keeperShortOf(prediction.x, shot.keeperSetX);
     shot.keeperSide = Math.sign(shot.keeperTarget - shot.keeperSetX) || 1;
     shot.diveDepth = 1;
   }
   shot.ghosted = false;
+  shot.keeperBowled = false;
+  shot.bowled = 0;
+  if (shot.fire && !balanceSimulation) engine.setFireBall(true);
   shot.keeperJumpAt = Math.max(shot.keeperAbility.reaction, prediction.t - .25);
   shot.keeperDelay = shot.keeperAbility.reaction;
   shot.keeperDive = 0;
@@ -1603,6 +1799,7 @@ function launch() {
     b.lunge = 0;
     b.down = 0;
     b.spent = false;
+    b.bowled = false;
     b.x = b.baseX;
     if (shot.wall) {
       // A wall holds its line and jumps as the ball is struck.
@@ -1726,15 +1923,8 @@ function parryAway() {
   ballVel.z = (ballVel.z / sp * (1 - b) + pz * b) * sp;
 }
 
-/**
- * One fixed physics substep: keeper, ball, then every collision test as a
- * swept query. Running this at PHYS_DT rather than per frame is what stops a
- * 40 m/s ball from stepping straight over the keeper or the woodwork.
- */
-export function substep(h) {
-  shot.flightTime += h;
-
-  // --- Keeper --------------------------------------------------------------
+/** The keeper's read, set, dive and recovery over one substep. */
+function keeperStep(h) {
   const keeperZ = engine.keeperLineZ();
   const arrival = ballVel.z < -.1 ? (keeperZ + .25 - ballPos.z) / ballVel.z : -1;
   if (!shot.keeperLaunched && shot.keeperDelay <= 0 && arrival >= 0 && shot.resolved === null) {
@@ -1816,6 +2006,73 @@ export function substep(h) {
   engine.setKeeper(shot.keeperX, shot.keeperDive, shot.keeperSide, shot.keeperHigh,
     shot.keeperAirY, shot.keeperGround, tracking ? keeperAim : null, shot.keeperDepth);
   if (shot.keeperBeaten && shot.touched === null && shot.resolved === null) keepClearOf(keeperAim, arrival);
+}
+
+/** Bowled over by a fire shot: flung sideways at full stretch, bouncing to a stop. */
+function knockedKeeperStep(h) {
+  shot.keeperX += shot.knockVx * h;
+  shot.knockVx *= Math.pow(.2, h);
+  shot.keeperAirV += GRAVITY * h;
+  shot.keeperAirY = Math.max(0, shot.keeperAirY + shot.keeperAirV * h);
+  if (shot.keeperAirY === 0) {
+    shot.keeperAirV = 0;
+    shot.keeperGround = Math.min(1, shot.keeperGround + h / .18);
+  }
+  shot.keeperDive = Math.min(1, shot.keeperDive + h * 6);
+  engine.setKeeper(shot.keeperX, shot.keeperDive, shot.knockDir, .35, shot.keeperAirY, shot.keeperGround, null, shot.keeperDepth);
+}
+
+/** A defender the fire ball hit: knocked off his feet, sideways, onto his side. */
+function knockedBlockerStep(b, i, h) {
+  b.knockTime += h;
+  b.x += b.knockVx * h;
+  b.knockVx *= Math.pow(.25, h);
+  b.vy += GRAVITY * h;
+  b.airY = Math.max(0, b.airY + b.vy * h);
+  if (b.airY === 0) b.vy = 0;
+  engine.setBlocker(i, b.x, 1, b.knockDir, b.airY);
+  engine.setKnock('blocker', i, Math.min(Math.PI / 2, b.knockTime * 6.5), b.knockDir);
+}
+
+/** The fire ball meets someone: he goes flying away from it; the ball carries on. */
+function knockKeeper() {
+  shot.keeperBowled = true;
+  shot.knockDir = Math.sign(shot.keeperX - ballPos.x) || -Math.sign(ballVel.x) || 1;
+  shot.knockVx = shot.knockDir * FIRE.KNOCK_SPEED;
+  shot.keeperAirV = FIRE.KNOCK_HOP;
+  shot.keeperAirY = Math.max(.01, shot.keeperAirY);
+  shot.keeperGround = 0;
+  bowledOver();
+}
+function knockBlocker(i) {
+  const b = blockers[i];
+  if (!b || b.bowled) return;
+  b.bowled = true;
+  b.knockTime = 0;
+  b.knockDir = Math.sign(b.x - ballPos.x) || -Math.sign(ballVel.x) || 1;
+  b.knockVx = b.knockDir * FIRE.KNOCK_SPEED;
+  b.vy = FIRE.KNOCK_HOP;
+  b.airY = Math.max(.01, b.airY);
+  bowledOver();
+}
+function bowledOver() {
+  shot.bowled++;
+  if (balanceSimulation) return;
+  audio.play('bowl');
+  engine.shake(.5);
+}
+
+/**
+ * One fixed physics substep: keeper, ball, then every collision test as a
+ * swept query. Running this at PHYS_DT rather than per frame is what stops a
+ * 40 m/s ball from stepping straight over the keeper or the woodwork.
+ */
+export function substep(h) {
+  shot.flightTime += h;
+
+  // --- Keeper --------------------------------------------------------------
+  if (shot.keeperBowled) knockedKeeperStep(h);
+  else keeperStep(h);
 
   // --- Defenders -----------------------------------------------------------
   // A wall jumps once and lands even after the shot is decided.
@@ -1829,8 +2086,10 @@ export function substep(h) {
     }
     b.x = engine.setBlocker(i, b.baseX, 0, 1, b.airY);
   }
+  for (let i = 0; i < blockerCount; i++) if (blockers[i].bowled) knockedBlockerStep(blockers[i], i, h);
   for (let i = 0; !shot.wall && i < blockerCount && shot.resolved === null; i++) {
     const b = blockers[i];
+    if (b.bowled) continue;
     if (b.delay > 0) {
       b.delay -= h;
     } else if (!b.spent) {
@@ -1910,6 +2169,8 @@ function touch(what, shakeAmp) {
   if (!balanceSimulation) engine.shake(shakeAmp);
 }
 
+const NO_CAPSULES = [];
+
 /**
  * Runs the shot's outcome tests, nearest obstacle first. A deflection does
  * NOT end the chance: the ball stays live off a post, a keeper's hand or a
@@ -1924,6 +2185,7 @@ function tryResolve() {
       const blocks = engine.getBlockerCapsules();
       for (let i = 0; i < blocks.length; i++) {
         if (!sweptCapsuleHit(prevPos, ballPos, blocks[i])) continue;
+        if (shot.fire) { knockBlocker(engine.blockerOfCapsule(i)); continue; }
         deflect(blocks[i], SHOT.SAVE_RESTITUTION);
         touch('defender', 0.3);
         return;
@@ -1931,9 +2193,10 @@ function tryResolve() {
     }
 
     // --- Save: swept ball path vs the keeper's live limb capsules ----------
-    const caps = engine.getKeeperCapsules();
+    const caps = shot.keeperBowled ? NO_CAPSULES : engine.getKeeperCapsules();
     for (let i = 0; i < caps.length; i++) {
       if (!sweptCapsuleHit(prevPos, ballPos, caps[i])) continue;
+      if (shot.fire) { knockKeeper(); break; }
       // An untouched on-target shot always beats him. The target's clearance and
       // his short dive keep him from reaching it; `ghosted` records it if he ever
       // does (tools/keeper-reach.mjs checks it never happens).
@@ -2066,18 +2329,18 @@ export function precisionTier(crossX, crossY, target) {
 /**
  * Scores a finished shot and updates hearts, combo and level. Pure run maths.
  * `heart` says the target carried an extra life: a shot inside the ring takes it.
- * `special` multiplies the points; a beaten boss also gives a heart; a bonus
+ * `special` multiplies the points; a beaten boss also gives a heart; a fire
  * round shot costs nothing and leaves the combo and level progress alone; the
  * daily challenge never costs hearts and levels by shot count instead.
  */
 export function scoreShot(run, outcome, tier, heart = false, special = null, practice = false) {
   run.shots += 1;
-  const bonus = special === 'bonus' || practice;
+  const bonus = special === 'fire' || practice;
   run.recoveryHeart = false;
   if (!run.daily) run.assistShots = outcome === 'goal'
     ? Math.max(0, (run.assistShots || 0) - 1) : ADAPTIVE.SHOTS;
   if (outcome !== 'goal') {
-    if (!bonus && !run.daily && !run.freeMiss) run.hearts = Math.max(0, run.hearts - 1);
+    if (!bonus && !run.daily && !run.freeMiss && !run.rush) run.hearts = Math.max(0, run.hearts - 1);
     if (!bonus) run.combo = 0;
     return { points: 0, levelUp: false, extraLife: false };
   }
@@ -2091,15 +2354,21 @@ export function scoreShot(run, outcome, tier, heart = false, special = null, pra
   const multiplier = special ? SPECIALS[special].points : 1;
   const points = Math.round(ARCADE.POINTS[tier] * Math.max(1, run.combo) * multiplier / 10) * 10;
   run.score += points;
-  const extraLife = !run.daily && ((heart && onTarget) || special === 'boss') && run.hearts < ARCADE.MAX_HEARTS;
-  if (extraLife) { run.hearts += 1; run.extraLives += 1; }
-  const levelUp = !run.daily && !bonus && run.levelGoals >= goalsForLevel(run.level);
+  // In the rush a pickup (or a beaten boss) is +5 s, with no cap; in the lives arcade, a heart.
+  const extraLife = !run.daily && ((heart && onTarget) || special === 'boss') && (run.rush || run.hearts < ARCADE.MAX_HEARTS);
+  if (extraLife) { run.extraLives += 1; if (!run.rush) run.hearts += 1; }
+  let levelUp = !run.daily && !bonus && run.levelGoals >= goalsForLevel(run.level);
+  if (levelUp && run.level >= ARCADE.LEVELS) {
+    // The last level beaten: the run is won.
+    levelUp = false;
+    run.won = true;
+  }
   if (levelUp) {
     run.level += 1; run.levelGoals = 0;
     if (run.level === 2 || run.level === 3) {
       run.introPending = shotMode === 'pull' ? (run.level === 3 ? 'golden' : null)
         : run.level === 2 ? 'golden' : 'moving';
-      if (run.hearts < ARCADE.HEARTS) {
+      if (!run.rush && run.hearts < ARCADE.HEARTS) {
         run.hearts++;
         run.recoveryHeart = true;
       }
@@ -2115,7 +2384,7 @@ function levelNote(run, rankUp) {
   if (run.level === 2 || run.level === 3) return `${run.level === 2
     ? 'GOLDEN SHOTS UNLOCKED · x2' : 'MOVING TARGETS UNLOCKED · x1.5'}${run.recoveryHeart ? ' · +1 HEART' : ''}`;
   if (rankUp) return `NEW RANK: ${progress.rankFor(run.level).name}${run.bossPending ? ' · BOSS KEEPER' : ''}`;
-  if (run.bonusLeft) return 'BONUS ROUND: MISSES ARE FREE';
+  if (run.level === ARCADE.LEVELS) return 'THE BOSS KEEPER, EVERY SHOT \u00b7 BEAT HIM TO WIN';
   if (run.bossPending) return 'A BOSS KEEPER IS WAITING';
   const level = run.level;
   return level === 2 ? 'THE KEEPER IS WAKING UP' : level === 5 ? 'DEFENDERS INCOMING'
@@ -2135,6 +2404,9 @@ function resolve(outcome) {
   if (result.extraLife && special !== 'boss') engine.collectTargetHeart();
   shot.points = result.points;
   run.levelUpPending = result.levelUp;
+  const buzzer = run.rush && run.timeUp && outcome === 'goal';
+  const addedTime = rushBonus(run, outcome, tier, result, special);
+  engine.setFireBall(false);
   if (special) poki.measure('special', special, outcome === 'goal' ? 'complete' : 'fail');
 
   // Mission counters for this shot; finished missions pay out straight away.
@@ -2144,7 +2416,7 @@ function resolve(outcome) {
     golden: goal && special === 'golden' ? 1 : 0, hearts: result.extraLife ? 1 : 0,
     moving: onTarget && special === 'moving' ? 1 : 0, freekick: goal && special === 'freekick' ? 1 : 0,
     woodwork: goal && (shot.touched === 'post' || shot.touched === 'bar') ? 1 : 0,
-    boss: goal && special === 'boss' ? 1 : 0, bonus: onTarget && special === 'bonus' ? 1 : 0 });
+    boss: goal && special === 'boss' ? 1 : 0, fire: goal && special === 'fire' ? 1 : 0 });
   for (const mission of finished) {
     run.missionsDone.push(mission);
     ui.toast(`MISSION COMPLETE: ${mission.text}`, `+${mission.xp} XP`);
@@ -2158,6 +2430,13 @@ function resolve(outcome) {
   const reactionIndex = Math.floor(Math.random() * engine.REACTIONS.length);
   const reaction = engine.startReaction(outcome === 'goal' ? 'keeper' : 'shooter', engine.REACTIONS[reactionIndex]);
   shot.holdTimer = Math.min(HOLD.REACTION_MAX, Math.max(shot.holdTimer, reaction));
+  // The rush keeps shots coming: a short beat, no celebration but at a streak milestone.
+  if (run.rush) shot.holdTimer = outcome === 'goal' ? RUSH.HOLD_GOAL : RUSH.HOLD_MISS;
+  // A fire goal holds long enough to watch the keeper land, with the clock stopped.
+  if (special === 'fire') {
+    shot.holdTimer = FIRE.HOLD;
+    if (run.rush) run.clockHold = Math.max(run.clockHold, FIRE.HOLD);
+  }
 
   if (outcome === 'goal') {
     audio.play('net');
@@ -2169,30 +2448,36 @@ function resolve(outcome) {
     // A different unlocked celebration from last time, when there is a choice.
     const moves = progress.celebrations();
     const choices = moves.length > 1 ? moves.filter(name => name !== run.lastCelebration) : moves;
-    run.lastCelebration = choices[Math.floor(Math.random() * choices.length)];
-    shot.holdTimer = Math.min(HOLD.CELEBRATION_MAX, Math.max(shot.holdTimer, engine.startCelebration(run.lastCelebration)));
+    run.lastCelebration = progress.favouriteCelebration() || choices[Math.floor(Math.random() * choices.length)];
+    if (!run.rush) shot.holdTimer = Math.min(HOLD.CELEBRATION_MAX, Math.max(shot.holdTimer, engine.startCelebration(run.lastCelebration)));
+    else if (run.milestone) {
+      engine.startCelebration(run.lastCelebration);
+      shot.holdTimer = run.clockHold = RUSH.MILESTONE_HOLD;
+    }
     engine.shake(tier === 'bullseye' ? .7 : .5);
     if (tier !== 'goal') engine.burstTarget(tier);
-    const label = special === 'boss' ? 'BOSS BEATEN!' : special === 'freekick' ? 'OVER THE WALL!'
+    const label = run.won ? 'CHAMPION!' : special === 'fire' ? (shot.bowled ? 'BOWLED OVER!' : 'FIREBALL!')
+      : special === 'boss' ? 'BOSS BEATEN!' : special === 'freekick' ? 'OVER THE WALL!'
       : tier === 'bullseye' ? 'BULLSEYE!' : tier === 'target' ? 'ON TARGET!' : 'GOAL!';
     const detail = [special === 'boss' && tier !== 'goal' ? tier.toUpperCase() : '',
       special && special !== 'boss' && special !== 'freekick' ? SPECIALS[special].label : '',
       shot.snap ? 'PERFECT SNAP!' : '',
       shot.keeperBeaten && !GOAL_CALLS[shot.touched] ? 'JUST PAST HIS FINGERTIPS!' : '',
-      GOAL_CALLS[shot.touched] || '', result.extraLife ? 'EXTRA LIFE!' : ''].filter(Boolean).join('  ');
-    ui.flashVerdict(label, tier, `+${result.points}${run.combo > 1 ? `  x${run.combo} COMBO` : ''}`, detail);
+      GOAL_CALLS[shot.touched] || '', result.extraLife ? (run.rush ? 'BONUS TIME!' : 'EXTRA LIFE!') : '',
+      buzzer ? 'BUZZER BEATER!' : '', run.milestone ? `${run.streak} IN A ROW!` : ''].filter(Boolean).join('  ');
+    ui.flashVerdict(label, tier, `+${result.points}${run.combo > 1 ? `  x${run.combo} COMBO` : ''}${addedTime ? `  +${addedTime}s` : ''}`, detail);
   } else {
     if (outcome === 'save') engine.shake(0.25);
     if (outcome === 'blocked') engine.shake(0.3);
     const label = { save: shot.keeperMoment ? 'WHAT A SAVE!' : 'SAVED!', blocked: 'BLOCKED!', woodwork: shot.touched === 'bar' ? 'CROSSBAR!' : 'POST!',
       high: 'OVER!', wide: 'WIDE!' }[outcome];
-    ui.flashVerdict(label, 'miss', special === 'bonus' ? 'FREE MISS' : run.daily
+    ui.flashVerdict(label, 'miss', run.rush ? 'KEEP GOING!' : special === 'fire' ? 'FREE MISS' : run.daily
       ? `SHOT ${run.shots}/${progress.DAILY_SHOTS}` : run.freeMiss ? 'FREE MISS' : run.hearts > 0 ? '-1 HEART' : 'OUT OF HEARTS',
       shot.weakShot && outcome === 'save' ? 'HIT IT HARDER!' : '');
     audio.play('groan');
     audio.play('miss');
-    if (special !== 'bonus' && !run.daily && !run.freeMiss) audio.play('loseHeart');
-    if (run.hearts === 1 && !run.daily) audio.play('warning');
+    if (special !== 'fire' && !run.daily && !run.freeMiss && !run.rush) audio.play('loseHeart');
+    if (run.hearts === 1 && !run.daily && !run.rush) audio.play('warning');
   }
   pushHud();
 }
@@ -2203,14 +2488,29 @@ function finishChance() {
   engine.stopReactions();
   engine.showTarget(false);
   endSpecial();
+  const bonusOver = run.special === 'fire' && run.fireLeft === 0;
   run.special = null;
-  if (run.daily ? run.shots >= progress.DAILY_SHOTS : run.hearts <= 0) { gameOver(); return; }
+  if (run.won) {
+    run.timeUp = true;
+    gameOver();
+    return;
+  }
+  if (run.daily ? run.shots >= progress.DAILY_SHOTS : run.rush ? run.timeUp : run.hearts <= 0) {
+    gameOver();
+    return;
+  }
   if (run.tutorial && run.tutorialShots >= COACH_SHOTS) {
     run.tutorial = false;
     progress.setTutorialDone();
     poki.measure('tutorial', 'pull', 'complete');
     audio.play('levelUp');
-    ui.showLevelUp('TUTORIAL COMPLETE', 'LEVEL 1 · GO!');
+    ui.showLevelUp('TUTORIAL COMPLETE', run.rush ? `NOW SCORE AS MANY GOALS AS YOU CAN IN ${RUSH.START} SECONDS!` : 'LEVEL 1 · GO!');
+  }
+
+  if (bonusOver && !run.levelUpPending) {
+    // Back from the bonus level to the level it was earned for.
+    audio.play('levelUp');
+    ui.showLevelUp(run.level === ARCADE.LEVELS ? 'FINAL LEVEL!' : `LEVEL ${run.level}`, levelNote(run, false));
   }
   if (run.levelUpPending) {
     run.levelUpPending = false;
@@ -2218,10 +2518,14 @@ function finishChance() {
     audio.play('levelUp');
     poki.measure('level', String(run.level - 1), 'complete');
     poki.measure('level', String(run.level), 'start');
-    if (run.level > 4 && run.level % SPECIALS.bonus.every === 0) run.bonusLeft = SPECIALS.bonus.shots;
-    if (run.level === 4 || (run.level > 5 && run.level % SPECIALS.boss.every === 0)) run.bossPending = true;
+    if (run.level === 4) run.bossPending = true;
     const rankUp = progress.rankFor(run.level) !== progress.rankFor(run.level - 1);
-    ui.showLevelUp(`LEVEL ${run.level}`, levelNote(run, rankUp));
+    if (FIRE.AFTER.includes(run.level - 1)) {
+      // The reward for finishing this level: a fire round, then on with the next.
+      run.fireLeft = FIRE.SHOTS;
+      audio.play('onFire');
+      ui.showLevelUp('\u{1F525} BONUS LEVEL! \u{1F525}', `LEVEL ${run.level - 1} DONE \u00b7 ${FIRE.SHOTS} FIRE SHOTS: ANY SHOT FLIES TO THE TARGET`, 'fire');
+    } else ui.showLevelUp(run.level === ARCADE.LEVELS ? 'FINAL LEVEL!' : `LEVEL ${run.level}`, levelNote(run, rankUp));
   }
   pushHud();
   beginChance();
@@ -2233,10 +2537,14 @@ function finishChance() {
 // screen with sample data so it can be checked without playing to it; Alt+0
 // returns to play.
 // ===========================================================================
-const PREVIEW_SPECIALS = ['golden', 'moving', 'freekick', 'boss', 'bonus'];
+const PREVIEW_SPECIALS = ['golden', 'moving', 'freekick', 'boss'];
 let previewSpecial = 0;
+// Each reward-screen preview shows the next kind of unlock.
+const PREVIEW_UNLOCKS = ['glasses:shades', 'hat:viking', 'celebration:celebrate_backflip', 'kit:sky', 'striker:frost', 'ball:neon', 'boots:gold'];
+let previewUnlock = 0;
 
-/** Sample results (nothing is saved): a middling run, or a finished daily. */
+/** Sample results (nothing is saved): a middling run, or a finished daily. In
+ * the rush, the reward screen comes first, as after a real rush. */
 function previewResults(daily) {
   poki.gameplayStop();
   state.paused = false;
@@ -2253,10 +2561,22 @@ function previewResults(daily) {
       goals: 9, bullseyes: 6, bestCombo: 3, shots: 14, targetHits: 7, continued: false,
       missionsDone: [{ id: 'woodwork1', text: 'SCORE IN OFF THE POST OR BAR', xp: 200 }] },
     isBest: false,
-    outcome: { gained: 275, unlocked: daily ? [] : [{ id: 'kit:sky', name: 'SKY BLUE' }], missions: [],
+    outcome: { gained: 275, unlocked: daily ? [] : [{ id: PREVIEW_UNLOCKS[previewUnlock++ % PREVIEW_UNLOCKS.length] }], missions: [],
       daily: daily ? { best: 2400, newBest: true, streak: 3 } : null },
   };
-  showResults();
+  results.run.rush = state.run.rush && !daily;
+  if (results.run.rush) showRewardScreen(); else showResults();
+}
+
+/** A fire round from the next chance (the current one is re-dealt). */
+function startFireRound() {
+  const run = state.run;
+  run.fireLeft = FIRE.SHOTS;
+  run.tutorial = false;
+  engine.stopCelebration();
+  audio.play('onFire');
+  ui.showLevelUp('\u{1F525} BONUS LEVEL! \u{1F525}', `${FIRE.SHOTS} FIRE SHOTS: ANY SHOT FLIES TO THE TARGET`, 'fire');
+  beginChance();
 }
 
 /** Back to the live chance from any preview. */
@@ -2275,7 +2595,7 @@ function previewScreen(key) {
   if (poki.isInBreak()) return;
   if (state.screen === 'GAMEOVER' && key !== 3 && key !== 4 && key !== 5) previewBackToPlay();
   const labels = { 0: 'PLAY', 1: 'STRIKER SELECT', 2: 'PAUSE', 3: 'GAME OVER', 4: 'DAILY RESULTS', 5: 'LOCKER',
-    6: 'LEVEL UP / NEW RANK', 7: 'MISSION TOAST', 8: 'SPECIAL CHANCE', 9: 'SHOT MODE' };
+    6: 'LEVEL UP / NEW RANK', 7: 'MISSION TOAST', 8: 'SPECIAL CHANCE', 9: 'FIRE ROUND' };
   if (!(key in labels)) return;
   if (key === 0) previewBackToPlay();
   if (key === 1) { if (state.screen !== 'SELECT') openStrikerSelect('play'); }
@@ -2295,9 +2615,9 @@ function previewScreen(key) {
     label = `SPECIAL: ${SPECIALS[kind].label}`;
   }
   if (key === 9) {
-    if (state.screen !== 'MATCH') previewBackToPlay();
-    setShotMode(SHOT_MODES[(SHOT_MODES.indexOf(shotMode) + 1) % SHOT_MODES.length]);
-    label = `SHOT MODE: ${shotMode.toUpperCase()}`;
+    // Set the striker on fire now: the current chance is re-dealt as the first fire shot.
+    if (state.screen !== 'MATCH' || state.paused) previewBackToPlay();
+    startFireRound();
   }
   ui.devTag(`ALT+${key} \u00b7 ${label}`);
 }
@@ -2374,6 +2694,8 @@ function frame(dt) {
   audio.setPower(state.phase === 'POWER' ? shot.power : null);
   state.elapsed += dt;
   if (state.paused || state.screen !== 'MATCH') return;
+  tickClock(dt);
+  if (state.screen !== 'MATCH') return;
 
   if (state.phase === 'AIM' || state.phase === 'POWER') updateMovingTarget(dt);
   switch (state.phase) {
@@ -2441,8 +2763,9 @@ async function boot() {
       striker: engine.striker, players: engine.players, lastLaunch: engine.lastLaunch,
       poki: { pause, resume, playing: poki.isPlaying },
       progress: progress.debugData, specials: SPECIALS,
-      /** The next chance is this special ('golden', 'moving', 'freekick', 'boss', 'bonus'). */
+      /** The next chance is this special ('golden', 'moving', 'freekick', 'boss', 'fire'). */
       forceSpecial: kind => { state.forceSpecial = kind; },
+      fire: FIRE, fireState: engine.fireState,
       get shotMode() { return shotMode; }, setShotMode,
       /** Ad-break tests: a break before every n-th new run (the game uses 3). */
       setRunsPerBreak: n => { runsPerBreak = n; runsSinceBreak = 0; },

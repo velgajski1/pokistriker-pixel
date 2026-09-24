@@ -34,12 +34,22 @@ try {
       return d.state.phase === 'AIM' && (off ? Math.abs(d.shot.aimX) > 4.2 : Math.abs(d.shot.aimX - d.target.x) < .3);
     }, offTarget);
     await page.keyboard.press('Space');
+    // A fire shot goes on the first press, straight at the target.
+    if (await shot(() => __demo.shot.fire)) return fired(keepHold);
     await phase('POWER');
     await until('height on target', () => {
       const d = __demo;
       return d.state.phase === 'POWER' && d.shot.powerDir > 0 && Math.abs(d.prediction.y - d.target.y) < .2;
     });
     await page.keyboard.press('Space');
+    await until('shot resolved', () => __demo.shot.resolved !== null);
+    const result = await shot(() => ({ outcome: __demo.shot.resolved, tier: __demo.shot.precision,
+      points: __demo.shot.points, hold: __demo.shot.holdTimer, run: { ...__demo.state.run, random: null, tally: null } }));
+    report.shots.push({ outcome: result.outcome, tier: result.tier, points: result.points, special: result.run.special });
+    if (!keepHold) { await page.waitForTimeout(250); await page.keyboard.press('Space'); }
+    return result;
+  }
+  async function fired(keepHold) {
     await until('shot resolved', () => __demo.shot.resolved !== null);
     const result = await shot(() => ({ outcome: __demo.shot.resolved, tier: __demo.shot.precision,
       points: __demo.shot.points, hold: __demo.shot.holdTimer, run: { ...__demo.state.run, random: null, tally: null } }));
@@ -76,7 +86,7 @@ try {
 
   // ---- Special chances ------------------------------------------------------
   const specials = {};
-  for (const kind of ['golden', 'moving', 'freekick', 'boss', 'bonus']) {
+  for (const kind of ['golden', 'moving', 'freekick', 'boss', 'fire']) {
     await phase('AIM');
     await shot(k => __demo.forceSpecial(k), kind);
     await topUpHearts();
@@ -111,17 +121,18 @@ try {
     if (kind === 'moving') check('moving: target slides', moved > .1, `travelled ${moved.toFixed(2)} m in 1 s`);
     if (kind === 'freekick') check('freekick: two-man wall at 9.15 m',
       info.wallDistances.length === 2 && info.wallDistances.every(d => Math.abs(d - 9.15) < .6), JSON.stringify(info.wallDistances));
-    if (kind === 'boss') check('boss: a bigger keeper', info.keeperScale > 1.1, info.keeperScale.toFixed(3));
-    if (kind === 'bonus') check('bonus: keeper stands aside', Math.abs(info.keeperX) > 3.9, info.keeperX.toFixed(2));
+    if (kind === 'boss') check('boss: a bigger keeper', info.keeperScale > 1.07, info.keeperScale.toFixed(3));
+    if (kind === 'fire') check('fire: a flaming ball and a burning screen', info.ball === 0xffa23a
+      && await shot(() => document.body.classList.contains('on-fire')), info.ball.toString(16));
     const heartsBefore = info.hearts;
-    const result = kind === 'bonus' ? await shoot({ offTarget: true }) : await shoot();
-    if (kind === 'bonus') check('bonus: a miss is free', result.outcome === 'goal' || result.run.hearts === heartsBefore,
-      `${result.outcome}, hearts ${heartsBefore} -> ${result.run.hearts}`);
+    const result = kind === 'fire' ? await shoot({ offTarget: true }) : await shoot();
+    if (kind === 'fire') check('fire: any press flies into the target', result.outcome === 'goal', result.outcome);
     if (kind === 'boss' && result.outcome === 'goal') check('boss: beating him pays a heart', result.run.hearts >= Math.min(5, heartsBefore));
     await phase('AIM');
     const after = await shot(() => ({ scale: __demo.players.find(p => p.role === 'keeper' && p.team === 'away').root.scale.y,
       ball: __demo.ball.material.color.getHex(), special: __demo.state.run.special }));
-    if (kind === 'boss') check('boss: keeper back to size afterwards', after.scale < 1.1, after.scale.toFixed(3));
+    if (kind === 'boss') check('boss: keeper back to size afterwards', after.scale < 1.09 || after.special === 'boss',
+      `${after.scale.toFixed(3)} (${after.special})`);
     if (kind === 'golden') check('golden: ball tint restored afterwards', after.special === 'golden' || after.ball === 0xffffff,
       after.ball.toString(16));
   }
@@ -145,13 +156,18 @@ try {
   check('XP was paid out', (await shot(() => __demo.progress().xp)) > xpBefore);
 
   // ---- Locker -------------------------------------------------------------------
-  await shot(() => { __demo.progress().xp = 2000; __demo.progress().bestLevel = 6; });
+  await shot(() => { __demo.progress().xp = 13000; __demo.progress().bestLevel = 6; });
   await page.getByRole('button', { name: /^locker/i }).click();
   await page.waitForTimeout(500);
   await page.screenshot({ path: `${CAPTURES}/hooks-locker.png` });
   const lockerText = await page.textContent('#overlay');
   check('Locker shows game progress and tab counts', /game progress/i.test(lockerText) && /KITS \d+\/\d+/i.test(lockerText));
-  await page.locator('.locker-item', { hasText: 'SKY BLUE' }).click();
+  await page.locator('.locker-tabs .tab', { hasText: /^KITS/ }).click();
+  await page.waitForTimeout(200);
+  const sky = page.locator('.locker-item', { hasText: 'SKY BLUE' });
+  // Landscape pages the grid: turn pages until the kit shows.
+  for (let i = 0; i < 6 && !(await sky.isVisible()); i++) await page.getByRole('button', { name: 'Next page' }).click();
+  await sky.click();
   const equipped = await shot(() => __demo.progress().equipped.kit);
   check('Locker equips an unlocked kit', equipped === 'sky', equipped);
   check('Locked items cannot be equipped', await page.locator('.locker-item.locked').first().isDisabled());
